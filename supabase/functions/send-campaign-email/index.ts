@@ -394,12 +394,16 @@ Deno.serve(async (req) => {
         });
       }
 
-      const fromEmail =
-        campaign.senderEmail ||
-        smtp.fromEmail ||
-        smtp.user ||
-        `noreply@${domainName || 'localhost'}`;
-      const fromName = campaign.senderName || smtp.fromName || org?.name || 'Inbox Flow';
+      const fromName = String(campaign.senderName || smtp.fromName || '').trim();
+      const fromEmail = String(
+        campaign.senderEmail || smtp.fromEmail || smtp.user || '',
+      ).trim();
+      if (!fromEmail) {
+        return jsonResponse(
+          { error: 'Sender email is required. Set it on the campaign or SMTP profile.' },
+          400,
+        );
+      }
 
       try {
         const result = await sendViaSmtp(
@@ -413,8 +417,8 @@ Deno.serve(async (req) => {
             }),
             html,
             text: text || undefined,
-            fromEmail: String(fromEmail),
-            fromName: String(fromName),
+            fromEmail,
+            fromName,
             replyTo: campaign.replyTo ? String(campaign.replyTo) : smtp.replyTo,
             headers: buildDeliverabilityHeaders(campaign.replyTo ? String(campaign.replyTo) : smtp.replyTo),
           },

@@ -845,12 +845,16 @@ export function CampaignEditorPage() {
               <Label>SMTP / provider</Label>
               <Select
                 value={campaign.providerId || 'rotate'}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const nextId = e.target.value === 'rotate' ? null : e.target.value;
+                  const p = providers.find((x) => x.id === nextId);
                   setCampaign({
                     ...campaign,
-                    providerId: e.target.value === 'rotate' ? null : e.target.value,
-                  })
-                }
+                    providerId: nextId,
+                    senderName: campaign.senderName || p?.fromName || '',
+                    senderEmail: campaign.senderEmail || p?.fromEmail || '',
+                  });
+                }}
               >
                 <option value="rotate">Auto-rotate (all active SMTPs)</option>
                 {providers.map((p) => (
@@ -870,8 +874,11 @@ export function CampaignEditorPage() {
               <Input
                 value={campaign.senderName || ''}
                 onChange={(e) => setCampaign({ ...campaign, senderName: e.target.value })}
-                placeholder={selectedProvider?.fromName || 'Optional — blank uses sender email only'}
+                placeholder={selectedProvider?.fromName || 'Shows in inbox — e.g. Acme Store'}
               />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                This is what recipients see. Fill it here (or on the SMTP profile), then Save before sending.
+              </p>
             </div>
             <div>
               <Label>Sender email</Label>

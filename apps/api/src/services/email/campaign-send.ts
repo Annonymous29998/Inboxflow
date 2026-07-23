@@ -113,12 +113,16 @@ export async function sendCampaignEmailToRecipient(input: {
   let lastError = 'Unknown error';
   for (const p of providers) {
     const cfg = parseProviderConfig(p.config);
+    const fromName = String(campaign.senderName || cfg.fromName || '').trim();
     const fromEmail =
       campaign.senderEmail ||
       cfg.fromEmail ||
       cfg.user ||
-      `noreply@${campaign.domain?.domain || 'localhost'}`;
-    const fromName = campaign.senderName || cfg.fromName || campaign.organization.name;
+      '';
+    if (!fromEmail) {
+      lastError = 'Sender email is required';
+      continue;
+    }
 
     const result = await sendViaProvider(
       p.type,
