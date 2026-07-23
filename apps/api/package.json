@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/index.js",
+    "postinstall": "prisma generate",
     "worker": "tsx src/workers/index.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -32,6 +33,7 @@
     "@fastify/swagger": "^9.4.2",
     "@fastify/swagger-ui": "^5.2.2",
     "@prisma/client": "^6.5.0",
+    "prisma": "^6.5.0",
     "bcryptjs": "^3.0.2",
     "csv-parse": "^5.6.0",
     "csv-stringify": "^6.5.2",
@@ -52,7 +54,6 @@
     "@types/node": "^22.13.10",
     "@types/nodemailer": "^6.4.17",
     "@types/qrcode": "^1.5.5",
-    "prisma": "^6.5.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"

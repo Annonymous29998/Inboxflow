@@ -1,5 +1,4 @@
 import { prisma } from '../config/prisma.js';
-import type { Prisma } from '@prisma/client';
 
 export type LogLevel = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
 export type LogCategory =
@@ -16,7 +15,7 @@ export async function writeSystemLog(input: {
   level: LogLevel;
   category: LogCategory;
   message: string;
-  meta?: Prisma.InputJsonValue;
+  meta?: Record<string, unknown> | unknown;
 }) {
   try {
     await prisma.systemLog.create({

@@ -46,12 +46,12 @@ export async function pgmqSend<T extends object>(
   delaySeconds = 0,
 ): Promise<bigint> {
   await ensurePgmqQueues();
-  const rows = await prisma.$queryRawUnsafe<Array<{ send: bigint }>>(
+  const rows = (await prisma.$queryRawUnsafe(
     `SELECT pgmq.send($1::text, $2::jsonb, $3::integer) AS send`,
     queue,
     JSON.stringify(message),
     delaySeconds,
-  );
+  )) as Array<{ send: bigint }>;
   return BigInt(rows[0]?.send ?? 0);
 }
 
