@@ -1,0 +1,127 @@
+---
+description: Inbox Flow product requirements — SMTP, queue, import, desktop UI, TUI logs
+alwaysApply: true
+---
+
+# Inbox Flow — Product Spec
+
+Brand: **Inbox Flow** · Domain: **inboxflow.io** · Style: dark-first professional desktop + TUI mode.
+
+When implementing or changing features, follow these sections exactly.
+
+## SMTP Manager
+
+Build a professional SMTP management system (dedicated page under Settings / SMTP).
+
+Users must be able to:
+
+- Add unlimited SMTP servers
+- Edit SMTP servers
+- Delete SMTP servers
+- Enable or disable SMTP servers
+- Organize SMTP servers with labels
+- Test SMTP connection before saving
+- Verify SMTP authentication
+- Display connection status: `Connected` | `Failed` | `Pending`
+- Show detailed error messages if authentication fails
+- Automatically detect common SMTP configuration issues
+- Support presets: Amazon SES SMTP, Mailgun SMTP, SendGrid SMTP, Postmark SMTP, Gmail SMTP, Outlook SMTP, Zoho SMTP, Custom SMTP
+- **SMTP rotation** across active accounts: `round_robin` | `weighted` | `failover`, respecting daily/hourly limits (load distribution + reliability — not policy evasion)
+
+Each SMTP profile supports:
+
+- Host, Port, Username, Password
+- Encryption: SSL / TLS / STARTTLS
+- Sender Name, Sender Email, Reply-To Email
+- Daily Sending Limit, Hourly Limit, Priority, Notes
+
+Include a **Test Connection** button that performs a **real** SMTP `verify()` (and optional test send) before the profile can be marked **active**. Default SMTP accounts use 465↔587 port failover.
+
+## Intelligent Sending Queue
+
+Never send all emails simultaneously.
+
+User-configurable:
+
+- Batch Size (default 10–20)
+- Delay Between Batches (default 3–10s)
+- Delay Between Individual Emails (default ~500ms)
+- Maximum Concurrent Connections
+- Maximum Emails Per Minute
+- Maximum Emails Per Hour
+
+Flow: send batch → wait → next batch → until complete.
+
+Queue must support:
+
+- Pause Campaign
+- Resume Campaign
+- Cancel Campaign
+- Retry Failed Emails
+- Skip Invalid Emails
+- Queue Priority
+- Live Progress UI: bar, sent/total, success, failed, remaining, ETA, live speed
+
+## HTML Campaign Import
+
+Users can import complete HTML email templates.
+
+Formats: HTML files, ZIP files, MJML, drag-and-drop upload.
+
+Importer must:
+
+- Detect images, upload/store assets, fix relative paths
+- Generate plain-text when possible
+- Validate HTML for email compatibility
+- Flag unsupported HTML/CSS
+- Warn about render/deliverability risks
+
+After import: edit in visual builder **or** HTML source.
+
+## Professional Desktop-Style Interface
+
+Look like desktop software (VS Code, Postman, Docker Desktop, GitHub Desktop, Raycast, Warp, Linear, Notion Desktop) — not a marketing website.
+
+Required:
+
+- Dark-first design
+- Multi-panel layout
+- Resizable sidebars
+- Command palette (Ctrl/Cmd + K)
+- Keyboard shortcuts
+- Tabbed workspace
+- Dockable / toggle panels
+- Activity sidebar
+- Status bar
+- Notification center
+- Smooth animations, professional mono typography
+- Minimal modern UI, high-performance rendering
+
+Keep CRT/TUI phosphor accents; square corners; no purple SaaS gradients.
+
+## Terminal (TUI) Mode
+
+Integrated terminal-style log console for advanced users.
+
+Show live:
+
+- Campaign logs, SMTP connection logs, queue activity
+- Delivery / bounce / auth / error logs
+- Real-time system events
+
+Terminal supports: color-coded levels, search, filter, copy, download, auto-scroll, timestamps.
+
+Example:
+
+```
+[INFO] Connected to SMTP
+[SUCCESS] Email delivered
+[WARNING] Temporary bounce
+[ERROR] Authentication failed
+```
+
+## Auth / Branding
+
+- Sign-in only (no public signup CTAs)
+- ASCII / TUI auth shell branded **Inbox Flow**
+- Demo login may use `@inboxflow.io`

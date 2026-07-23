@@ -1,0 +1,34 @@
+{
+  "name": "inboxflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inbox Flow — email marketing control panel",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @inboxflow/api\" \"npm run dev -w @inboxflow/web\"",
+    "dev:api": "npm run dev -w @inboxflow/api",
+    "dev:web": "npm run dev -w @inboxflow/web",
+    "build": "npm run build -w @inboxflow/api && npm run build -w @inboxflow/web",
+    "test": "npm run test -w @inboxflow/api",
+    "smoke": "bash scripts/smoke-test.sh",
+    "db:generate": "npm run db:generate -w @inboxflow/api",
+    "db:migrate": "npm run db:migrate -w @inboxflow/api",
+    "db:seed": "npm run db:seed -w @inboxflow/api",
+    "db:setup-queues": "npm run db:setup-queues -w @inboxflow/api",
+    "db:studio": "npm run db:studio -w @inboxflow/api",
+    "worker": "npm run worker -w @inboxflow/api",
+    "lint": "npm run lint -w @inboxflow/api && npm run lint -w @inboxflow/web",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:build": "docker compose build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

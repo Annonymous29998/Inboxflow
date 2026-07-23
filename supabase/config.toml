@@ -1,0 +1,13 @@
+# Inbox Flow — Supabase Edge Functions (Nexlogs-style, no Render API for email)
+
+[functions.send-campaign-email]
+verify_jwt = false
+
+[functions.campaign-background-worker]
+verify_jwt = false
+
+[functions.manage-smtp]
+verify_jwt = false
+
+[functions.email-track]
+verify_jwt = false
