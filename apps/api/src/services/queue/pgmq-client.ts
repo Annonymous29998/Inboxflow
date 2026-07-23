@@ -35,6 +35,7 @@ export async function ensurePgmqQueues() {
       PRIMARY KEY (provider_id, hour_key)
     )
   `);
+  await prisma.$executeRawUnsafe(`ALTER TABLE "SmtpHourlySent" ENABLE ROW LEVEL SECURITY`);
 
   queuesReady = true;
 }

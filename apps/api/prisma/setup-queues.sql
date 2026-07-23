@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS "SmtpHourlySent" (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (provider_id, hour_key)
 );
+
+ALTER TABLE "SmtpHourlySent" ENABLE ROW LEVEL SECURITY;
