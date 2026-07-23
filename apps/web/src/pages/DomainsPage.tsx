@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, Circle, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Badge, Button, Card, Input, Label } from '@/components/ui';
+import { toast } from '@/stores/toast';
 
 type Domain = {
   id: string;
@@ -25,7 +26,6 @@ export function DomainsPage() {
     tip: string;
     steps: Array<{ step: number; title: string; description: string; record?: { type: string; host: string; value: string; status: string } }>;
   } | null>(null);
-  const [message, setMessage] = useState('');
 
   async function load() {
     const data = await api.get<{ domains: Domain[] }>('/api/domains');
@@ -42,24 +42,33 @@ export function DomainsPage() {
 
   async function addDomain(e: React.FormEvent) {
     e.preventDefault();
-    const data = await api.post<{ domain: Domain; instructions: typeof instructions }>('/api/domains', {
-      domain: domainInput,
-    });
-    setDomainInput('');
-    setSelected(data.domain);
-    setInstructions(data.instructions);
-    await load();
+    try {
+      const data = await api.post<{ domain: Domain; instructions: typeof instructions }>('/api/domains', {
+        domain: domainInput,
+      });
+      setDomainInput('');
+      setSelected(data.domain);
+      setInstructions(data.instructions);
+      await load();
+      toast.success('Domain added', data.domain.domain);
+    } catch (err) {
+      toast.error('Could not add domain', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function verify(id: string) {
-    setMessage('Verifying DNS…');
-    const data = await api.post<{ domain: Domain; instructions: typeof instructions; results: unknown[] }>(
-      `/api/domains/${id}/verify`,
-    );
-    setSelected(data.domain);
-    setInstructions(data.instructions);
-    setMessage(`Verification complete. Status: ${data.domain.status}`);
-    await load();
+    toast.info('Verifying DNS…');
+    try {
+      const data = await api.post<{ domain: Domain; instructions: typeof instructions; results: unknown[] }>(
+        `/api/domains/${id}/verify`,
+      );
+      setSelected(data.domain);
+      setInstructions(data.instructions);
+      toast.success('Verification complete', `Status: ${data.domain.status}`);
+      await load();
+    } catch (err) {
+      toast.error('Verification failed', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function openWizard(domain: Domain) {
@@ -74,10 +83,6 @@ export function DomainsPage() {
         <h1 className="page-title">Domain authentication</h1>
         <p className="text-ink-muted">Configure SPF, DKIM, DMARC, tracking domain, and return-path</p>
       </div>
-
-      {message && (
-        <div className="border border-primary/40 bg-primary/10 px-4 py-2 text-sm text-primary">{message}</div>
-      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">

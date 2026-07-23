@@ -5,6 +5,7 @@ import { templateService } from '@/services/template.service';
 import { NewTemplateModal } from '@/components/templates/NewTemplateModal';
 import { Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { Sparkles, Trash2 } from 'lucide-react';
+import { toast } from '@/stores/toast';
 
 const TYPES = [
   'subject_lines',
@@ -40,8 +41,10 @@ export function AiPage() {
       });
       setResults(data.results);
       setSource(data.source + (data.notice ? ` — ${data.notice}` : ''));
+      toast.success('AI suggestions ready', data.source);
     } catch (err) {
       setResults([err instanceof Error ? err.message : 'Failed']);
+      toast.error('AI generate failed', err instanceof Error ? err.message : undefined);
     } finally {
       setLoading(false);
     }
@@ -116,7 +119,6 @@ export function TemplatesPage() {
   const [templates, setTemplates] = useState<
     Array<{ id: string; name: string; description?: string | null; isPublic: boolean; organizationId?: string | null }>
   >([]);
-  const [message, setMessage] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [newTemplateOpen, setNewTemplateOpen] = useState(false);
 
@@ -130,42 +132,51 @@ export function TemplatesPage() {
   }, []);
 
   async function duplicate(id: string) {
-    await api.post(`/api/templates/${id}/duplicate`);
-    await load();
+    try {
+      await api.post(`/api/templates/${id}/duplicate`);
+      await load();
+      toast.success('Template duplicated');
+    } catch (err) {
+      toast.error('Could not duplicate', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function createTemplate(input: { name: string; file: File | null }) {
-    if (input.file) {
-      const content = await input.file.text();
-      const format = input.file.name.endsWith('.mjml') ? 'mjml' : 'html';
-      await templateService.importHtml({
-        filename: input.file.name,
-        content,
-        format,
-        templateName: input.name,
-        saveAsTemplate: true,
-      });
-      setMessage(`Imported template “${input.name}”`);
-    } else {
-      await api.post('/api/templates', {
-        name: input.name,
-        htmlContent: '<p>Hello {{firstName}}</p><a href="{{unsubscribe_url}}">Unsubscribe</a>',
-      });
-      setMessage(`Created template “${input.name}”`);
+    try {
+      if (input.file) {
+        const content = await input.file.text();
+        const format = input.file.name.endsWith('.mjml') ? 'mjml' : 'html';
+        await templateService.importHtml({
+          filename: input.file.name,
+          content,
+          format,
+          templateName: input.name,
+          saveAsTemplate: true,
+        });
+        toast.success('Template imported', input.name);
+      } else {
+        await api.post('/api/templates', {
+          name: input.name,
+          htmlContent: '<p>Hello {{firstName}}</p><a href="{{unsubscribe_url}}">Unsubscribe</a>',
+        });
+        toast.success('Template created', input.name);
+      }
+      await load();
+    } catch (err) {
+      toast.error('Could not create template', err instanceof Error ? err.message : undefined);
+      throw err;
     }
-    await load();
   }
 
   async function remove(t: (typeof templates)[number]) {
     if (!confirm(`Delete “${t.name}”? This cannot be undone.`)) return;
     setDeletingId(t.id);
-    setMessage('');
     try {
       await api.delete(`/api/templates/${t.id}`);
       setTemplates((list) => list.filter((item) => item.id !== t.id));
-      setMessage(`Deleted “${t.name}”`);
+      toast.success('Template deleted', t.name);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not delete template');
+      toast.error('Could not delete template', err instanceof Error ? err.message : undefined);
     } finally {
       setDeletingId(null);
     }
@@ -188,10 +199,6 @@ export function TemplatesPage() {
         onClose={() => setNewTemplateOpen(false)}
         onCreate={createTemplate}
       />
-
-      {message ? (
-        <div className="border border-border bg-card px-4 py-2 text-sm text-foreground">{message}</div>
-      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {templates.map((t) => (
@@ -243,7 +250,6 @@ export function SettingsPage() {
   const [createdSecret, setCreatedSecret] = useState('');
   const [address, setAddress] = useState('');
   const [sessions, setSessions] = useState<Array<{ id: string; userAgent?: string; ipAddress?: string; createdAt: string }>>([]);
-  const [savedMsg, setSavedMsg] = useState('');
 
   async function load() {
     const [k, pvd, s, me] = await Promise.all([
@@ -264,16 +270,25 @@ export function SettingsPage() {
 
   async function createKey(e: React.FormEvent) {
     e.preventDefault();
-    const data = await api.post<{ key: { secret: string } }>('/api/api-keys', { name: newKeyName });
-    setCreatedSecret(data.key.secret);
-    setNewKeyName('');
-    await load();
+    try {
+      const data = await api.post<{ key: { secret: string } }>('/api/api-keys', { name: newKeyName });
+      setCreatedSecret(data.key.secret);
+      setNewKeyName('');
+      await load();
+      toast.success('API key created', 'Copy the secret now — it won’t be shown again');
+    } catch (err) {
+      toast.error('Could not create API key', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function saveOrg(e: React.FormEvent) {
     e.preventDefault();
-    await api.patch('/api/admin/organization', { physicalAddress: address });
-    setSavedMsg('Address saved');
+    try {
+      await api.patch('/api/admin/organization', { physicalAddress: address });
+      toast.success('Address saved');
+    } catch (err) {
+      toast.error('Could not save address', err instanceof Error ? err.message : undefined);
+    }
   }
 
   return (
@@ -295,7 +310,6 @@ export function SettingsPage() {
             Save
           </Button>
         </form>
-        {savedMsg ? <p className="mt-2 text-xs text-primary">{savedMsg}</p> : null}
       </Card>
 
       <Card>
@@ -356,8 +370,13 @@ export function SettingsPage() {
               variant="ghost"
               size="sm"
               onClick={async () => {
-                await api.delete(`/api/api-keys/${k.id}`);
-                await load();
+                try {
+                  await api.delete(`/api/api-keys/${k.id}`);
+                  await load();
+                  toast.success('API key revoked');
+                } catch (err) {
+                  toast.error('Could not revoke key', err instanceof Error ? err.message : undefined);
+                }
               }}
             >
               Revoke
@@ -381,8 +400,13 @@ export function SettingsPage() {
               variant="ghost"
               size="sm"
               onClick={async () => {
-                await api.delete(`/api/auth/sessions/${s.id}`);
-                await load();
+                try {
+                  await api.delete(`/api/auth/sessions/${s.id}`);
+                  await load();
+                  toast.success('Session revoked');
+                } catch (err) {
+                  toast.error('Could not revoke session', err instanceof Error ? err.message : undefined);
+                }
               }}
             >
               Revoke

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { Badge, Button, Card, Input, Label, Select } from '@/components/ui';
 import { Download, FileUp, Plus, Search, Upload } from 'lucide-react';
+import { toast } from '@/stores/toast';
 
 type Contact = {
   id: string;
@@ -32,7 +33,6 @@ export function ContactsPage() {
   const [listId, setListId] = useState('');
   const [newListName, setNewListName] = useState('');
   const [importing, setImporting] = useState(false);
-  const [message, setMessage] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function load() {
@@ -60,10 +60,15 @@ export function ContactsPage() {
 
   async function createContact(e: React.FormEvent) {
     e.preventDefault();
-    await api.post('/api/contacts', { ...form, consent: true });
-    setShowCreate(false);
-    setForm({ email: '', firstName: '', lastName: '' });
-    await load();
+    try {
+      await api.post('/api/contacts', { ...form, consent: true });
+      setShowCreate(false);
+      setForm({ email: '', firstName: '', lastName: '' });
+      await load();
+      toast.success('Contact created', form.email);
+    } catch (err) {
+      toast.error('Could not create contact', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function readFile(file: File) {
@@ -75,11 +80,10 @@ export function ContactsPage() {
   async function importContacts(e: React.FormEvent) {
     e.preventDefault();
     if (!importText.trim()) {
-      setMessage('Choose a file or paste text containing email addresses');
+      toast.warning('Choose a file or paste text containing email addresses');
       return;
     }
     setImporting(true);
-    setMessage('');
     try {
       const payload: {
         content: string;
@@ -101,8 +105,9 @@ export function ContactsPage() {
 
       const listNote =
         result.addedToList > 0 ? ` · ${result.addedToList} added to list` : '';
-      setMessage(
-        `Imported ${result.total} emails: ${result.created} new, ${result.updated} updated, ${result.skipped} skipped${listNote}`,
+      toast.success(
+        'Import complete',
+        `${result.total} emails: ${result.created} new, ${result.updated} updated, ${result.skipped} skipped${listNote}`,
       );
       setShowImport(false);
       setImportText('');
@@ -110,7 +115,7 @@ export function ContactsPage() {
       setNewListName('');
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Import failed');
+      toast.error('Import failed', err instanceof Error ? err.message : undefined);
     } finally {
       setImporting(false);
     }
@@ -124,7 +129,7 @@ export function ContactsPage() {
       },
     });
     if (!res.ok) {
-      setMessage('Export failed — try signing in again');
+      toast.error('Export failed', 'Try signing in again');
       return;
     }
     const blob = await res.blob();
@@ -134,6 +139,7 @@ export function ContactsPage() {
     a.download = 'contacts.csv';
     a.click();
     URL.revokeObjectURL(url);
+    toast.success('Contacts exported');
   }
 
   return (
@@ -156,10 +162,6 @@ export function ContactsPage() {
           </Button>
         </div>
       </div>
-
-      {message ? (
-        <div className="border border-primary/40 bg-primary/10 px-4 py-2 text-sm text-primary">{message}</div>
-      ) : null}
 
       <Card className="overflow-hidden p-3 sm:p-5">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row">

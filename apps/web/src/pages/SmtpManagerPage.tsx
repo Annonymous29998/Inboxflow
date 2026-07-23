@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import { smtpService, type SmtpProfile } from '@/services/smtp.service';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
+import { toast } from '@/stores/toast';
 
 type FormState = {
   name: string;
@@ -79,7 +80,6 @@ export function SmtpManagerPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [testTo, setTestTo] = useState('');
-  const [status, setStatus] = useState<string>('');
   const [issues, setIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [showPass, setShowPass] = useState(false);
@@ -88,7 +88,6 @@ export function SmtpManagerPage() {
   const [rotationMode, setRotationMode] = useState<'failover' | 'round_robin' | 'weighted'>(
     'round_robin',
   );
-  const [rotationStatus, setRotationStatus] = useState('');
 
   const selected = useMemo(
     () => providers.find((p) => p.id === editingId) || null,
@@ -132,13 +131,14 @@ export function SmtpManagerPage() {
           smtpRotation: { enabled: rotationEnabled, mode: rotationMode },
         },
       });
-      setRotationStatus(
+      toast.success(
+        'Rotation settings saved',
         rotationEnabled
-          ? `Rotation saved: ${rotationMode.replace('_', ' ')} across active SMTPs (limits respected)`
+          ? `${rotationMode.replace('_', ' ')} across active SMTPs (limits respected)`
           : 'Rotation disabled — campaigns use selected SMTP with priority failover',
       );
     } catch (err) {
-      setRotationStatus(err instanceof Error ? err.message : 'Could not save rotation');
+      toast.error('Could not save rotation', err instanceof Error ? err.message : undefined);
     }
   }
 
@@ -155,7 +155,6 @@ export function SmtpManagerPage() {
     setShowPass(false);
     setLastTestOk(false);
     setIssues([]);
-    setStatus('');
   }
 
   async function startEdit(p: SmtpProfile) {
@@ -202,11 +201,11 @@ export function SmtpManagerPage() {
 
   async function testConnection(sendEmail = false) {
     setBusy(true);
-    setStatus(sendEmail ? 'Testing and sending…' : 'Testing…');
+    toast.info(sendEmail ? 'Testing and sending…' : 'Testing connection…');
     try {
       if (sendEmail && !testTo.trim()) {
         setLastTestOk(false);
-        setStatus('Enter a recipient email for Test & send');
+        toast.warning('Enter a recipient email for Test & send');
         return;
       }
 
@@ -220,11 +219,15 @@ export function SmtpManagerPage() {
       });
 
       setLastTestOk(result.success);
-      setStatus(result.success ? result.message : result.error || result.message);
+      if (result.success) {
+        toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
+      } else {
+        toast.error('SMTP test failed', result.error || result.message);
+      }
       if (editingId) await load();
     } catch (err) {
       setLastTestOk(false);
-      setStatus(err instanceof Error ? err.message : 'Test failed');
+      toast.error('SMTP test failed', err instanceof Error ? err.message : undefined);
     } finally {
       setBusy(false);
     }
@@ -234,7 +237,7 @@ export function SmtpManagerPage() {
     setBusy(true);
     try {
       if (activate && !lastTestOk && (!selected || selected.lastTestStatus !== 'Connected')) {
-        setStatus('Run Test Connection successfully before activating');
+        toast.warning('Run Test Connection successfully before activating');
         return;
       }
       const payload = {
@@ -262,19 +265,19 @@ export function SmtpManagerPage() {
       if (activate && profileId) {
         const test = await smtpService.testConnection({ providerId: profileId });
         if (!test.success) {
-          setStatus('Saved, but activation blocked — connection test failed');
+          toast.error('Saved, but activation blocked', 'Connection test failed');
           await load();
           return;
         }
         await smtpService.update(profileId, { isActive: true, isDefault: form.isDefault });
-        setStatus('Saved and activated');
+        toast.success('SMTP saved and activated');
       } else {
-        setStatus('Saved (inactive until activated after a successful test)');
+        toast.success('SMTP saved', 'Inactive until activated after a successful test');
       }
       setLastTestOk(true);
       await load();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : 'Save failed');
+      toast.error('Save failed', err instanceof Error ? err.message : undefined);
     } finally {
       setBusy(false);
     }
@@ -283,21 +286,27 @@ export function SmtpManagerPage() {
   async function toggleActive(p: SmtpProfile) {
     try {
       if (!p.isActive && p.lastTestStatus !== 'Connected') {
-        setStatus('Test connection first before enabling');
+        toast.warning('Test connection first before enabling');
         return;
       }
       await smtpService.update(p.id, { isActive: !p.isActive });
+      toast.success(p.isActive ? 'SMTP deactivated' : 'SMTP activated');
       await load();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : 'Update failed');
+      toast.error('Update failed', err instanceof Error ? err.message : undefined);
     }
   }
 
   async function remove(id: string) {
     if (!confirm('Delete this SMTP profile?')) return;
-    await smtpService.remove(id);
-    if (editingId === id) startCreate();
-    await load();
+    try {
+      await smtpService.remove(id);
+      if (editingId === id) startCreate();
+      await load();
+      toast.success('SMTP profile deleted');
+    } catch (err) {
+      toast.error('Delete failed', err instanceof Error ? err.message : undefined);
+    }
   }
 
   return (
@@ -314,17 +323,6 @@ export function SmtpManagerPage() {
           <Plus className="h-4 w-4" /> Add SMTP
         </Button>
       </div>
-
-      {status ? (
-        <div
-          className={cn(
-            'border px-3 py-2 text-xs',
-            lastTestOk ? 'border-primary/40 text-primary' : 'border-destructive/40 text-destructive',
-          )}
-        >
-          {status}
-        </div>
-      ) : null}
 
       <div className="tui-box">
         <div className="tui-box-title">SMTP rotation</div>
@@ -359,7 +357,6 @@ export function SmtpManagerPage() {
           <Button size="sm" onClick={() => void saveRotation()}>
             Save rotation settings
           </Button>
-          {rotationStatus ? <p className="text-xs text-primary">{rotationStatus}</p> : null}
         </div>
       </div>
 

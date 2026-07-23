@@ -32,6 +32,15 @@ import { scrubCampaignEditorContent } from '@/lib/spam-content-filter';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
+import { toast } from '@/stores/toast';
+
+function flash(message: string, tone: 'success' | 'error' | 'warning' | 'info' = 'success') {
+  if (!message) return;
+  if (tone === 'error') toast.error(message);
+  else if (tone === 'warning') toast.warning(message);
+  else if (tone === 'info') toast.info(message);
+  else toast.success(message);
+}
 
 type ProviderOption = {
   id: string;
@@ -168,7 +177,6 @@ function blocksToHtml(blocks: EditorBlock[], dark = false): string {
 
 export function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [message, setMessage] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const navigate = useNavigate();
 
@@ -185,18 +193,17 @@ export function CampaignsPage() {
     e.preventDefault();
     e.stopPropagation();
     if (c.status === 'SENDING') {
-      setMessage('Cancel the send first, then delete this campaign.');
+      flash('Cancel the send first, then delete this campaign.', 'warning');
       return;
     }
     if (!confirm(`Delete “${c.name}”? This cannot be undone.`)) return;
     setDeletingId(c.id);
-    setMessage('');
     try {
       await api.delete(`/api/campaigns/${c.id}`);
       setCampaigns((list) => list.filter((item) => item.id !== c.id));
-      setMessage(`Deleted “${c.name}”`);
+      flash(`Deleted “${c.name}”`);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not delete campaign');
+      flash(err instanceof Error ? err.message : 'Could not delete campaign', 'error');
     } finally {
       setDeletingId(null);
     }
@@ -213,10 +220,6 @@ export function CampaignsPage() {
           <Plus className="h-4 w-4" /> New campaign
         </Button>
       </div>
-
-      {message ? (
-        <div className="border border-border bg-card px-4 py-2 text-sm text-foreground">{message}</div>
-      ) : null}
 
       <div className="grid gap-3">
         {campaigns.map((c) => (
@@ -286,7 +289,6 @@ export function CampaignEditorPage() {
   const [report, setReport] = useState<DeliverabilityReport | null>(null);
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
-  const [message, setMessage] = useState('');
   const [sendOpen, setSendOpen] = useState(false);
   const [sendPhase, setSendPhase] = useState<SendFlowPhase>('confirm');
   const [sendCount, setSendCount] = useState(0);
@@ -369,17 +371,16 @@ export function CampaignEditorPage() {
     if (!templateId) {
       setCampaign((c) => ({ ...c, templateId: null }));
       setBlocks([]);
-      setMessage('Template cleared — select one from the list');
+      flash('Template cleared — select one from the list', 'info');
       return;
     }
 
     setTemplateLoading(true);
-    setMessage('');
     try {
       const template = await templateService.get(templateId);
       const html = template.htmlContent?.trim() || '';
       if (!html) {
-        setMessage('That template has no HTML content');
+        flash('That template has no HTML content', 'error');
         return;
       }
 
@@ -396,7 +397,7 @@ export function CampaignEditorPage() {
         plainTextContent: template.plainText || c.plainTextContent,
         name: c.name && c.name !== 'Untitled campaign' ? c.name : template.name,
       }));
-      setMessage(`Loaded template: ${template.name}`);
+      flash(`Loaded template: ${template.name}`);
 
       if (!isNew && id) {
         await api.patch(`/api/campaigns/${id}`, {
@@ -407,7 +408,7 @@ export function CampaignEditorPage() {
         });
       }
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not load template');
+      flash(err instanceof Error ? err.message : 'Could not load template', 'error');
     } finally {
       setTemplateLoading(false);
     }
@@ -443,7 +444,6 @@ export function CampaignEditorPage() {
 
   async function save(andAnalyze = false) {
     setSaving(true);
-    setMessage('');
     try {
       const htmlForSave = blocksToHtml(blocks, false);
       const plainFromBlocks = blocks
@@ -488,12 +488,12 @@ export function CampaignEditorPage() {
       if (andAnalyze && campaignId) {
         const result = await api.post<{ report: DeliverabilityReport }>(`/api/campaigns/${campaignId}/analyze`);
         setReport(result.report);
-        setMessage(`Deliverability score: ${result.report.score}/100 (${scoreLabel(result.report.score)})`);
+        flash(`Deliverability score: ${result.report.score}/100 (${scoreLabel(result.report.score)})`);
       } else {
-        setMessage('Saved');
+        flash('Saved');
       }
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Save failed');
+      flash(err instanceof Error ? err.message : 'Save failed', 'error');
     } finally {
       setSaving(false);
     }
@@ -518,10 +518,11 @@ export function CampaignEditorPage() {
       setBlocks([{ id: crypto.randomUUID(), type: 'html', content: scrubbed.htmlContent }]);
     }
 
-    setMessage(
+    flash(
       scrubbed.changed
         ? `Scrubbed spam phrases: ${scrubbed.removed.join(', ') || 'content cleaned'}`
         : 'No spam trigger phrases found',
+      'info',
     );
 
     if (!isNew && id) {
@@ -571,8 +572,9 @@ export function CampaignEditorPage() {
       return;
     }
     if (!deliverability.canSend) {
-      setMessage(
+      flash(
         deliverability.failures[0]?.detail || 'Fix inbox placement checks before sending.',
+        'warning',
       );
       return;
     }
@@ -588,7 +590,7 @@ export function CampaignEditorPage() {
       setSendError('');
       setSendOpen(true);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not prepare send');
+      flash(err instanceof Error ? err.message : 'Could not prepare send', 'error');
     }
   }
 
@@ -642,10 +644,11 @@ export function CampaignEditorPage() {
           setSendCancelled(status.status === 'CANCELLED');
           setSendPhase('success');
           setCampaign((c) => ({ ...c, status: status.status as Campaign['status'] }));
-          setMessage(
+          flash(
             status.status === 'CANCELLED'
               ? `Send cancelled — ${status.sentCount} sent, ${status.failedCount} failed`
               : `Send complete — ${status.sentCount} sent, ${status.failedCount} failed`,
+            status.status === 'CANCELLED' ? 'warning' : 'success',
           );
         }
       } catch {
@@ -671,9 +674,9 @@ export function CampaignEditorPage() {
         count: 5,
       });
       if (data.results[0]) setCampaign((c) => ({ ...c, subject: data.results[0] }));
-      setMessage(`AI suggestions: ${data.results.join(' · ')}`);
+      flash(`AI suggestions: ${data.results.join(' · ', 'info')}`);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'AI failed');
+      flash(err instanceof Error ? err.message : 'AI failed', 'error');
     } finally {
       setAiLoading(false);
     }
@@ -682,7 +685,7 @@ export function CampaignEditorPage() {
   async function deleteCurrentCampaign() {
     if (!id || isNew) return;
     if (campaign.status === 'SENDING') {
-      setMessage('Cancel the send first, then delete this campaign.');
+      flash('Cancel the send first, then delete this campaign.', 'warning');
       return;
     }
     if (!confirm(`Delete “${campaign.name || 'this campaign'}”? This cannot be undone.`)) return;
@@ -690,7 +693,7 @@ export function CampaignEditorPage() {
       await api.delete(`/api/campaigns/${id}`);
       navigate('/app/campaigns');
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not delete campaign');
+      flash(err instanceof Error ? err.message : 'Could not delete campaign', 'error');
     }
   }
 
@@ -737,9 +740,6 @@ export function CampaignEditorPage() {
         </div>
       </div>
 
-      {message && (
-        <div className="border border-border bg-card px-4 py-2 text-sm text-foreground">{message}</div>
-      )}
 
       <SendProgressModal
         open={sendOpen}
@@ -887,11 +887,12 @@ export function CampaignEditorPage() {
                     }>('/api/lists');
                     setLists(refreshed.lists);
                     setCampaign({ ...campaign, listId: data.list.id });
-                    setMessage(
+                    flash(
                       `List “${data.list.name}” created. Add contacts to it from Contacts, then send.`,
+                      'info',
                     );
                   } catch (err) {
-                    setMessage(err instanceof Error ? err.message : 'Could not create list');
+                    flash(err instanceof Error ? err.message : 'Could not create list', 'error');
                   }
                 }}
               >
@@ -1274,7 +1275,7 @@ export function CampaignEditorPage() {
               className="w-full"
               onClick={() => {
                 void navigator.clipboard.writeText(html);
-                setMessage('HTML copied to clipboard');
+                flash('HTML copied to clipboard', 'info');
               }}
             >
               Copy HTML
