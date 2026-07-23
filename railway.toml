@@ -1,9 +1,15 @@
 # Default config for @inboxflow/api on Railway.
-# In the web service settings, override or delete that service (host web on Vercel).
+# Only rebuild when API-related files change (web-only pushes skip API redeploy).
 
 [build]
 builder = "NIXPACKS"
 buildCommand = "npm install && npm run build -w @inboxflow/api"
+watchPatterns = [
+  "apps/api/**",
+  "package.json",
+  "package-lock.json",
+  "railway.toml"
+]
 
 [deploy]
 startCommand = "npm run start -w @inboxflow/api"

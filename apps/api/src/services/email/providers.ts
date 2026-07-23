@@ -55,6 +55,7 @@ export type SmtpTestInput = {
   ignoreTLS?: boolean | string;
   fromEmail?: string;
   fromName?: string;
+  replyTo?: string;
   [key: string]: string | number | boolean | undefined;
 };
 
@@ -158,23 +159,34 @@ export async function testSmtpConnection(config: SmtpTestInput): Promise<Connect
 
 /**
  * Optionally send a real test email after verify().
+ * From display: sender name if set, otherwise bare from-email (never a hardcoded brand).
+ * Body: optional notes, otherwise a short connection confirmation.
  */
 export async function sendSmtpTestEmail(
   config: SmtpTestInput,
   to: string,
+  options?: { notes?: string | null },
 ): Promise<ConnectionTestResult & { messageId?: string }> {
   const verify = await testSmtpConnection(config);
   if (!verify.success) return verify;
 
-  const fromEmail = config.fromEmail || config.user || 'noreply@localhost';
+  const fromEmail = String(config.fromEmail || config.user || '').trim() || 'noreply@localhost';
+  const fromName = String(config.fromName || '').trim();
+  const notes = String(options?.notes || '').trim();
+  const bodyText = notes || 'Your SMTP connection is working.';
+  const bodyHtml = notes
+    ? `<p>${notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`
+    : '<p>Your SMTP connection is working.</p>';
+
   try {
     const transport = createSmtpTransport(config);
     const info = await transport.sendMail({
-      from: config.fromName ? `"${config.fromName}" <${fromEmail}>` : fromEmail,
+      from: fromName ? `"${fromName.replaceAll('"', '')}" <${fromEmail}>` : fromEmail,
       to,
-      subject: 'Inbox Flow SMTP test',
-      text: 'Your SMTP connection is working. This is a test message from Inbox Flow.',
-      html: '<p>Your SMTP connection is working.</p><p>This is a test message from Inbox Flow.</p>',
+      replyTo: config.replyTo || undefined,
+      subject: 'SMTP connection test',
+      text: bodyText,
+      html: bodyHtml,
     });
     return {
       ...verify,

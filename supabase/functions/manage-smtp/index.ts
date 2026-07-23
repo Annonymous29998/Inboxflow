@@ -205,7 +205,7 @@ Deno.serve(async (req) => {
             (inlineConfig?.encryption === 'STARTTLS' ? false : base.secure !== false && port === 465),
           user: String(inlineConfig?.user || base.user || ''),
           pass,
-          fromName: String(inlineConfig?.fromName || base.fromName || 'Inbox Flow'),
+          fromName: String(inlineConfig?.fromName || base.fromName || '').trim(),
           fromEmail: String(inlineConfig?.fromEmail || base.fromEmail || inlineConfig?.user || base.user || ''),
         };
       } else if (inlineConfig?.host) {
@@ -217,7 +217,7 @@ Deno.serve(async (req) => {
           secure: inlineConfig.secure === 'true' || port === 465,
           user: String(inlineConfig.user || ''),
           pass: String(inlineConfig.pass || ''),
-          fromName: String(inlineConfig.fromName || 'Inbox Flow'),
+          fromName: String(inlineConfig.fromName || '').trim(),
           fromEmail: String(inlineConfig.fromEmail || inlineConfig.user || ''),
           isDefault: false,
         };
@@ -233,14 +233,21 @@ Deno.serve(async (req) => {
         let message = 'SMTP connection verified';
 
         if (sendTestEmail) {
+          const notes = String(body.notes || inlineConfig?.notes || '').trim();
+          const bodyText = notes || 'Your SMTP connection is working.';
+          const bodyHtml = notes
+            ? `<p>${notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`
+            : '<p>Your SMTP connection is working.</p>';
+          const fromName = String(smtp.fromName || '').trim();
           const sent = await sendViaSmtp(
             {
               to: testEmailTo,
-              subject: 'Inbox Flow SMTP test',
-              text: 'Your SMTP connection is working. This is a test message from Inbox Flow.',
-              html: '<p>Your SMTP connection is working.</p><p>This is a test message from Inbox Flow.</p>',
+              subject: 'SMTP connection test',
+              text: bodyText,
+              html: bodyHtml,
               fromEmail: smtp.fromEmail || smtp.user || 'noreply@localhost',
-              fromName: smtp.fromName || 'Inbox Flow',
+              fromName,
+              replyTo: smtp.replyTo,
             },
             smtp,
           );

@@ -167,6 +167,7 @@ export const smtpService = {
     config?: Record<string, string>;
     sendTestEmail?: boolean;
     testEmailTo?: string;
+    notes?: string | null;
   }): Promise<{ success: boolean; message: string; error?: string; messageId?: string }> {
     if (edgeFunctionsEnabled) {
       const data = await invokeEdgeFunction<{
@@ -181,6 +182,7 @@ export const smtpService = {
         config: input.config,
         sendTestEmail: Boolean(input.sendTestEmail),
         testEmailTo: input.testEmailTo,
+        notes: input.notes || undefined,
       });
       return {
         success: Boolean(data.success),
@@ -199,6 +201,7 @@ export const smtpService = {
         sendTestEmail: Boolean(input.sendTestEmail),
         testEmailTo: input.testEmailTo,
         config: input.config,
+        notes: input.notes || undefined,
       });
       return data.result;
     }
@@ -210,6 +213,7 @@ export const smtpService = {
       config: input.config,
       sendTestEmail: Boolean(input.sendTestEmail),
       testEmailTo: input.testEmailTo,
+      notes: input.notes || undefined,
     });
     return data.result;
   },

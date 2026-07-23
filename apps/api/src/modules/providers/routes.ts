@@ -339,6 +339,7 @@ export async function providerRoutes(app: FastifyInstance) {
           config: z.record(z.union([z.string(), z.number(), z.boolean()])),
           sendTestEmail: z.boolean().default(false),
           testEmailTo: z.string().email().optional(),
+          notes: z.string().optional().nullable(),
         })
         .parse(request.body);
 
@@ -359,7 +360,7 @@ export async function providerRoutes(app: FastifyInstance) {
       let result;
       if (body.type === 'SMTP' && body.sendTestEmail) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
-        result = await sendSmtpTestEmail(config, body.testEmailTo);
+        result = await sendSmtpTestEmail(config, body.testEmailTo, { notes: body.notes });
       } else {
         result =
           body.type === 'SMTP'
@@ -391,6 +392,7 @@ export async function providerRoutes(app: FastifyInstance) {
         .object({
           sendTestEmail: z.boolean().default(false),
           testEmailTo: z.string().email().optional(),
+          notes: z.string().optional().nullable(),
           config: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
         })
         .parse(request.body ?? {});
@@ -421,7 +423,9 @@ export async function providerRoutes(app: FastifyInstance) {
       let result;
       if (provider.type === 'SMTP' && body.sendTestEmail) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
-        result = await sendSmtpTestEmail(config, body.testEmailTo);
+        result = await sendSmtpTestEmail(config, body.testEmailTo, {
+          notes: body.notes ?? (typeof provider.notes === 'string' ? provider.notes : null),
+        });
       } else {
         result = await testProviderConnection(provider.type, config);
       }

@@ -67,7 +67,7 @@ export async function resolveSmtpProvider(
     secure,
     user: String(cfg.user),
     pass: String(cfg.pass),
-    fromName: String(cfg.fromName || data.name || 'Inbox Flow'),
+    fromName: String(cfg.fromName || ''),
     fromEmail: String(cfg.fromEmail || cfg.user || ''),
     replyTo: cfg.replyTo ? String(cfg.replyTo) : undefined,
     isDefault: Boolean(data.isDefault),
@@ -82,13 +82,15 @@ export async function sendViaSmtp(
     text?: string;
     headers?: Record<string, string>;
     fromEmail: string;
-    fromName: string;
+    fromName?: string;
     replyTo?: string;
   },
   smtp: SmtpConfig,
 ) {
   const nodemailer = await import('npm:nodemailer@6.9.16');
-  const from = `"${input.fromName.replaceAll('"', '')}" <${input.fromEmail}>`;
+  const from = input.fromName?.trim()
+    ? `"${input.fromName.replaceAll('"', '')}" <${input.fromEmail}>`
+    : input.fromEmail;
 
   const attempts = smtp.isDefault
     ? [

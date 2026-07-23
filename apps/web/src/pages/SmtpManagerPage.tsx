@@ -216,6 +216,7 @@ export function SmtpManagerPage() {
         config: buildConfig(),
         sendTestEmail: sendEmail,
         testEmailTo: sendEmail ? testTo.trim() : undefined,
+        notes: form.notes.trim() || null,
       });
 
       setLastTestOk(result.success);
@@ -472,11 +473,11 @@ export function SmtpManagerPage() {
                 </div>
               </div>
               <div>
-                <Label>Sender name</Label>
+                <Label>Sender name (optional)</Label>
                 <Input
                   value={form.fromName}
                   onChange={(e) => setForm({ ...form, fromName: e.target.value })}
-                  placeholder="Inbox Flow"
+                  placeholder="Leave blank to show only the sender email"
                 />
               </div>
               <div>
@@ -538,11 +539,12 @@ export function SmtpManagerPage() {
             </div>
 
             <div>
-              <Label>Notes</Label>
+              <Label>Notes (used as Test & send email body)</Label>
               <Textarea
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 className="min-h-[72px]"
+                placeholder="Optional — if empty, test email says: Your SMTP connection is working."
               />
             </div>
 

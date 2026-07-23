@@ -28,7 +28,7 @@ import {
   CampaignDeliverabilityPanel,
   useCampaignDeliverability,
 } from '@/components/campaigns/CampaignDeliverabilityPanel';
-import { scrubCampaignEditorContent } from '@/lib/spam-content-filter';
+import { scrubCampaignEditorContent, scrubSpamFromHtml, scrubSpamFromText } from '@/lib/spam-content-filter';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
@@ -40,6 +40,23 @@ function flash(message: string, tone: 'success' | 'error' | 'warning' | 'info' =
   else if (tone === 'warning') toast.warning(message);
   else if (tone === 'info') toast.info(message);
   else toast.success(message);
+}
+
+/** Scrub spam phrases from imported / pasted campaign HTML and show a toast if anything changed. */
+function scrubImportedHtml(html: string, plainText?: string | null) {
+  const scrubbed = scrubCampaignEditorContent({
+    subject: '',
+    previewText: '',
+    htmlContent: html,
+    plainTextContent: plainText || undefined,
+  });
+  if (scrubbed.changed && scrubbed.removed.length) {
+    flash(
+      `Spam phrases removed on import: ${scrubbed.removed.slice(0, 5).join(', ')}${scrubbed.removed.length > 5 ? '…' : ''}`,
+      'info',
+    );
+  }
+  return scrubbed;
 }
 
 type ProviderOption = {
@@ -322,9 +339,13 @@ export function CampaignEditorPage() {
     [providers, campaign.providerId],
   );
 
-  const fromName = campaign.senderName || selectedProvider?.fromName || 'Inbox Flow';
-  const fromEmail = campaign.senderEmail || selectedProvider?.fromEmail || selectedProvider?.name || '';
-  const fromLabel = fromEmail ? `${fromName} <${fromEmail}>` : fromName;
+  const fromName = campaign.senderName || selectedProvider?.fromName || '';
+  const fromEmail = campaign.senderEmail || selectedProvider?.fromEmail || '';
+  const fromLabel = fromEmail
+    ? fromName
+      ? `${fromName} <${fromEmail}>`
+      : fromEmail
+    : fromName || 'Set sender email';
 
   const deliverability = useCampaignDeliverability(
     campaign.subject || '',
@@ -378,14 +399,18 @@ export function CampaignEditorPage() {
     setTemplateLoading(true);
     try {
       const template = await templateService.get(templateId);
-      const html = template.htmlContent?.trim() || '';
-      if (!html) {
+      const rawHtml = template.htmlContent?.trim() || '';
+      if (!rawHtml) {
         flash('That template has no HTML content', 'error');
         return;
       }
 
+      const scrubbed = scrubImportedHtml(rawHtml, template.plainText);
+      const html = scrubbed.htmlContent;
+      const plain = scrubbed.plainTextContent || template.plainText || '';
+
       const nextBlocks =
-        template.editorJson?.blocks?.length && template.editorJson.blocks[0]?.content
+        template.editorJson?.blocks?.length && template.editorJson.blocks[0]?.content && !scrubbed.changed
           ? template.editorJson.blocks
           : templateHtmlToBlocks(html);
 
@@ -394,7 +419,7 @@ export function CampaignEditorPage() {
         ...c,
         templateId,
         htmlContent: html,
-        plainTextContent: template.plainText || c.plainTextContent,
+        plainTextContent: plain || c.plainTextContent,
         name: c.name && c.name !== 'Untitled campaign' ? c.name : template.name,
       }));
       flash(`Loaded template: ${template.name}`);
@@ -403,7 +428,7 @@ export function CampaignEditorPage() {
         await api.patch(`/api/campaigns/${id}`, {
           templateId,
           htmlContent: html,
-          plainTextContent: template.plainText,
+          plainTextContent: plain,
           editorJson: { blocks: nextBlocks },
         });
       }
@@ -845,7 +870,7 @@ export function CampaignEditorPage() {
               <Input
                 value={campaign.senderName || ''}
                 onChange={(e) => setCampaign({ ...campaign, senderName: e.target.value })}
-                placeholder={selectedProvider?.fromName || 'Inbox Flow'}
+                placeholder={selectedProvider?.fromName || 'Optional — blank uses sender email only'}
               />
             </div>
             <div>
@@ -990,19 +1015,38 @@ export function CampaignEditorPage() {
                     saveAsTemplate: true,
                   });
 
+                  const scrubbed = scrubImportedHtml(result.html, result.plainText);
+                  const cleanHtml = scrubbed.htmlContent;
+                  const cleanPlain = scrubbed.plainTextContent || result.plainText;
+
                   if (result.template) {
                     setTemplates((prev) => {
                       const exists = prev.some((t) => t.id === result.template!.id);
                       if (exists) return prev;
                       return [result.template!, ...prev];
                     });
-                    await applyTemplate(result.template.id);
-                  } else {
-                    setBlocks(templateHtmlToBlocks(result.html));
+                    setBlocks(templateHtmlToBlocks(cleanHtml));
                     setCampaign((c) => ({
                       ...c,
-                      htmlContent: result.html,
-                      plainTextContent: result.plainText,
+                      templateId: result.template!.id,
+                      htmlContent: cleanHtml,
+                      plainTextContent: cleanPlain,
+                      name: c.name && c.name !== 'Untitled campaign' ? c.name : result.template!.name,
+                    }));
+                    if (!isNew && id) {
+                      await api.patch(`/api/campaigns/${id}`, {
+                        templateId: result.template.id,
+                        htmlContent: cleanHtml,
+                        plainTextContent: cleanPlain,
+                        editorJson: { blocks: templateHtmlToBlocks(cleanHtml) },
+                      });
+                    }
+                  } else {
+                    setBlocks(templateHtmlToBlocks(cleanHtml));
+                    setCampaign((c) => ({
+                      ...c,
+                      htmlContent: cleanHtml,
+                      plainTextContent: cleanPlain,
                     }));
                   }
 
@@ -1010,13 +1054,16 @@ export function CampaignEditorPage() {
                     ...result.validation.flags.map((f) => `Flag: ${f}`),
                     ...result.validation.warnings.map((w) => `Warn: ${w}`),
                   ];
-                  setImportStatus(
+                  flash(
                     notes.length
-                      ? `Saved to library — ${notes.slice(0, 2).join(' · ')}`
-                      : 'Template imported and applied',
+                      ? `Imported — ${notes.slice(0, 2).join(' · ')}`
+                      : 'Template imported and spam-filtered',
+                    'success',
                   );
+                  setImportStatus('');
                 } catch (err) {
-                  setImportStatus(err instanceof Error ? err.message : 'Import failed');
+                  flash(err instanceof Error ? err.message : 'Import failed', 'error');
+                  setImportStatus('');
                 } finally {
                   e.target.value = '';
                 }
@@ -1087,6 +1134,27 @@ export function CampaignEditorPage() {
                       onChange={(e) =>
                         setBlocks((bs) => bs.map((b, i) => (i === idx ? { ...b, content: e.target.value } : b)))
                       }
+                      onPaste={(e) => {
+                        const pasted = e.clipboardData.getData('text');
+                        if (!pasted.trim()) return;
+                        e.preventDefault();
+                        const scrubbed =
+                          block.type === 'html'
+                            ? scrubSpamFromHtml(pasted)
+                            : scrubSpamFromText(pasted, { trim: false });
+                        const next = scrubbed.text;
+                        const el = e.currentTarget;
+                        const start = el.selectionStart ?? block.content.length;
+                        const end = el.selectionEnd ?? start;
+                        const merged = block.content.slice(0, start) + next + block.content.slice(end);
+                        setBlocks((bs) => bs.map((b, i) => (i === idx ? { ...b, content: merged } : b)));
+                        if (scrubbed.changed && scrubbed.removed.length) {
+                          flash(
+                            `Spam phrases removed from paste: ${scrubbed.removed.slice(0, 5).join(', ')}`,
+                            'info',
+                          );
+                        }
+                      }}
                     />
                   ) : block.type === 'button' ? (
                     <div className="space-y-2">
