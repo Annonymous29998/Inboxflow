@@ -1,5 +1,7 @@
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { parseProviderConfig } from './crypto.ts';
+import { htmlToPlainText } from './deliverability.ts';
+import { buildMessageId, formatFromHeader } from './mail-headers.ts';
 
 export interface SmtpConfig {
   id: string;
@@ -88,9 +90,10 @@ export async function sendViaSmtp(
   smtp: SmtpConfig,
 ) {
   const nodemailer = await import('npm:nodemailer@6.9.16');
-  const from = input.fromName?.trim()
-    ? `"${input.fromName.replaceAll('"', '')}" <${input.fromEmail}>`
-    : input.fromEmail;
+  const fromEmail = input.fromEmail.trim();
+  const from = formatFromHeader(fromEmail, input.fromName);
+  const text = (input.text && input.text.trim()) || htmlToPlainText(input.html || '');
+  const messageId = buildMessageId(fromEmail);
 
   const attempts = smtp.isDefault
     ? [
@@ -121,7 +124,7 @@ export async function sendViaSmtp(
         greetingTimeout: 15000,
       });
 
-      const messageId = await new Promise<string | undefined>((resolve, reject) => {
+      const resolvedId = await new Promise<string | undefined>((resolve, reject) => {
         transport.sendMail(
           {
             from,
@@ -129,8 +132,15 @@ export async function sendViaSmtp(
             replyTo: input.replyTo,
             subject: input.subject,
             html: input.html,
-            text: input.text,
+            text,
             headers: input.headers,
+            messageId,
+            date: new Date(),
+            // Envelope From must match authenticated sender domain when possible
+            envelope: {
+              from: fromEmail,
+              to: input.to,
+            },
           },
           (error: Error | null, info?: { messageId?: string }) => {
             if (error) reject(error);
@@ -139,7 +149,7 @@ export async function sendViaSmtp(
         );
       });
 
-      return { messageId: messageId || `smtp-${Date.now()}` };
+      return { messageId: resolvedId || messageId };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }

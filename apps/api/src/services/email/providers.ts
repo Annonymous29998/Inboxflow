@@ -2,6 +2,17 @@ import nodemailer from 'nodemailer';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { decrypt } from '../../utils/crypto.js';
 import type { ProviderType } from '@prisma/client';
+import { buildMessageId, formatFromHeader } from './mail-headers.js';
+
+function htmlToPlainText(html: string) {
+  return html
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export interface SendEmailPayload {
   to: string;
@@ -177,16 +188,20 @@ export async function sendSmtpTestEmail(
   const bodyHtml = notes
     ? `<p>${notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`
     : '<p>Your SMTP connection is working.</p>';
+  const messageId = buildMessageId(fromEmail);
 
   try {
     const transport = createSmtpTransport(config);
     const info = await transport.sendMail({
-      from: fromName ? `"${fromName.replaceAll('"', '')}" <${fromEmail}>` : fromEmail,
+      from: formatFromHeader(fromEmail, fromName),
       to,
       replyTo: config.replyTo || undefined,
       subject: 'SMTP connection test',
       text: bodyText,
       html: bodyHtml,
+      messageId,
+      date: new Date(),
+      envelope: { from: fromEmail, to },
     });
     return {
       ...verify,
@@ -276,23 +291,28 @@ async function sendSmtp(
   options: SmtpSendOptions = {},
 ): Promise<SendResult> {
   const host = config.host || 'localhost';
-  const fromName = (payload.fromName || config.fromName || '').replaceAll('"', '');
   const fromEmail = payload.from || config.fromEmail || config.user || 'noreply@localhost';
-  const from = fromName ? `"${fromName}" <${fromEmail}>` : fromEmail;
+  const from = formatFromHeader(fromEmail, payload.fromName || config.fromName);
+  const text = (payload.text && payload.text.trim()) || htmlToPlainText(payload.html || '');
+  const messageId = payload.messageId || buildMessageId(fromEmail);
+  const mail = {
+    from,
+    to: payload.to,
+    replyTo: payload.replyTo,
+    subject: payload.subject,
+    html: payload.html,
+    text,
+    headers: payload.headers,
+    messageId,
+    date: new Date(),
+    envelope: { from: fromEmail, to: payload.to },
+  };
 
   if (host === 'json' || host === 'dev' || host === 'console') {
     const transport = createSmtpTransport(config);
-    const info = await transport.sendMail({
-      from,
-      to: payload.to,
-      replyTo: payload.replyTo,
-      subject: payload.subject,
-      html: payload.html,
-      text: payload.text,
-      headers: payload.headers,
-    });
+    const info = await transport.sendMail(mail);
     console.log('[dev-send]', payload.to, payload.subject);
-    return { success: true, messageId: info.messageId || `dev-${Date.now()}`, provider: 'SMTP' };
+    return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
   }
 
   const basePort = Number(config.port || 465);
@@ -322,16 +342,8 @@ async function sendSmtp(
         secure: attempt.secure,
         requireTLS: !attempt.secure && attempt.port === 587,
       });
-      const info = await transport.sendMail({
-        from,
-        to: payload.to,
-        replyTo: payload.replyTo,
-        subject: payload.subject,
-        html: payload.html,
-        text: payload.text,
-        headers: payload.headers,
-      });
-      return { success: true, messageId: info.messageId || `smtp-${Date.now()}`, provider: 'SMTP' };
+      const info = await transport.sendMail(mail);
+      return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'SMTP send failed';
     }

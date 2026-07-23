@@ -222,6 +222,24 @@ export function SmtpManagerPage() {
       setLastTestOk(result.success);
       if (result.success) {
         toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
+        const fromEmail = (form.fromEmail || form.user || '').trim();
+        const smtpUser = form.user.trim();
+        if (sendEmail && fromEmail.includes('@') && smtpUser.includes('@')) {
+          const fromDom = fromEmail.split('@')[1]?.toLowerCase();
+          const userDom = smtpUser.split('@')[1]?.toLowerCase();
+          if (
+            fromDom &&
+            userDom &&
+            fromDom !== userDom &&
+            !fromDom.endsWith(`.${userDom}`) &&
+            !userDom.endsWith(`.${fromDom}`)
+          ) {
+            toast.warning(
+              'From domain may hurt inbox placement',
+              `Sender email is @${fromDom} but SMTP login is @${userDom}. Use a From address on the same domain your SMTP provider authenticated (SPF/DKIM).`,
+            );
+          }
+        }
       } else {
         toast.error('SMTP test failed', result.error || result.message);
       }
@@ -319,6 +337,12 @@ export function SmtpManagerPage() {
           <p className="page-sub max-w-2xl">
             Add your SMTP host, username, and password. Test the connection, then activate to send.
           </p>
+          <div className="mt-3 max-w-2xl border border-accent/30 bg-accent/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            <span className="text-accent">Inbox placement:</span> No app can force Gmail into the
+            Primary inbox. Use a From address on the <strong className="text-foreground">same domain</strong>{' '}
+            your SMTP provider has SPF/DKIM for, warm up slowly, and keep content clean. Shared/cold SMTP IPs
+            often land in Spam until reputation builds.
+          </div>
         </div>
         <Button className="w-full sm:w-auto" onClick={startCreate}>
           <Plus className="h-4 w-4" /> Add SMTP

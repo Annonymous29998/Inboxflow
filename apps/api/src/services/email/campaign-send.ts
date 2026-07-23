@@ -106,9 +106,7 @@ export async function sendCampaignEmailToRecipient(input: {
     });
   }
 
-  const headers: Record<string, string> = {
-    'X-Mailer': 'Inbox Flow',
-  };
+  const headers: Record<string, string> = {};
   const replyTo = campaign.replyTo || undefined;
   if (replyTo) headers['Reply-To'] = replyTo;
 

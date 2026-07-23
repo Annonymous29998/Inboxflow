@@ -49,9 +49,8 @@ export function stripAppUnsubscribeTokens(content: string) {
 }
 
 export function buildDeliverabilityHeaders(replyTo?: string, listUnsubscribeUrl?: string) {
-  const headers: Record<string, string> = {
-    'X-Mailer': 'Inbox Flow',
-  };
+  // Do not brand X-Mailer — custom "Inbox Flow" fingerprint can hurt filtering.
+  const headers: Record<string, string> = {};
   if (replyTo) headers['Reply-To'] = replyTo;
   if (listUnsubscribeUrl?.trim()) {
     headers['List-Unsubscribe'] = `<${listUnsubscribeUrl.trim()}>`;
