@@ -8,4 +8,5 @@ buildCommand = "npm install && npm run build -w @inboxflow/api"
 [deploy]
 startCommand = "npm run start -w @inboxflow/api"
 healthcheckPath = "/health"
+healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"

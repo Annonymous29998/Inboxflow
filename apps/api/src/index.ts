@@ -11,9 +11,11 @@ async function main() {
     startWorkers();
   }
 
-  await app.listen({ port: env.API_PORT, host: '0.0.0.0' });
-  console.log(`${env.APP_NAME} API listening on :${env.API_PORT}`);
-  console.log(`API docs: http://localhost:${env.API_PORT}/docs`);
+  // Railway (and most hosts) inject PORT — prefer it over API_PORT.
+  const port = Number(process.env.PORT) || env.API_PORT;
+  await app.listen({ port, host: '0.0.0.0' });
+  console.log(`${env.APP_NAME} API listening on :${port}`);
+  console.log(`API docs: http://localhost:${port}/docs`);
 }
 
 main().catch((err) => {
