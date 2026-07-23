@@ -18,3 +18,9 @@ uploads/
 postgres-data/
 redis-data/
 minio-data/
+
+# Deploy secrets (never commit)
+deploy/railway.env
+deploy/*.local.env
+
+deploy/vercel.env

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import OpenAI from 'openai';
+import { OpenAI } from 'openai';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { sendError } from '../../utils/errors.js';
