@@ -1,8 +1,10 @@
 import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
+import { decrypt } from '../../utils/crypto.js';
 import { parseProviderConfig, sendViaProvider } from './providers.js';
 import {
   incrementHourlySent,
+  incrementMinuteSent,
   logRotationPick,
   parseRotationSettings,
   resolveRotatedProviders,
@@ -29,6 +31,14 @@ function personalize(
       [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.email,
     )
     .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => custom[key] ?? '');
+}
+
+function pickFromPool(pool: unknown, fallback: string): string {
+  const arr = Array.isArray(pool)
+    ? pool.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  if (!arr.length) return fallback;
+  return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
 /** @deprecated Prefer resolveRotatedProviders — kept for callers that need a simple list. */
@@ -110,10 +120,32 @@ export async function sendCampaignEmailToRecipient(input: {
   const replyTo = campaign.replyTo || undefined;
   if (replyTo) headers['Reply-To'] = replyTo;
 
+  const subjectBase = pickFromPool(campaign.subjectPool, campaign.subject || '');
+  const fromNameBase = pickFromPool(campaign.fromNamePool, campaign.senderName || '');
+
+  let dkim:
+    | {
+        domainName: string;
+        keySelector: string;
+        privateKey: string;
+      }
+    | undefined;
+  if (campaign.domain?.dkimPrivateKeyEnc && campaign.domain.dkimSelector) {
+    try {
+      dkim = {
+        domainName: campaign.domain.domain,
+        keySelector: campaign.domain.dkimSelector,
+        privateKey: decrypt(campaign.domain.dkimPrivateKeyEnc),
+      };
+    } catch {
+      /* invalid key — skip signing */
+    }
+  }
+
   let lastError = 'Unknown error';
   for (const p of providers) {
     const cfg = parseProviderConfig(p.config);
-    const fromName = String(campaign.senderName || cfg.fromName || '').trim();
+    const fromName = String(fromNameBase || cfg.fromName || '').trim();
     const fromEmail =
       campaign.senderEmail ||
       cfg.fromEmail ||
@@ -132,10 +164,11 @@ export async function sendCampaignEmailToRecipient(input: {
         from: fromEmail,
         fromName,
         replyTo: campaign.replyTo || cfg.replyTo || undefined,
-        subject: personalize(campaign.subject || '', contact),
+        subject: personalize(subjectBase, contact),
         html,
         text: text || undefined,
         headers,
+        dkim,
       },
       { portFailover: p.isDefault && p.type === 'SMTP' },
     );
@@ -165,14 +198,19 @@ export async function sendCampaignEmailToRecipient(input: {
         }),
         prisma.emailProvider.update({
           where: { id: p.id },
-          data: { sentToday: { increment: 1 } },
+          data: { sentToday: { increment: 1 }, successCount: { increment: 1 } },
         }),
       ]);
       await incrementHourlySent(p.id);
+      await incrementMinuteSent(p.id);
       return { success: true, messageId: result.messageId, providerId: p.id };
     }
 
     lastError = result.error || lastError;
+    await prisma.emailProvider.update({
+      where: { id: p.id },
+      data: { failCount: { increment: 1 } },
+    });
     await writeSystemLog({
       organizationId: campaign.organizationId,
       level: 'WARNING',

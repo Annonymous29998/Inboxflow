@@ -19,6 +19,7 @@ type FormState = {
   replyTo: string;
   dailyLimit: string;
   hourlyLimit: string;
+  minuteLimit: string;
   priority: string;
   notes: string;
   isDefault: boolean;
@@ -60,6 +61,7 @@ const emptyForm: FormState = {
   replyTo: '',
   dailyLimit: '',
   hourlyLimit: '',
+  minuteLimit: '',
   priority: '10',
   notes: '',
   isDefault: false,
@@ -85,9 +87,9 @@ export function SmtpManagerPage() {
   const [showPass, setShowPass] = useState(false);
   const [lastTestOk, setLastTestOk] = useState(false);
   const [rotationEnabled, setRotationEnabled] = useState(true);
-  const [rotationMode, setRotationMode] = useState<'failover' | 'round_robin' | 'weighted'>(
-    'round_robin',
-  );
+  const [rotationMode, setRotationMode] = useState<
+    'failover' | 'round_robin' | 'weighted' | 'performance'
+  >('round_robin');
 
   const selected = useMemo(
     () => providers.find((p) => p.id === editingId) || null,
@@ -108,7 +110,12 @@ export function SmtpManagerPage() {
       }>('/api/admin/organization');
       const rot = data.organization.sendSettings?.smtpRotation;
       if (rot?.enabled != null) setRotationEnabled(!!rot.enabled);
-      if (rot?.mode === 'failover' || rot?.mode === 'round_robin' || rot?.mode === 'weighted') {
+      if (
+        rot?.mode === 'failover' ||
+        rot?.mode === 'round_robin' ||
+        rot?.mode === 'weighted' ||
+        rot?.mode === 'performance'
+      ) {
         setRotationMode(rot.mode);
       }
     } catch {
@@ -176,6 +183,7 @@ export function SmtpManagerPage() {
       replyTo: cfg.replyTo || detail.replyTo || '',
       dailyLimit: detail.dailyLimit != null ? String(detail.dailyLimit) : '',
       hourlyLimit: detail.hourlyLimit != null ? String(detail.hourlyLimit) : '',
+      minuteLimit: detail.minuteLimit != null ? String(detail.minuteLimit) : '',
       priority: String(detail.priority ?? 0),
       notes: detail.notes || '',
       isDefault: detail.isDefault,
@@ -268,6 +276,7 @@ export function SmtpManagerPage() {
         isActive: false,
         dailyLimit: form.dailyLimit ? Number(form.dailyLimit) : null,
         hourlyLimit: form.hourlyLimit ? Number(form.hourlyLimit) : null,
+        minuteLimit: form.minuteLimit ? Number(form.minuteLimit) : null,
         priority: Number(form.priority || 0),
         notes: form.notes || null,
       };
@@ -328,6 +337,55 @@ export function SmtpManagerPage() {
     }
   }
 
+  async function autoDetectTls() {
+    try {
+      const detected = await smtpService.detectTls(form.port || 587);
+      setForm((f) => ({
+        ...f,
+        port: String(detected.port),
+        encryption: detected.encryption === 'NONE' ? 'STARTTLS' : detected.encryption,
+      }));
+      setLastTestOk(false);
+      toast.success('TLS auto-detected', detected.hint);
+    } catch (err) {
+      toast.error('Detect failed', err instanceof Error ? err.message : undefined);
+    }
+  }
+
+  async function exportSmtp() {
+    try {
+      const data = await smtpService.exportProfiles();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `inboxflow-smtp-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('SMTP exported', 'Passwords omitted — re-enter after import');
+    } catch (err) {
+      toast.error('Export failed', err instanceof Error ? err.message : undefined);
+    }
+  }
+
+  async function importSmtp(file: File) {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as { profiles?: unknown[] };
+      const profiles = Array.isArray(parsed.profiles) ? parsed.profiles : Array.isArray(parsed) ? parsed : [];
+      const result = await smtpService.importProfiles(profiles);
+      toast.success(`Imported ${result.imported} profile(s)`, result.note);
+      await load();
+    } catch (err) {
+      toast.error('Import failed', err instanceof Error ? err.message : undefined);
+    }
+  }
+
+  function meterLabel(used: number, limit?: number | null) {
+    if (limit == null) return `${used}`;
+    return `${used} / ${limit}`;
+  }
+
   return (
     <div className="space-y-4 font-mono">
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
@@ -344,6 +402,22 @@ export function SmtpManagerPage() {
             often land in Spam until reputation builds.
           </div>
         </div>
+        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void exportSmtp()}>
+          Export
+        </Button>
+        <label className="inline-flex w-full cursor-pointer items-center justify-center border border-border px-3 py-2 text-sm sm:w-auto">
+          Import
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importSmtp(f);
+              e.target.value = '';
+            }}
+          />
+        </label>
         <Button className="w-full sm:w-auto" onClick={startCreate}>
           <Plus className="h-4 w-4" /> Add SMTP
         </Button>
@@ -370,13 +444,16 @@ export function SmtpManagerPage() {
             <Select
               value={rotationMode}
               onChange={(e) =>
-                setRotationMode(e.target.value as 'failover' | 'round_robin' | 'weighted')
+                setRotationMode(
+                  e.target.value as 'failover' | 'round_robin' | 'weighted' | 'performance',
+                )
               }
               disabled={!rotationEnabled}
             >
               <option value="round_robin">Round-robin — even distribution</option>
               <option value="weighted">Weighted — higher priority sends more</option>
               <option value="failover">Failover — prefer highest priority / default</option>
+              <option value="performance">Performance — prefer higher success rate</option>
             </Select>
           </div>
           <Button size="sm" onClick={() => void saveRotation()}>
@@ -413,6 +490,19 @@ export function SmtpManagerPage() {
                     {p.isActive ? <Badge tone="success">Active</Badge> : <Badge>Off</Badge>}
                     {p.isDefault ? <Badge tone="info">Default</Badge> : null}
                   </div>
+                  <div className="mt-1.5 space-y-0.5 text-[10px] text-muted-foreground">
+                    <div>
+                      Today {meterLabel(p.sentToday ?? 0, p.dailyLimit)} · Hour{' '}
+                      {meterLabel(p.sentHour ?? 0, p.hourlyLimit)}
+                      {p.minuteLimit != null
+                        ? ` · Min ${meterLabel(p.sentMinute ?? 0, p.minuteLimit)}`
+                        : ''}
+                    </div>
+                    <div>
+                      Success {(p.successRate ?? 50).toFixed(1)}% (
+                      {p.successCount ?? 0}ok / {p.failCount ?? 0}fail)
+                    </div>
+                  </div>
                 </div>
               </button>
             ))}
@@ -442,11 +532,22 @@ export function SmtpManagerPage() {
               </div>
               <div>
                 <Label>Port</Label>
-                <Input
-                  value={form.port}
-                  onChange={(e) => setForm({ ...form, port: e.target.value })}
-                  placeholder="587 or 465"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={form.port}
+                    onChange={(e) => {
+                      setForm({ ...form, port: e.target.value });
+                      setLastTestOk(false);
+                    }}
+                    onBlur={() => {
+                      if (form.port) void autoDetectTls();
+                    }}
+                    placeholder="587 or 465"
+                  />
+                  <Button type="button" variant="outline" size="sm" onClick={() => void autoDetectTls()}>
+                    Auto TLS
+                  </Button>
+                </div>
               </div>
               <div>
                 <Label>Encryption</Label>
@@ -542,6 +643,14 @@ export function SmtpManagerPage() {
                   placeholder="e.g. 200"
                 />
               </div>
+              <div>
+                <Label>Per-minute limit (optional)</Label>
+                <Input
+                  value={form.minuteLimit}
+                  onChange={(e) => setForm({ ...form, minuteLimit: e.target.value })}
+                  placeholder="e.g. 20"
+                />
+              </div>
             </div>
 
             <div>
@@ -567,7 +676,7 @@ export function SmtpManagerPage() {
               <Textarea
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                className="min-h-[72px]"
+                className="min-h-18"
                 placeholder="Optional — if empty, test email says: Your SMTP connection is working."
               />
             </div>

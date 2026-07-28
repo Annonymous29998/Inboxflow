@@ -18,9 +18,13 @@ interface SendProgressModalProps {
   batchSize?: number;
   batchPauseSeconds?: number;
   cancelled?: boolean;
+  paused?: boolean;
   onConfirmSend: () => void;
   onForceSend?: () => void;
   onCancelSend?: () => void;
+  onPauseSend?: () => void;
+  onResumeSend?: () => void;
+  onRetryFailed?: () => void;
   onClose: () => void;
 }
 
@@ -65,9 +69,13 @@ export function SendProgressModal({
   batchSize = 10,
   batchPauseSeconds = 5,
   cancelled = false,
+  paused = false,
   onConfirmSend,
   onForceSend,
   onCancelSend,
+  onPauseSend,
+  onResumeSend,
+  onRetryFailed,
   onClose,
 }: SendProgressModalProps) {
   const startAtRef = useRef<number | null>(null);
@@ -178,14 +186,18 @@ export function SendProgressModal({
                   ? cancelled
                     ? 'Cancelled'
                     : 'Complete'
-                  : 'Background send'}
+                  : paused
+                    ? 'Paused'
+                    : 'Background send'}
               </p>
               <h2 className="mt-2 text-2xl font-bold tracking-wide text-primary">
                 {phase === 'success'
                   ? cancelled
                     ? 'Sending stopped'
                     : 'Send finished'
-                  : 'Sending in background…'}
+                  : paused
+                    ? 'Campaign paused'
+                    : 'Sending in background…'}
               </h2>
 
               {isBackground ? (
@@ -248,10 +260,27 @@ export function SendProgressModal({
               />
             </div>
 
-            <div className="mt-5 flex justify-center gap-3">
+            <div className="mt-5 flex flex-wrap justify-center gap-3">
+              {phase === 'background' && !paused && onPauseSend ? (
+                <Button type="button" variant="outline" onClick={onPauseSend}>
+                  Pause
+                </Button>
+              ) : null}
+              {phase === 'background' && paused && onResumeSend ? (
+                <Button type="button" variant="outline" onClick={onResumeSend}>
+                  Resume
+                </Button>
+              ) : null}
               {phase === 'background' && onCancelSend ? (
                 <Button type="button" variant="outline" onClick={onCancelSend}>
                   Cancel sending
+                </Button>
+              ) : null}
+              {(phase === 'background' || phase === 'success') &&
+              failedCount > 0 &&
+              onRetryFailed ? (
+                <Button type="button" variant="secondary" onClick={onRetryFailed}>
+                  Retry failed
                 </Button>
               ) : null}
               {phase === 'background' ? (

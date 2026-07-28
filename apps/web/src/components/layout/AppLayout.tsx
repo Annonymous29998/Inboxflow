@@ -19,6 +19,7 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  ListOrdered,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/lib/api';
@@ -43,6 +44,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true, key: '1' },
       { to: '/app/campaigns', label: 'Campaigns', icon: Mail, key: '2' },
+      { to: '/app/queue', label: 'Queue', icon: ListOrdered, key: 'Q' },
       { to: '/app/templates', label: 'Templates', icon: FileText, key: '3' },
       { to: '/app/ai', label: 'AI Assistant', icon: Sparkles, key: '4' },
     ],

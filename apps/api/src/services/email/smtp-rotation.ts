@@ -2,7 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import type { EmailProvider } from '@prisma/client';
 import { writeSystemLog } from '../system-log.js';
 
-export type RotationMode = 'failover' | 'round_robin' | 'weighted';
+export type RotationMode = 'failover' | 'round_robin' | 'weighted' | 'performance';
 
 export type SmtpRotationSettings = {
   /** When true, pick across active SMTPs (respecting limits). When false, prefer campaign provider then failover. */
@@ -23,9 +23,16 @@ type OrgSendSettings = {
 
 export function parseRotationSettings(sendSettings: unknown): SmtpRotationSettings {
   const raw = (sendSettings || {}) as OrgSendSettings;
+  const mode = raw.smtpRotation?.mode;
   return {
     enabled: raw.smtpRotation?.enabled ?? DEFAULT_SMTP_ROTATION.enabled,
-    mode: raw.smtpRotation?.mode ?? DEFAULT_SMTP_ROTATION.mode,
+    mode:
+      mode === 'failover' ||
+      mode === 'round_robin' ||
+      mode === 'weighted' ||
+      mode === 'performance'
+        ? mode
+        : DEFAULT_SMTP_ROTATION.mode,
   };
 }
 
@@ -34,14 +41,32 @@ function hourKey() {
   return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}${String(d.getUTCHours()).padStart(2, '0')}`;
 }
 
-async function getHourlySent(providerId: string): Promise<number> {
+function minuteKey() {
+  const d = new Date();
+  return `${hourKey()}${String(d.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+export async function getHourlySent(providerId: string): Promise<number> {
   try {
     const hk = hourKey();
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT count FROM "SmtpHourlySent"
       WHERE provider_id = ${providerId} AND hour_key = ${hk}
     `;
-    return rows[0]?.count ?? 0;
+    return Number(rows[0]?.count ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getMinuteSent(providerId: string): Promise<number> {
+  try {
+    const mk = minuteKey();
+    const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT count FROM "SmtpMinuteSent"
+      WHERE provider_id = ${providerId} AND minute_key = ${mk}
+    `;
+    return Number(rows[0]?.count ?? 0);
   } catch {
     return 0;
   }
@@ -61,6 +86,28 @@ export async function incrementHourlySent(providerId: string) {
   }
 }
 
+export async function incrementMinuteSent(providerId: string) {
+  try {
+    const mk = minuteKey();
+    await prisma.$executeRaw`
+      INSERT INTO "SmtpMinuteSent" (provider_id, minute_key, count, updated_at)
+      VALUES (${providerId}, ${mk}, 1, NOW())
+      ON CONFLICT (provider_id, minute_key)
+      DO UPDATE SET count = "SmtpMinuteSent".count + 1, updated_at = NOW()
+    `;
+  } catch {
+    // optional
+  }
+}
+
+export function providerSuccessRate(p: EmailProvider): number {
+  const ok = Number((p as EmailProvider & { successCount?: number }).successCount ?? 0);
+  const fail = Number((p as EmailProvider & { failCount?: number }).failCount ?? 0);
+  const total = ok + fail;
+  if (total <= 0) return 0.5; // neutral until we have data
+  return ok / total;
+}
+
 export async function filterBySendingLimits(providers: EmailProvider[]): Promise<EmailProvider[]> {
   const out: EmailProvider[] = [];
   for (const p of providers) {
@@ -68,6 +115,11 @@ export async function filterBySendingLimits(providers: EmailProvider[]): Promise
     if (p.hourlyLimit != null) {
       const hourly = await getHourlySent(p.id);
       if (hourly >= p.hourlyLimit) continue;
+    }
+    const minuteLimit = (p as EmailProvider & { minuteLimit?: number | null }).minuteLimit;
+    if (minuteLimit != null) {
+      const minute = await getMinuteSent(p.id);
+      if (minute >= minuteLimit) continue;
     }
     out.push(p);
   }
@@ -98,6 +150,19 @@ function weightedOrder(providers: EmailProvider[]): EmailProvider[] {
   return ordered;
 }
 
+/** Prefer SMTPs with higher historical success rate, then priority. */
+function performanceOrder(providers: EmailProvider[]): EmailProvider[] {
+  return [...providers].sort((a, b) => {
+    const rateDiff = providerSuccessRate(b) - providerSuccessRate(a);
+    if (Math.abs(rateDiff) > 0.001) return rateDiff;
+    return (
+      Number(b.isDefault) - Number(a.isDefault) ||
+      b.priority - a.priority ||
+      b.sentToday - a.sentToday
+    );
+  });
+}
+
 async function nextRoundRobinIndex(organizationId: string, modulo: number): Promise<number> {
   if (modulo <= 0) return 0;
   const org = await prisma.organization.findUnique({ where: { id: organizationId } });
@@ -115,15 +180,11 @@ async function nextRoundRobinIndex(organizationId: string, modulo: number): Prom
 
 /**
  * Build ordered SMTP/API provider list for one send attempt.
- * - fixed preferredId + rotation disabled → preferred first, then priority failover
- * - rotation enabled → round_robin / weighted / failover across eligible providers
- * Always filters out providers that hit daily/hourly limits.
  */
 export async function resolveRotatedProviders(input: {
   organizationId: string;
   preferredProviderId?: string | null;
   rotation?: SmtpRotationSettings;
-  /** If true, only SMTP type (rotation typically for SMTP accounts). */
   smtpOnly?: boolean;
 }): Promise<EmailProvider[]> {
   const rotation = input.rotation ?? DEFAULT_SMTP_ROTATION;
@@ -169,6 +230,10 @@ export async function resolveRotatedProviders(input: {
     return weightedOrder(working);
   }
 
+  if (rotation.mode === 'performance') {
+    return performanceOrder(working);
+  }
+
   if (rotation.mode === 'round_robin') {
     const start = await nextRoundRobinIndex(input.organizationId, working.length);
     return [...working.slice(start), ...working.slice(0, start)];
@@ -191,4 +256,17 @@ export async function logRotationPick(
     message: `SMTP rotation (${mode}) selected: ${provider.name}`,
     meta: { providerId: provider.id, priority: provider.priority },
   });
+}
+
+/** Suggest TLS/SSL settings from port (Kestrel-style autodetection). */
+export function detectTlsFromPort(port: number | string): {
+  port: number;
+  encryption: 'SSL' | 'STARTTLS' | 'NONE';
+  secure: boolean;
+} {
+  const p = Number(port) || 587;
+  if (p === 465) return { port: 465, encryption: 'SSL', secure: true };
+  if (p === 587 || p === 2525) return { port: p, encryption: 'STARTTLS', secure: false };
+  if (p === 25) return { port: 25, encryption: 'STARTTLS', secure: false };
+  return { port: p, encryption: p === 465 ? 'SSL' : 'STARTTLS', secure: p === 465 };
 }

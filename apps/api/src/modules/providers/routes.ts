@@ -15,6 +15,13 @@ import {
 import { migrateLegacySmtpBranding, removeEnvBootstrappedSmtpProviders } from '../../services/email/migrate-legacy-smtp.js';
 import { detectSmtpConfigIssues, writeSystemLog } from '../../services/system-log.js';
 import { isBlockedSmtpHost } from '../../utils/signed-urls.js';
+import {
+  detectTlsFromPort,
+  getHourlySent,
+  getMinuteSent,
+  providerSuccessRate,
+} from '../../services/email/smtp-rotation.js';
+import type { EmailProvider } from '@prisma/client';
 
 function normalizeConfig(config: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -41,26 +48,11 @@ function normalizeConfig(config: Record<string, string>): Record<string, string>
   return out;
 }
 
-function mapProvider(p: {
-  id: string;
-  name: string;
-  label: string | null;
-  type: string;
-  isDefault: boolean;
-  isActive: boolean;
-  priority: number;
-  dailyLimit: number | null;
-  hourlyLimit: number | null;
-  notes: string | null;
-  lastTestStatus: string | null;
-  lastTestAt: Date | null;
-  lastTestError: string | null;
-  sentToday: number;
-  createdAt: Date;
-  updatedAt: Date;
-  config: unknown;
-}) {
+async function mapProvider(p: EmailProvider) {
   const config = parseProviderConfig(p.config);
+  const sentHour = await getHourlySent(p.id);
+  const sentMinute = await getMinuteSent(p.id);
+  const successRate = Math.round(providerSuccessRate(p) * 1000) / 10;
   return {
     id: p.id,
     name: p.name,
@@ -71,11 +63,17 @@ function mapProvider(p: {
     priority: p.priority,
     dailyLimit: p.dailyLimit,
     hourlyLimit: p.hourlyLimit,
+    minuteLimit: p.minuteLimit,
     notes: p.notes,
     lastTestStatus: p.lastTestStatus || 'Pending',
     lastTestAt: p.lastTestAt,
     lastTestError: p.lastTestError,
     sentToday: p.sentToday,
+    sentHour,
+    sentMinute,
+    successCount: p.successCount,
+    failCount: p.failCount,
+    successRate,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
     fromEmail: config.fromEmail || config.user || '',
@@ -115,7 +113,140 @@ export async function providerRoutes(app: FastifyInstance) {
         where: { organizationId: orgId },
         orderBy: [{ isDefault: 'desc' }, { priority: 'desc' }, { createdAt: 'desc' }],
       });
-      return reply.send({ providers: providers.map(mapProvider) });
+      return reply.send({ providers: await Promise.all(providers.map(mapProvider)) });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/detect-tls', async (request, reply) => {
+    try {
+      const body = z
+        .object({
+          port: z.union([z.string(), z.number()]),
+          host: z.string().optional(),
+        })
+        .parse(request.body);
+      const detected = detectTlsFromPort(body.port);
+      return reply.send({
+        ...detected,
+        hint:
+          detected.encryption === 'SSL'
+            ? 'Port 465 typically uses implicit SSL/TLS'
+            : detected.port === 587 || detected.port === 2525
+              ? 'Port 587/2525 typically uses STARTTLS'
+              : 'Suggested defaults — verify with your provider',
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/export', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const providers = await prisma.emailProvider.findMany({
+        where: { organizationId: orgId, type: 'SMTP' },
+        orderBy: { createdAt: 'asc' },
+      });
+      const profiles = providers.map((p) => {
+        const config = parseProviderConfig(p.config);
+        return {
+          name: p.name,
+          label: p.label,
+          host: config.host || '',
+          port: config.port || '587',
+          encryption: config.encryption || (config.secure === 'true' ? 'SSL' : 'STARTTLS'),
+          user: config.user || '',
+          fromEmail: config.fromEmail || '',
+          fromName: config.fromName || '',
+          replyTo: config.replyTo || '',
+          dailyLimit: p.dailyLimit,
+          hourlyLimit: p.hourlyLimit,
+          minuteLimit: p.minuteLimit,
+          priority: p.priority,
+          notes: p.notes,
+          isDefault: p.isDefault,
+          hasPassword: Boolean(config.pass),
+        };
+      });
+      return reply.send({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        profiles,
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/import', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z
+        .object({
+          profiles: z.array(
+            z.object({
+              name: z.string().optional(),
+              label: z.string().optional().nullable(),
+              host: z.string().min(1),
+              port: z.union([z.string(), z.number()]).optional(),
+              encryption: z.string().optional(),
+              user: z.string().optional(),
+              pass: z.string().optional(),
+              fromEmail: z.string().optional(),
+              fromName: z.string().optional(),
+              replyTo: z.string().optional(),
+              dailyLimit: z.number().optional().nullable(),
+              hourlyLimit: z.number().optional().nullable(),
+              minuteLimit: z.number().optional().nullable(),
+              priority: z.number().optional(),
+              notes: z.string().optional().nullable(),
+              isDefault: z.boolean().optional(),
+            }),
+          ),
+        })
+        .parse(request.body);
+
+      const created = [];
+      for (const profile of body.profiles) {
+        const config = normalizeConfig({
+          host: profile.host,
+          port: String(profile.port || 587),
+          encryption: profile.encryption || 'STARTTLS',
+          user: profile.user || '',
+          pass: profile.pass || '',
+          fromEmail: profile.fromEmail || '',
+          fromName: profile.fromName || '',
+          replyTo: profile.replyTo || '',
+        });
+        if (isBlockedSmtpHost(config.host)) continue;
+        const provider = await prisma.emailProvider.create({
+          data: {
+            organizationId: orgId,
+            name: profile.name?.trim() || profile.fromEmail || profile.host,
+            label: profile.label ?? null,
+            type: 'SMTP',
+            config: { encrypted: encrypt(JSON.stringify(config)) },
+            isDefault: false,
+            isActive: false,
+            dailyLimit: profile.dailyLimit ?? undefined,
+            hourlyLimit: profile.hourlyLimit ?? undefined,
+            minuteLimit: profile.minuteLimit ?? undefined,
+            priority: profile.priority ?? 0,
+            notes: profile.notes,
+            lastTestStatus: 'Pending',
+          },
+        });
+        created.push(await mapProvider(provider));
+      }
+
+      return reply.send({
+        success: true,
+        imported: created.length,
+        providers: created,
+        note: 'Passwords must be re-entered; profiles start inactive until tested',
+      });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -146,7 +277,7 @@ export async function providerRoutes(app: FastifyInstance) {
 
       return reply.send({
         provider: {
-          ...mapProvider(refreshed),
+          ...await mapProvider(refreshed),
           config: safeConfig,
         },
       });
@@ -168,6 +299,7 @@ export async function providerRoutes(app: FastifyInstance) {
           isActive: z.boolean().default(false),
           dailyLimit: z.number().optional().nullable(),
           hourlyLimit: z.number().optional().nullable(),
+          minuteLimit: z.number().optional().nullable(),
           priority: z.number().default(0),
           notes: z.string().optional().nullable(),
         })
@@ -222,6 +354,7 @@ export async function providerRoutes(app: FastifyInstance) {
           isActive: body.type === 'SMTP' ? false : body.isActive,
           dailyLimit: body.dailyLimit ?? undefined,
           hourlyLimit: body.hourlyLimit ?? undefined,
+          minuteLimit: body.minuteLimit ?? undefined,
           priority: body.priority,
           notes: body.notes,
           lastTestStatus: 'Pending',
@@ -236,7 +369,7 @@ export async function providerRoutes(app: FastifyInstance) {
         meta: { providerId: provider.id },
       });
 
-      return reply.status(201).send({ provider: mapProvider(provider) });
+      return reply.status(201).send({ provider: await mapProvider(provider) });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -255,6 +388,7 @@ export async function providerRoutes(app: FastifyInstance) {
           priority: z.number().optional(),
           dailyLimit: z.number().nullable().optional(),
           hourlyLimit: z.number().nullable().optional(),
+          minuteLimit: z.number().nullable().optional(),
           notes: z.string().nullable().optional(),
           config: z.record(z.string()).optional(),
         })
@@ -300,12 +434,13 @@ export async function providerRoutes(app: FastifyInstance) {
           priority: body.priority,
           dailyLimit: body.dailyLimit === null ? null : body.dailyLimit,
           hourlyLimit: body.hourlyLimit === null ? null : body.hourlyLimit,
+          minuteLimit: body.minuteLimit === null ? null : body.minuteLimit,
           notes: body.notes === undefined ? undefined : body.notes,
           config: nextConfig as object,
         },
       });
 
-      return reply.send({ provider: mapProvider(provider) });
+      return reply.send({ provider: await mapProvider(provider) });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -450,7 +585,7 @@ export async function providerRoutes(app: FastifyInstance) {
         meta: { providerId: id, issues },
       });
 
-      return reply.send({ result, issues, provider: mapProvider(updated) });
+      return reply.send({ result, issues, provider: await mapProvider(updated) });
     } catch (error) {
       return sendError(reply, error);
     }

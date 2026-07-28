@@ -14,6 +14,8 @@ type Domain = {
   trackingValid: boolean;
   returnPathValid: boolean;
   reputationScore: number;
+  hasDkimPrivateKey?: boolean;
+  dkimSelector?: string | null;
   dnsRecords: Array<{ id: string; type: string; host: string; value: string; status: string }>;
 };
 
@@ -77,6 +79,23 @@ export function DomainsPage() {
     setInstructions(data.instructions);
   }
 
+  async function generateDkim(id: string) {
+    toast.info('Generating DKIM key…');
+    try {
+      const data = await api.post<{
+        domain: Domain;
+        dnsRecord: { host: string; value: string };
+        note?: string;
+      }>(`/api/domains/${id}/dkim`, { generate: true, selector: 'inboxflow' });
+      setSelected(data.domain);
+      toast.success('DKIM key stored', data.note || 'Publish the TXT record, then Verify');
+      await openWizard(data.domain);
+      await load();
+    } catch (err) {
+      toast.error('DKIM setup failed', err instanceof Error ? err.message : undefined);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -126,7 +145,7 @@ export function DomainsPage() {
           ) : null}
         </div>
 
-        <Card className="min-h-[480px]">
+        <Card className="min-h-120">
           {selected && instructions ? (
             <div>
               <div className="flex items-start justify-between gap-3 mb-4">
@@ -134,9 +153,14 @@ export function DomainsPage() {
                   <h2 className="font-display text-2xl">{instructions.title}</h2>
                   <p className="text-sm text-ink-muted mt-1">{instructions.tip}</p>
                 </div>
-                <Button onClick={() => verify(selected.id)}>
-                  <RefreshCw className="h-4 w-4" /> Verify DNS
-                </Button>
+                <div className="flex shrink-0 flex-col gap-2">
+                  <Button onClick={() => verify(selected.id)}>
+                    <RefreshCw className="h-4 w-4" /> Verify DNS
+                  </Button>
+                  <Button variant="outline" onClick={() => void generateDkim(selected.id)}>
+                    {selected.hasDkimPrivateKey ? 'Rotate DKIM' : 'Enable app DKIM'}
+                  </Button>
+                </div>
               </div>
               <div className="space-y-4">
                 {instructions.steps.map((step) => (

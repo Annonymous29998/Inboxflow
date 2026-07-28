@@ -27,6 +27,7 @@ export function CommandPalette({
     const base: CommandItem[] = [
       { id: 'dash', label: 'Go to Dashboard', hint: '1', run: () => navigate('/app') },
       { id: 'camp', label: 'Go to Campaigns', hint: '2', run: () => navigate('/app/campaigns') },
+      { id: 'queue', label: 'Open Queue Console', hint: 'Q', run: () => navigate('/app/queue') },
       { id: 'templates', label: 'Go to Templates', hint: '3', run: () => navigate('/app/templates') },
       { id: 'ai', label: 'Go to AI Assistant', hint: '4', run: () => navigate('/app/ai') },
       { id: 'contacts', label: 'Go to Contacts', hint: '5', run: () => navigate('/app/contacts') },

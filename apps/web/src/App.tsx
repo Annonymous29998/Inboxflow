@@ -16,6 +16,7 @@ import { DomainsPage } from '@/pages/DomainsPage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { AdminPage, AiPage, SettingsPage, TemplatesPage } from '@/pages/OtherPages';
 import { SmtpManagerPage } from '@/pages/SmtpManagerPage';
+import { QueueConsolePage } from '@/pages/QueueConsolePage';
 import { useAuthStore } from '@/stores/auth';
 
 const queryClient = new QueryClient();
@@ -75,6 +76,7 @@ export default function App() {
             <Route path="ai" element={<AiPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="smtp" element={<SmtpManagerPage />} />
+            <Route path="queue" element={<QueueConsolePage />} />
             <Route path="admin" element={<AdminPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/login" replace />} />

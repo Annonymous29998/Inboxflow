@@ -92,6 +92,8 @@ type Campaign = {
     maxPerMinute?: number;
     maxPerHour?: number;
   } | null;
+  subjectPool?: string[] | null;
+  fromNamePool?: string[] | null;
   deliverabilityScore?: number | null;
   inboxReadinessScore?: number | null;
   analysisReport?: DeliverabilityReport | null;
@@ -312,6 +314,7 @@ export function CampaignEditorPage() {
   const [sentCount, setSentCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
   const [sendCancelled, setSendCancelled] = useState(false);
+  const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
   const [queueSettings, setQueueSettings] = useState({
     batchSize: 10,
@@ -320,7 +323,17 @@ export function CampaignEditorPage() {
     maxPerMinute: 60,
     maxPerHour: 2000,
   });
+  const [subjectPoolText, setSubjectPoolText] = useState('');
+  const [fromNamePoolText, setFromNamePoolText] = useState('');
+  const [testMatrixTo, setTestMatrixTo] = useState('');
   const [importStatus, setImportStatus] = useState('');
+
+  function parsePool(text: string): string[] {
+    return text
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
 
   const html = useMemo(() => blocksToHtml(blocks, previewMode === 'dark'), [blocks, previewMode]);
 
@@ -384,6 +397,12 @@ export function CampaignEditorPage() {
         if (d.campaign.queueSettings) {
           setQueueSettings((q) => ({ ...q, ...d.campaign.queueSettings }));
         }
+        const subjects = Array.isArray(d.campaign.subjectPool)
+          ? d.campaign.subjectPool
+          : [];
+        const names = Array.isArray(d.campaign.fromNamePool) ? d.campaign.fromNamePool : [];
+        setSubjectPoolText(subjects.join('\n'));
+        setFromNamePoolText(names.join('\n'));
       });
     }
   }, [id, isNew]);
@@ -487,6 +506,8 @@ export function CampaignEditorPage() {
         editorJson: { blocks },
         queueSettings,
         providerId: campaign.providerId,
+        subjectPool: parsePool(subjectPoolText),
+        fromNamePool: parsePool(fromNamePoolText),
       };
 
       let campaignId = id;
@@ -612,6 +633,7 @@ export function CampaignEditorPage() {
       setSentCount(0);
       setFailedCount(0);
       setSendCancelled(false);
+      setSendPaused(false);
       setSendError('');
       setSendOpen(true);
     } catch (err) {
@@ -623,6 +645,7 @@ export function CampaignEditorPage() {
     if (!id || isNew) return;
     setSendPhase('background');
     setSendCancelled(false);
+    setSendPaused(false);
     setSendError('');
 
     try {
@@ -645,6 +668,95 @@ export function CampaignEditorPage() {
     if (id && !isNew) {
       void campaignSendService.cancel(id);
       setSendCancelled(true);
+      setSendPaused(false);
+    }
+  }
+
+  async function pauseBackgroundSend() {
+    if (!id || isNew) return;
+    try {
+      await campaignSendService.pause(id);
+      setSendPaused(true);
+      setCampaign((c) => ({ ...c, status: 'PAUSED' }));
+      flash('Campaign paused', 'warning');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Pause failed', 'error');
+    }
+  }
+
+  async function resumeBackgroundSend() {
+    if (!id || isNew) return;
+    try {
+      await campaignSendService.resume(id);
+      setSendPaused(false);
+      setSendPhase('background');
+      setCampaign((c) => ({ ...c, status: 'SENDING' }));
+      flash('Campaign resumed', 'success');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Resume failed', 'error');
+    }
+  }
+
+  async function retryFailedSend() {
+    if (!id || isNew) return;
+    try {
+      const result = await campaignSendService.retryFailed(id);
+      setSendPaused(false);
+      setSendPhase('background');
+      setFailedCount(0);
+      setCampaign((c) => ({ ...c, status: 'SENDING' }));
+      flash(`Re-queued ${result.retried} failed recipient(s)`, 'success');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Retry failed', 'error');
+    }
+  }
+
+  async function runTestMatrix() {
+    if (!id || isNew) return;
+    const to = testMatrixTo.trim();
+    if (!to) {
+      flash('Enter a test recipient email', 'warning');
+      return;
+    }
+    const subjects = parsePool(subjectPoolText);
+    if (campaign.subject?.trim()) subjects.unshift(campaign.subject.trim());
+    const uniqueSubjects = [...new Set(subjects)].slice(0, 8);
+    if (!uniqueSubjects.length) {
+      flash('Add at least one subject', 'warning');
+      return;
+    }
+    const fromNames = parsePool(fromNamePoolText);
+    if (campaign.senderName?.trim()) fromNames.unshift(campaign.senderName.trim());
+    try {
+      await save(false);
+      const result = await campaignSendService.testMatrix(id, {
+        to,
+        subjects: uniqueSubjects,
+        fromNames: fromNames.length ? [...new Set(fromNames)].slice(0, 8) : undefined,
+      });
+      flash(
+        `Test matrix: ${result.sent}/${result.total} sent`,
+        result.success ? 'success' : 'warning',
+      );
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Test matrix failed', 'error');
+    }
+  }
+
+  async function exportCampaignConfig() {
+    if (!id || isNew) return;
+    try {
+      const data = await campaignSendService.exportConfig(id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `campaign-${id}-config.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      flash('Campaign config exported');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Export failed', 'error');
     }
   }
 
@@ -660,6 +772,13 @@ export function CampaignEditorPage() {
         setSentCount(status.sentCount);
         setFailedCount(status.failedCount);
         if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
+
+        if (status.status === 'PAUSED') {
+          setSendPaused(true);
+          setCampaign((c) => ({ ...c, status: 'PAUSED' }));
+          return;
+        }
+        setSendPaused(false);
 
         const finished =
           status.pendingCount === 0 &&
@@ -699,7 +818,7 @@ export function CampaignEditorPage() {
         count: 5,
       });
       if (data.results[0]) setCampaign((c) => ({ ...c, subject: data.results[0] }));
-      flash(`AI suggestions: ${data.results.join(' · ', 'info')}`);
+      flash(`AI suggestions: ${data.results.join(' · ')}`, 'info');
     } catch (err) {
       flash(err instanceof Error ? err.message : 'AI failed', 'error');
     } finally {
@@ -777,9 +896,13 @@ export function CampaignEditorPage() {
         batchSize={queueSettings.batchSize}
         batchPauseSeconds={Math.max(1, Math.round(queueSettings.batchPauseMs / 1000))}
         cancelled={sendCancelled}
+        paused={sendPaused}
         onConfirmSend={() => void confirmBackgroundSend(false)}
         onForceSend={() => void confirmBackgroundSend(true)}
         onCancelSend={cancelBackgroundSend}
+        onPauseSend={() => void pauseBackgroundSend()}
+        onResumeSend={() => void resumeBackgroundSend()}
+        onRetryFailed={() => void retryFailedSend()}
         onClose={() => setSendOpen(false)}
       />
 
@@ -833,6 +956,24 @@ export function CampaignEditorPage() {
                   <Sparkles className="h-4 w-4" />
                 </Button>
               </div>
+            </div>
+            <div>
+              <Label>Subject pool (one per line)</Label>
+              <Textarea
+                value={subjectPoolText}
+                onChange={(e) => setSubjectPoolText(e.target.value)}
+                className="min-h-18 text-xs"
+                placeholder="Optional variants — rotated randomly per recipient"
+              />
+            </div>
+            <div>
+              <Label>From-name pool (one per line)</Label>
+              <Textarea
+                value={fromNamePoolText}
+                onChange={(e) => setFromNamePoolText(e.target.value)}
+                className="min-h-14 text-xs"
+                placeholder="Optional names tied to verified SMTP From"
+              />
             </div>
             <div>
               <Label>Preview text</Label>
@@ -992,8 +1133,50 @@ export function CampaignEditorPage() {
               </div>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Sends in batches with a pause between them. Cancel anytime from the send modal.
+              Sends in batches with a pause between them. Pause / resume / retry from the send modal
+              or the{' '}
+              <Link to="/app/queue" className="text-primary underline">
+                Queue Console
+              </Link>
+              .
             </p>
+          </Card>
+
+          <Card className="space-y-3">
+            <h3 className="font-medium text-xs uppercase tracking-wider text-accent">
+              Subject / sender test matrix
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              QA before a big send — emails each subject × from-name combo with a [TEST] prefix.
+            </p>
+            <div>
+              <Label>Send tests to</Label>
+              <Input
+                value={testMatrixTo}
+                onChange={(e) => setTestMatrixTo(e.target.value)}
+                placeholder="you@example.com"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={isNew || saving}
+                onClick={() => void runTestMatrix()}
+              >
+                Run test matrix
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isNew}
+                onClick={() => void exportCampaignConfig()}
+              >
+                Export config
+              </Button>
+            </div>
           </Card>
 
           <Card className="space-y-3">
@@ -1097,7 +1280,7 @@ export function CampaignEditorPage() {
         </div>
 
         {/* Canvas */}
-        <Card className="min-h-[640px]">
+        <Card className="min-h-160">
           <div className="flex flex-wrap items-center gap-2 mb-4 border-b border-border pb-3">
             {(['desktop', 'tablet', 'mobile', 'dark'] as const).map((m) => (
               <button
@@ -1136,7 +1319,7 @@ export function CampaignEditorPage() {
                   </div>
                   {block.type === 'html' || block.type === 'text' || block.type === 'products' || block.type === 'countdown' ? (
                     <Textarea
-                      className="min-h-[60px]"
+                      className="min-h-15"
                       value={block.content}
                       onChange={(e) =>
                         setBlocks((bs) => bs.map((b, i) => (i === idx ? { ...b, content: e.target.value } : b)))
@@ -1220,9 +1403,9 @@ export function CampaignEditorPage() {
 
             <div className="overflow-hidden border border-border">
               {html.trim() ? (
-                <iframe title="preview" srcDoc={html} className="h-[420px] w-full bg-[#f8faf8]" />
+                <iframe title="preview" srcDoc={html} className="h-105 w-full bg-[#f8faf8]" />
               ) : (
-                <div className="flex h-[420px] flex-col items-center justify-center gap-2 bg-[#f8faf8] p-6 text-center text-sm text-muted-foreground">
+                <div className="flex h-105 flex-col items-center justify-center gap-2 bg-[#f8faf8] p-6 text-center text-sm text-muted-foreground">
                   <p>Select an HTML template from the dropdown to preview your email.</p>
                   <Link to="/app/templates" className="text-primary underline">
                     Or import templates
@@ -1286,7 +1469,7 @@ export function CampaignEditorPage() {
               >
                 {report.rating.replace('_', ' ')}
               </Badge>
-              <div className="mt-4 space-y-3 max-h-[420px] overflow-auto">
+              <div className="mt-4 space-y-3 max-h-105 overflow-auto">
                 {report.issues.map((issue) => (
                   <div key={issue.id} className="border border-border p-3 text-sm">
                     <div className="flex items-center gap-2 mb-1">

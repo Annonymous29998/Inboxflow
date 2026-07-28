@@ -73,7 +73,7 @@ export async function adminRoutes(app: FastifyInstance) {
               smtpRotation: z
                 .object({
                   enabled: z.boolean().optional(),
-                  mode: z.enum(['failover', 'round_robin', 'weighted']).optional(),
+                  mode: z.enum(['failover', 'round_robin', 'weighted', 'performance']).optional(),
                 })
                 .optional(),
             })

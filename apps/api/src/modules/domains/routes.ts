@@ -1,11 +1,21 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { createPublicKey, generateKeyPairSync } from 'crypto';
 import { resolveTxt, resolveCname } from 'dns/promises';
 import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
-import { generateToken } from '../../utils/crypto.js';
+import { encrypt, generateToken } from '../../utils/crypto.js';
 import { requireOrg } from '../../utils/org.js';
+
+function pemToDkimPublicKey(privateKeyPem: string): string {
+  const pub = createPublicKey(privateKeyPem);
+  const pubPem = pub.export({ type: 'spki', format: 'pem' }) as string;
+  return pubPem
+    .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+    .replace(/-----END PUBLIC KEY-----/g, '')
+    .replace(/\s+/g, '');
+}
 
 export async function domainRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -18,7 +28,14 @@ export async function domainRoutes(app: FastifyInstance) {
         include: { dnsRecords: true },
         orderBy: { createdAt: 'desc' },
       });
-      return reply.send({ domains });
+      return reply.send({
+        domains: domains.map((d) => ({
+          ...d,
+          dkimPrivateKeyEnc: undefined,
+          hasDkimPrivateKey: Boolean(d.dkimPrivateKeyEnc),
+          dkimSelector: d.dkimSelector,
+        })),
+      });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -35,8 +52,17 @@ export async function domainRoutes(app: FastifyInstance) {
       });
       if (existing) throw new AppError(409, 'Domain already added');
 
-      const dkimSelector = 'icoffee';
-      const dkimValue = `v=DKIM1; k=rsa; p=${generateToken(64)}`; // placeholder public key for wizard
+      const dkimSelector = 'inboxflow';
+      const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      });
+      const publicB64 = publicKey
+        .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+        .replace(/-----END PUBLIC KEY-----/g, '')
+        .replace(/\s+/g, '');
+      const dkimValue = `v=DKIM1; k=rsa; p=${publicB64}`;
       const verificationToken = generateToken(16);
 
       const domain = await prisma.domain.create({
@@ -45,6 +71,8 @@ export async function domainRoutes(app: FastifyInstance) {
           domain: domainName,
           trackingDomain: `track.${domainName}`,
           returnPath: `bounce.${domainName}`,
+          dkimSelector,
+          dkimPrivateKeyEnc: encrypt(privateKey),
           dnsRecords: {
             create: [
               {
@@ -74,7 +102,7 @@ export async function domainRoutes(app: FastifyInstance) {
               },
               {
                 type: 'CUSTOM',
-                host: '_icoffee-verify',
+                host: '_inboxflow-verify',
                 value: verificationToken,
               },
             ],
@@ -84,9 +112,108 @@ export async function domainRoutes(app: FastifyInstance) {
       });
 
       return reply.status(201).send({
-        domain,
+        domain: {
+          ...domain,
+          dkimPrivateKeyEnc: undefined,
+          hasDkimPrivateKey: true,
+        },
         instructions: getSetupInstructions(domainName, domain.dnsRecords),
       });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  /** Upload or replace optional app-side DKIM signing key (advanced). */
+  app.post('/:id/dkim', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const body = z
+        .object({
+          selector: z.string().min(1).max(63).default('inboxflow'),
+          privateKeyPem: z.string().min(32).optional(),
+          generate: z.boolean().optional(),
+        })
+        .parse(request.body);
+
+      const domain = await prisma.domain.findFirst({
+        where: { id, organizationId: orgId },
+        include: { dnsRecords: true },
+      });
+      if (!domain) throw new AppError(404, 'Domain not found');
+
+      let privateKey = body.privateKeyPem?.trim();
+      if (body.generate || !privateKey) {
+        const pair = generateKeyPairSync('rsa', {
+          modulusLength: 2048,
+          publicKeyEncoding: { type: 'spki', format: 'pem' },
+          privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        });
+        privateKey = pair.privateKey;
+      }
+
+      let publicB64: string;
+      try {
+        publicB64 = pemToDkimPublicKey(privateKey);
+      } catch {
+        throw new AppError(400, 'Invalid RSA private key PEM');
+      }
+
+      const dkimValue = `v=DKIM1; k=rsa; p=${publicB64}`;
+      const host = `${body.selector}._domainkey`;
+
+      const existingDkim = domain.dnsRecords.find((r) => r.type === 'DKIM');
+      if (existingDkim) {
+        await prisma.dnsRecord.update({
+          where: { id: existingDkim.id },
+          data: { host, value: dkimValue, status: 'PENDING' },
+        });
+      } else {
+        await prisma.dnsRecord.create({
+          data: { domainId: id, type: 'DKIM', host, value: dkimValue },
+        });
+      }
+
+      const updated = await prisma.domain.update({
+        where: { id },
+        data: {
+          dkimSelector: body.selector,
+          dkimPrivateKeyEnc: encrypt(privateKey),
+        },
+        include: { dnsRecords: true },
+      });
+
+      return reply.send({
+        success: true,
+        domain: {
+          ...updated,
+          dkimPrivateKeyEnc: undefined,
+          hasDkimPrivateKey: true,
+        },
+        dnsRecord: {
+          host,
+          value: dkimValue,
+          type: 'TXT',
+        },
+        note: 'Publish the DKIM TXT record, then Verify. Outbound SMTP sends will sign when this key is stored.',
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.delete('/:id/dkim', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const domain = await prisma.domain.findFirst({ where: { id, organizationId: orgId } });
+      if (!domain) throw new AppError(404, 'Domain not found');
+      await prisma.domain.update({
+        where: { id },
+        data: { dkimPrivateKeyEnc: null, dkimSelector: null },
+      });
+      return reply.send({ success: true });
     } catch (error) {
       return sendError(reply, error);
     }

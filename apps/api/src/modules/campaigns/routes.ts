@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma.js';
+import { Prisma } from '@prisma/client';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
+import { requireOrg } from '../../utils/org.js';
 import { drainCampaignJobs, enqueueCampaign, enqueueCampaignScheduled } from '../../services/email/queue.js';
 import { sendCampaignEmailToRecipient } from '../../services/email/campaign-send.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
@@ -175,6 +177,110 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get('/queue-console', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const campaigns = await prisma.campaign.findMany({
+        where: {
+          organizationId: orgId,
+          status: { in: ['SENDING', 'PAUSED', 'READY', 'SCHEDULED', 'CANCELLED', 'SENT', 'FAILED'] },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 40,
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          subject: true,
+          sentCount: true,
+          totalRecipients: true,
+          sentAt: true,
+          completedAt: true,
+          updatedAt: true,
+          queueSettings: true,
+        },
+      });
+
+      const rows = await Promise.all(
+        campaigns.map(async (c) => {
+          const [pending, sent, failed] = await Promise.all([
+            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'QUEUED' } }),
+            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'SENT' } }),
+            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'FAILED' } }),
+          ]);
+          return {
+            ...c,
+            pending,
+            sent,
+            failed,
+            total: c.totalRecipients || pending + sent + failed,
+          };
+        }),
+      );
+
+      return reply.send({ campaigns: rows });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/import-config', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z
+        .object({
+          campaign: z.object({
+            name: z.string().min(1),
+            subject: z.string().optional().nullable(),
+            previewText: z.string().optional().nullable(),
+            senderName: z.string().optional().nullable(),
+            senderEmail: z.string().optional().nullable(),
+            replyTo: z.string().optional().nullable(),
+            htmlContent: z.string().optional().nullable(),
+            plainTextContent: z.string().optional().nullable(),
+            trackOpens: z.boolean().optional(),
+            trackClicks: z.boolean().optional(),
+            queueSettings: z.unknown().optional().nullable(),
+            subjectPool: z.array(z.string()).optional().nullable(),
+            fromNamePool: z.array(z.string()).optional().nullable(),
+            utmSource: z.string().optional().nullable(),
+            utmMedium: z.string().optional().nullable(),
+            utmCampaign: z.string().optional().nullable(),
+          }),
+        })
+        .parse(request.body);
+
+      const c = body.campaign;
+      const campaign = await prisma.campaign.create({
+        data: {
+          organizationId: orgId,
+          createdById: request.user.id,
+          name: `${c.name} (import)`,
+          status: 'DRAFT',
+          subject: c.subject,
+          previewText: c.previewText,
+          senderName: c.senderName,
+          senderEmail: c.senderEmail,
+          replyTo: c.replyTo,
+          htmlContent: c.htmlContent,
+          plainTextContent: c.plainTextContent,
+          trackOpens: c.trackOpens ?? true,
+          trackClicks: c.trackClicks ?? true,
+          queueSettings: (c.queueSettings as object) ?? undefined,
+          subjectPool: (c.subjectPool as object) ?? undefined,
+          fromNamePool: (c.fromNamePool as object) ?? undefined,
+          utmSource: c.utmSource,
+          utmMedium: c.utmMedium,
+          utmCampaign: c.utmCampaign,
+        },
+      });
+
+      return reply.status(201).send({ campaign });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/:id', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
@@ -276,6 +382,8 @@ export async function campaignRoutes(app: FastifyInstance) {
             })
             .optional()
             .nullable(),
+          subjectPool: z.array(z.string()).optional().nullable(),
+          fromNamePool: z.array(z.string()).optional().nullable(),
         })
         .parse(request.body);
 
@@ -285,12 +393,25 @@ export async function campaignRoutes(app: FastifyInstance) {
         throw new AppError(400, 'Cannot edit a campaign that is sending or sent');
       }
 
+      const { subjectPool, fromNamePool, ...rest } = body;
       const campaign = await prisma.campaign.update({
         where: { id },
         data: {
-          ...body,
+          ...rest,
           editorJson: body.editorJson as object | undefined,
           queueSettings: body.queueSettings === undefined ? undefined : (body.queueSettings as object),
+          subjectPool:
+            subjectPool === undefined
+              ? undefined
+              : subjectPool === null
+                ? Prisma.DbNull
+                : (subjectPool as Prisma.InputJsonValue),
+          fromNamePool:
+            fromNamePool === undefined
+              ? undefined
+              : fromNamePool === null
+                ? Prisma.DbNull
+                : (fromNamePool as Prisma.InputJsonValue),
           scheduledAt: body.scheduledAt
             ? new Date(body.scheduledAt)
             : body.scheduledAt === null
@@ -703,7 +824,7 @@ export async function campaignRoutes(app: FastifyInstance) {
         category: 'queue',
         message: `Campaign paused: ${id}`,
       });
-      return reply.send({ success: true });
+      return reply.send({ success: true, status: 'PAUSED' });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -718,20 +839,21 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (campaign.status !== 'PAUSED') throw new AppError(400, 'Only paused campaigns can resume');
 
       await prisma.campaign.update({ where: { id }, data: { status: 'SENDING' } });
-      const queued = await prisma.campaignRecipient.findMany({
+      await enqueueCampaign(id);
+      const queued = await prisma.campaignRecipient.count({
         where: { campaignId: id, status: 'QUEUED' },
-        include: { contact: true },
+      });
+      const { writeSystemLog } = await import('../../services/system-log.js');
+      await writeSystemLog({
+        organizationId: orgId,
+        level: 'INFO',
+        category: 'queue',
+        message: `Campaign resumed: ${id} (${queued} pending)`,
       });
       return reply.send({
         success: true,
-        recipients: queued.map((r) => ({
-          id: r.id,
-          contactId: r.contactId,
-          email: r.contact.email,
-          displayName:
-            [r.contact.firstName, r.contact.lastName].filter(Boolean).join(' ') ||
-            r.contact.email.split('@')[0],
-        })),
+        status: 'SENDING',
+        pendingCount: queued,
         queueSettings: campaign.queueSettings,
       });
     } catch (error) {
@@ -746,27 +868,28 @@ export async function campaignRoutes(app: FastifyInstance) {
       const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
-      await prisma.campaignRecipient.updateMany({
+      const reset = await prisma.campaignRecipient.updateMany({
         where: { campaignId: id, status: 'FAILED' },
         data: { status: 'QUEUED', error: null, messageId: null, sentAt: null },
       });
-      await prisma.campaign.update({ where: { id }, data: { status: 'SENDING' } });
+      await prisma.campaign.update({
+        where: { id },
+        data: { status: 'SENDING', completedAt: null },
+      });
+      await enqueueCampaign(id);
 
-      const recipients = await prisma.campaignRecipient.findMany({
-        where: { campaignId: id, status: 'QUEUED' },
-        include: { contact: true },
+      const { writeSystemLog } = await import('../../services/system-log.js');
+      await writeSystemLog({
+        organizationId: orgId,
+        level: 'INFO',
+        category: 'queue',
+        message: `Retrying ${reset.count} failed recipients: ${id}`,
       });
 
       return reply.send({
         success: true,
-        recipients: recipients.map((r) => ({
-          id: r.id,
-          contactId: r.contactId,
-          email: r.contact.email,
-          displayName:
-            [r.contact.firstName, r.contact.lastName].filter(Boolean).join(' ') ||
-            r.contact.email.split('@')[0],
-        })),
+        status: 'SENDING',
+        retried: reset.count,
         queueSettings: campaign.queueSettings,
       });
     } catch (error) {
@@ -821,6 +944,144 @@ export async function campaignRoutes(app: FastifyInstance) {
       });
       await drainCampaignJobs(id);
       return reply.send({ success: true });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  /** QA: send subject × sender-name combinations to a test inbox before a big send. */
+  app.post('/:id/test-matrix', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const body = z
+        .object({
+          to: z.string().email(),
+          subjects: z.array(z.string().min(1)).min(1).max(8),
+          fromNames: z.array(z.string()).max(8).optional(),
+        })
+        .parse(request.body);
+
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        include: { organization: true, domain: true },
+      });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+
+      const { parseProviderConfig, sendViaProvider } = await import('../../services/email/providers.js');
+      const { resolveRotatedProviders, parseRotationSettings } = await import(
+        '../../services/email/smtp-rotation.js'
+      );
+      const { decrypt } = await import('../../utils/crypto.js');
+
+      const rotation = parseRotationSettings(campaign.organization.sendSettings);
+      const providers = await resolveRotatedProviders({
+        organizationId: orgId,
+        preferredProviderId: campaign.providerId,
+        rotation: { ...rotation, enabled: false },
+      });
+      const provider = providers[0];
+      if (!provider) throw new AppError(400, 'No active SMTP provider');
+
+      const cfg = parseProviderConfig(provider.config);
+      const fromEmail = campaign.senderEmail || cfg.fromEmail || cfg.user || '';
+      if (!fromEmail) throw new AppError(400, 'Sender email is required');
+
+      const fromNames =
+        body.fromNames?.filter((n) => n.trim()).length
+          ? body.fromNames.filter((n) => n.trim())
+          : [campaign.senderName || cfg.fromName || ''];
+
+      let dkim:
+        | { domainName: string; keySelector: string; privateKey: string }
+        | undefined;
+      if (campaign.domain?.dkimPrivateKeyEnc && campaign.domain.dkimSelector) {
+        try {
+          dkim = {
+            domainName: campaign.domain.domain,
+            keySelector: campaign.domain.dkimSelector,
+            privateKey: decrypt(campaign.domain.dkimPrivateKeyEnc),
+          };
+        } catch {
+          /* skip */
+        }
+      }
+
+      const results: Array<{
+        subject: string;
+        fromName: string;
+        success: boolean;
+        messageId?: string;
+        error?: string;
+      }> = [];
+
+      for (const subject of body.subjects) {
+        for (const fromName of fromNames) {
+          const result = await sendViaProvider(
+            provider.type,
+            provider.config,
+            {
+              to: body.to,
+              from: fromEmail,
+              fromName: fromName.trim() || undefined,
+              replyTo: campaign.replyTo || cfg.replyTo || undefined,
+              subject: `[TEST] ${subject}`,
+              html: campaign.htmlContent || '<p>Test matrix message</p>',
+              text: campaign.plainTextContent || 'Test matrix message',
+              dkim,
+            },
+            { portFailover: provider.isDefault && provider.type === 'SMTP' },
+          );
+          results.push({
+            subject,
+            fromName: fromName.trim() || '(email only)',
+            success: result.success,
+            messageId: result.messageId,
+            error: result.error,
+          });
+        }
+      }
+
+      return reply.send({
+        success: results.every((r) => r.success),
+        sent: results.filter((r) => r.success).length,
+        total: results.length,
+        results,
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/:id/export-config', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+
+      return reply.send({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        campaign: {
+          name: campaign.name,
+          subject: campaign.subject,
+          previewText: campaign.previewText,
+          senderName: campaign.senderName,
+          senderEmail: campaign.senderEmail,
+          replyTo: campaign.replyTo,
+          htmlContent: campaign.htmlContent,
+          plainTextContent: campaign.plainTextContent,
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+          queueSettings: campaign.queueSettings,
+          subjectPool: campaign.subjectPool,
+          fromNamePool: campaign.fromNamePool,
+          utmSource: campaign.utmSource,
+          utmMedium: campaign.utmMedium,
+          utmCampaign: campaign.utmCampaign,
+        },
+      });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -883,9 +1144,4 @@ export async function campaignRoutes(app: FastifyInstance) {
       return sendError(reply, error);
     }
   });
-}
-
-function requireOrg(orgId: string | null): string {
-  if (!orgId) throw new AppError(400, 'No organization');
-  return orgId;
 }

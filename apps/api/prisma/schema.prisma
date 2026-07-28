@@ -366,6 +366,10 @@ model Campaign {
   analysisReport   Json?
   /// Per-campaign intelligent queue overrides
   queueSettings    Json?
+  /// Optional subject variants for rotation / test matrix (string[])
+  subjectPool      Json?
+  /// Optional from-name variants tied to verified SMTP (string[])
+  fromNamePool     Json?
 
   // Stats denormalized for dashboard
   totalRecipients  Int            @default(0)
@@ -487,6 +491,9 @@ model Domain {
   returnPathValid   Boolean      @default(false)
   reputationScore   Int          @default(100)
   lastVerifiedAt    DateTime?
+  /// Optional DKIM signing (encrypted PEM). Provider-side DKIM is preferred when available.
+  dkimSelector      String?
+  dkimPrivateKeyEnc String?
   organizationId    String
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdAt         DateTime     @default(now())
@@ -531,6 +538,9 @@ model EmailProvider {
   lastTestAt     DateTime?
   lastTestError  String?
   sentToday      Int          @default(0)
+  successCount   Int          @default(0)
+  failCount      Int          @default(0)
+  minuteLimit    Int?
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdAt      DateTime     @default(now())

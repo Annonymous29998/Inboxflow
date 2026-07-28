@@ -12,10 +12,17 @@ export type SmtpProfile = {
   priority: number;
   dailyLimit?: number | null;
   hourlyLimit?: number | null;
+  minuteLimit?: number | null;
   notes?: string | null;
   lastTestStatus?: string | null;
   lastTestError?: string | null;
   lastTestAt?: string | null;
+  sentToday?: number;
+  sentHour?: number;
+  sentMinute?: number;
+  successCount?: number;
+  failCount?: number;
+  successRate?: number;
   host?: string;
   port?: string;
   encryption?: string;
@@ -101,6 +108,7 @@ export const smtpService = {
     isActive?: boolean;
     dailyLimit?: number | null;
     hourlyLimit?: number | null;
+    minuteLimit?: number | null;
     priority?: number;
     notes?: string | null;
   }): Promise<SmtpProfile> {
@@ -137,6 +145,7 @@ export const smtpService = {
       isActive: boolean;
       dailyLimit: number | null;
       hourlyLimit: number | null;
+      minuteLimit: number | null;
       priority: number;
       notes: string | null;
     }>,
@@ -216,5 +225,24 @@ export const smtpService = {
       notes: input.notes || undefined,
     });
     return data.result;
+  },
+
+  async detectTls(port: string | number) {
+    return api.post<{
+      port: number;
+      encryption: 'SSL' | 'STARTTLS' | 'NONE';
+      secure: boolean;
+      hint?: string;
+    }>('/api/providers/detect-tls', { port });
+  },
+
+  async exportProfiles() {
+    return api.get<{ version: number; exportedAt: string; profiles: unknown[] }>(
+      '/api/providers/export',
+    );
+  },
+
+  async importProfiles(profiles: unknown[]) {
+    return api.post<{ imported: number; note?: string }>('/api/providers/import', { profiles });
   },
 };

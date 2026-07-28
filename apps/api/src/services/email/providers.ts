@@ -25,6 +25,12 @@ export interface SendEmailPayload {
   headers?: Record<string, string>;
   tags?: Record<string, string>;
   messageId?: string;
+  /** Optional app-side DKIM (nodemailer). Prefer provider-signed mail when available. */
+  dkim?: {
+    domainName: string;
+    keySelector: string;
+    privateKey: string;
+  };
 }
 
 export interface SendResult {
@@ -306,6 +312,15 @@ async function sendSmtp(
     messageId,
     date: new Date(),
     envelope: { from: fromEmail, to: payload.to },
+    ...(payload.dkim
+      ? {
+          dkim: {
+            domainName: payload.dkim.domainName,
+            keySelector: payload.dkim.keySelector,
+            privateKey: payload.dkim.privateKey,
+          },
+        }
+      : {}),
   };
 
   if (host === 'json' || host === 'dev' || host === 'console') {

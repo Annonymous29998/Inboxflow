@@ -37,6 +37,17 @@ export async function ensurePgmqQueues() {
   `);
   await prisma.$executeRawUnsafe(`ALTER TABLE "SmtpHourlySent" ENABLE ROW LEVEL SECURITY`);
 
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "SmtpMinuteSent" (
+      provider_id TEXT NOT NULL,
+      minute_key TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (provider_id, minute_key)
+    )
+  `);
+  await prisma.$executeRawUnsafe(`ALTER TABLE "SmtpMinuteSent" ENABLE ROW LEVEL SECURITY`);
+
   queuesReady = true;
 }
 

@@ -126,4 +126,56 @@ export const campaignSendService = {
   async cancel(campaignId: string) {
     await api.post(`/api/campaigns/${campaignId}/cancel`);
   },
+
+  async pause(campaignId: string) {
+    if (edgeFunctionsEnabled) {
+      throw new Error('Pause requires the API worker (disable edge send for full queue control)');
+    }
+    return api.post<{ success: boolean; status: string }>(`/api/campaigns/${campaignId}/pause`);
+  },
+
+  async resume(campaignId: string) {
+    if (edgeFunctionsEnabled) {
+      throw new Error('Resume requires the API worker (disable edge send for full queue control)');
+    }
+    return api.post<{ success: boolean; status: string; pendingCount?: number }>(
+      `/api/campaigns/${campaignId}/resume`,
+    );
+  },
+
+  async retryFailed(campaignId: string) {
+    if (edgeFunctionsEnabled) {
+      throw new Error('Retry failed requires the API worker');
+    }
+    return api.post<{ success: boolean; retried: number }>(
+      `/api/campaigns/${campaignId}/retry-failed`,
+    );
+  },
+
+  async testMatrix(
+    campaignId: string,
+    input: { to: string; subjects: string[]; fromNames?: string[] },
+  ) {
+    return api.post<{
+      success: boolean;
+      sent: number;
+      total: number;
+      results: Array<{
+        subject: string;
+        fromName: string;
+        success: boolean;
+        error?: string;
+      }>;
+    }>(`/api/campaigns/${campaignId}/test-matrix`, input);
+  },
+
+  async exportConfig(campaignId: string) {
+    return api.get<{ version: number; campaign: Record<string, unknown> }>(
+      `/api/campaigns/${campaignId}/export-config`,
+    );
+  },
+
+  async importConfig(campaign: Record<string, unknown>) {
+    return api.post<{ campaign: { id: string } }>('/api/campaigns/import-config', { campaign });
+  },
 };
