@@ -54,6 +54,8 @@ type Row = { email: string; firstName?: string; lastName?: string; phone?: strin
 
 function parseRows(text: string): Row[] {
   const rows: Row[] = [];
+  if (!text || !text.length) return rows;
+  const looseEmailRegex = /[A-Za-z0-9._%+\-!#$&'*/=?^_`{|}~]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return rows;
   const header = lines[0].split(/[,\t;]/).map((s) => s.trim().toLowerCase());
@@ -66,26 +68,49 @@ function parseRows(text: string): Row[] {
     else if (h === 'phone' || h === 'mobile' || h === 'cell') mapCol.phone = i;
   });
   const startIdx = hasEmailHeader ? 1 : 0;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const strictEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const seen = new Set<string>();
+  function pushIfUnique(row: Row) {
+    if (!row?.email) return;
+    const key = row.email.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(row);
+  }
   for (let i = startIdx; i < lines.length; i++) {
     const rawLine = lines[i];
-    if (rawLine.includes(',') || rawLine.includes('\t')) {
+    if (rawLine.includes(',') || rawLine.includes('\t') || rawLine.includes(';')) {
       const cols = rawLine.split(/[,\t;]/).map((s) => s.replace(/^"|"$/g, '').trim());
       let email: string | undefined;
-      if (mapCol.email !== undefined) email = cols[mapCol.email];
-      else {
-        const found = cols.find((c) => emailRegex.test(c));
-        if (found) email = found;
+      if (mapCol.email !== undefined) {
+        const raw = cols[mapCol.email] || '';
+        const found = raw.match(looseEmailRegex)?.[0];
+        if (found) email = found.toLowerCase();
       }
-      if (!email || !emailRegex.test(email)) continue;
-      rows.push({
-        email,
-        firstName: mapCol.firstName !== undefined ? cols[mapCol.firstName] || undefined : undefined,
-        lastName: mapCol.lastName !== undefined ? cols[mapCol.lastName] || undefined : undefined,
-        phone: mapCol.phone !== undefined ? cols[mapCol.phone] || undefined : undefined,
-      });
+      if (!email) {
+        for (const c of cols) {
+          const found = c.match(looseEmailRegex)?.[0];
+          if (found) { email = found.toLowerCase(); break; }
+        }
+      }
+      if (!email || !strictEmail.test(email)) continue;
+      const firstName = mapCol.firstName !== undefined ? cols[mapCol.firstName] || undefined : undefined;
+      const lastName = mapCol.lastName !== undefined ? cols[mapCol.lastName] || undefined : undefined;
+      const phone = mapCol.phone !== undefined ? cols[mapCol.phone] || undefined : undefined;
+      pushIfUnique({ email, firstName, lastName, phone });
     } else {
-      if (emailRegex.test(rawLine)) rows.push({ email: rawLine });
+      // Plain-text row. Try:
+      // 1) pure email             fct@nafdac.gov.ng
+      // 2) email + trailing count  fct@nafdac.gov.ng (75)
+      // 3) angle-bracket quoted    "John" <john@site.com>
+      // 4) any email inside line   Recipient: jane@doe.site  -> extract jane@doe.site
+      const cleaned = rawLine.replace(/\(\s*\d+\s*\)\s*$/, '').trim();
+      let foundEmail = cleaned.match(looseEmailRegex)?.[0];
+      if (!foundEmail) foundEmail = rawLine.match(looseEmailRegex)?.[0];
+      if (!foundEmail) continue;
+      const email = foundEmail.toLowerCase();
+      if (!strictEmail.test(email)) continue;
+      pushIfUnique({ email });
     }
   }
   return rows;
@@ -180,6 +205,9 @@ export function ContactsPage() {
     if (!activeListId) return grouped;
     return grouped.filter((g) => g.id === activeListId);
   }, [grouped, activeListId]);
+
+  const parsedCount = useMemo(() => parseRows(importText || '').length, [importText]);
+  const importDisabled = importing || parsedCount === 0;
 
   function toggle(listId: string) {
     setExpanded((s) => ({ ...s, [listId]: !(s[listId] ?? (grouped.length <= 6)) }));
@@ -363,12 +391,11 @@ export function ContactsPage() {
       const lst = lists.find((l) => l.id === listId);
       finalListName = lst?.name ?? '';
     } else if (listMode === 'auto' || listMode === 'custom') {
-      const suggested = listMode === 'auto' && importFileName ? listNameFromFileName(importFileName) : newListName;
-      finalListName = (suggested || '').trim();
-      if (!finalListName) {
-        toast.error('Enter a list name');
-        return;
-      }
+      const baseSuggested =
+        listMode === 'auto' && importFileName ? listNameFromFileName(importFileName) : newListName;
+      const fallback = `Pasted import ${new Date().toISOString().slice(0, 10)}`;
+      finalListName = ((baseSuggested || fallback) as string).trim();
+      if (!finalListName) finalListName = fallback;
     }
     setImporting(true);
     setProgress({
@@ -874,8 +901,11 @@ export function ContactsPage() {
               />
               {importText && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Detected <span className="font-medium text-foreground">{parseRows(importText).length}</span> valid
-                  email rows
+                  Detected{' '}
+                  <span className={'font-medium ' + (parsedCount === 0 ? 'text-red-400' : 'text-emerald-400')}>
+                    {parsedCount}
+                  </span>{' '}
+                  valid email rows
                 </p>
               )}
             </div>
@@ -935,7 +965,14 @@ export function ContactsPage() {
               <Button
                 type="button"
                 onClick={runImport}
-                disabled={importing || !parseRows(importText).length}
+                disabled={importDisabled}
+                title={
+                  parsedCount === 0
+                    ? 'No valid emails detected — paste or upload emails first'
+                    : listMode === 'existing' && !listId
+                      ? 'Select a list first'
+                      : ''
+                }
               >
                 {importing ? (
                   <>
@@ -944,7 +981,7 @@ export function ContactsPage() {
                 ) : (
                   <>
                     <Upload className="mr-2 h-4 w-4" /> Import{' '}
-                    {parseRows(importText).length ? `${parseRows(importText).length} rows` : ''}
+                    {parsedCount ? `${parsedCount} rows` : ''}
                   </>
                 )}
               </Button>
