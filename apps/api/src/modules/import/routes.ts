@@ -5,6 +5,7 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { requireOrg } from '../../utils/org.js';
 import { authenticate } from '../../middleware/auth.js';
 import { writeSystemLog } from '../../services/system-log.js';
+import { scrubCampaignContent, scrubSpamFromHtml, scrubSpamFromText } from '../deliverability/spam-scrubber.js';
 
 const UNSUPPORTED = [
   { pattern: /<script[\s>]/i, message: 'JavaScript <script> tags are unsupported in most email clients' },
@@ -124,6 +125,10 @@ export async function importRoutes(app: FastifyInstance) {
         'Imported template';
 
       let template = null;
+      const htmlScrubbed = scrubSpamFromHtml(html);
+      const plainScrubbed = scrubSpamFromText(plainText || '', { trim: false });
+      const mjmlScrubbed = body.format === 'mjml' && body.content ? scrubSpamFromText(body.content, { trim: false }) : null;
+      const editorHtml = htmlScrubbed.text;
       if (body.saveAsTemplate) {
         template = await prisma.template.create({
           data: {
@@ -131,10 +136,10 @@ export async function importRoutes(app: FastifyInstance) {
             createdById: request.user.id,
             name: templateName,
             description: body.filename ? `Imported from ${body.filename}` : 'Imported HTML template',
-            htmlContent: html,
-            plainText,
-            editorJson: { blocks: [{ id: 'imported', type: 'html', content: html }] },
-            mjmlSource: body.format === 'mjml' ? body.content : undefined,
+            htmlContent: htmlScrubbed.text,
+            plainText: plainScrubbed.text,
+            editorJson: { blocks: [{ id: 'imported', type: 'html', content: editorHtml }] },
+            mjmlSource: mjmlScrubbed ? mjmlScrubbed.text : undefined,
           },
         });
       }
@@ -148,15 +153,17 @@ export async function importRoutes(app: FastifyInstance) {
         campaign = await prisma.campaign.update({
           where: { id: body.campaignId },
           data: {
-            htmlContent: html,
-            plainTextContent: plainText,
+            htmlContent: htmlScrubbed.text,
+            plainTextContent: plainScrubbed.text,
             name: body.name || existing.name,
             status: 'DRAFT',
             templateId: template?.id ?? existing.templateId,
-            editorJson: { blocks: [{ id: 'imported', type: 'html', content: html }] },
+            editorJson: { blocks: [{ id: 'imported', type: 'html', content: editorHtml }] },
           },
         });
       }
+
+      const removed = [...new Set([...htmlScrubbed.removed, ...plainScrubbed.removed, ...(mjmlScrubbed?.removed || [])])];
 
       await writeSystemLog({
         organizationId: orgId,
@@ -167,12 +174,13 @@ export async function importRoutes(app: FastifyInstance) {
           images: images.length,
           relativeFixed: relativeImages.length,
           flags: validation.flags.length,
+          spamPhrasesRemoved: removed,
         },
       });
 
       return reply.send({
-        html,
-        plainText,
+        html: htmlScrubbed.text,
+        plainText: plainScrubbed.text,
         template,
         images: {
           total: images.length,
@@ -181,6 +189,8 @@ export async function importRoutes(app: FastifyInstance) {
         },
         validation,
         campaign,
+        scrubbed: htmlScrubbed.changed || plainScrubbed.changed || mjmlScrubbed?.changed || false,
+        removed,
       });
     } catch (error) {
       return sendError(reply, error);

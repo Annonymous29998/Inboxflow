@@ -183,3 +183,24 @@ export function scrubCampaignContent(input: {
 }
 
 export const SPAM_TRIGGER_PHRASES = SPAM_REPLACEMENTS.map((item) => item.phrase);
+
+export function stripHtmlTags(html: string | null | undefined): string {
+  if (!html) return '';
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&[a-z0-9]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isImageOnlyHtml(html: string | null | undefined): boolean {
+  if (!html) return false;
+  const text = stripHtmlTags(html).replace(/\s+/g, ' ').trim();
+  if (text.length > 40) return false;
+  const imgCount = (html.match(/<img[\s>]/gi) || []).length;
+  return imgCount > 0 && text.length < 20;
+}

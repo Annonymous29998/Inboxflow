@@ -7,6 +7,12 @@ import {
 } from '../_shared/signed-urls.ts';
 import { resolveSmtpProvider, sendViaSmtp } from '../_shared/smtp.ts';
 import { buildDeliverabilityHeaders, detectSmtpDeliverabilityWarnings, htmlToPlainText, stripAppUnsubscribeTokens, validateCampaignContent } from '../_shared/deliverability.ts';
+import {
+  findRemainingSpamPhrases,
+  isImageOnlyHtml,
+  scrubCampaignContent,
+  stripHtmlTags,
+} from '../_shared/spam-content-filter.ts';
 
 function cuidLike(): string {
   const rnd = (len: number) =>
@@ -155,6 +161,45 @@ Deno.serve(async (req) => {
     const passedJobId = body.jobId ? String(body.jobId) : null;
 
     if (action === 'prepare') {
+      // Scrub spam phrases and enforce last-resort hard-block (also below in background-start + send-one)
+      const scrubbed = scrubCampaignContent({
+        subject: String(campaign.subject || ''),
+        previewText: String(campaign.previewText || ''),
+        htmlContent: String(campaign.htmlContent || ''),
+        plainTextContent: String(campaign.plainTextContent || ''),
+      });
+      if (scrubbed.changed) {
+        const updatePayload: Record<string, unknown> = {
+          subject: scrubbed.subject,
+          previewText: scrubbed.previewText,
+          htmlContent: scrubbed.htmlContent,
+          plainTextContent: scrubbed.plainTextContent,
+        };
+        const { error } = await db.from('Campaign').update(updatePayload).eq('id', campaignId);
+        if (error) throw error;
+        campaign.subject = scrubbed.subject;
+        campaign.previewText = scrubbed.previewText;
+        campaign.htmlContent = scrubbed.htmlContent;
+        campaign.plainTextContent = scrubbed.plainTextContent;
+      }
+      const remaining = findRemainingSpamPhrases(
+        `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${stripHtmlTags(scrubbed.htmlContent)}`,
+      );
+      const blockers: string[] = [];
+      if (!scrubbed.subject.trim()) blockers.push('empty subject');
+      if (isImageOnlyHtml(scrubbed.htmlContent)) blockers.push('image-only content (no readable text)');
+      if (campaign.unsubscribeMode === 'NONE' && !campaign.includeUnsubscribeLink) {
+        blockers.push('no unsubscribe link / mode configured (CAN-SPAM / GDPR required)');
+      }
+      if (remaining.length > 0) blockers.push(`remaining high-risk spam phrases: ${remaining.slice(0, 3).join(', ')}`);
+      if (blockers.length > 0) {
+        await db.from('Campaign').update({
+          status: 'FAILED',
+          failReason: `Send cancelled by content filter. Fix: ${blockers.join('; ')}`,
+          failedAt: new Date().toISOString(),
+        }).eq('id', campaignId);
+        return jsonResponse({ error: `Campaign blocked by content filter: ${blockers.join('; ')}`, scrubbedRemoved: scrubbed.removed }, 400);
+      }
       if (!campaign.subject || !campaign.htmlContent) {
         return jsonResponse({ error: 'Campaign needs subject and content before sending' }, 400);
       }
@@ -262,6 +307,45 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'background-start') {
+      // Scrub + last-resort hard-block
+      const scrubbed = scrubCampaignContent({
+        subject: String(campaign.subject || ''),
+        previewText: String(campaign.previewText || ''),
+        htmlContent: String(campaign.htmlContent || ''),
+        plainTextContent: String(campaign.plainTextContent || ''),
+      });
+      if (scrubbed.changed) {
+        const updatePayload: Record<string, unknown> = {
+          subject: scrubbed.subject,
+          previewText: scrubbed.previewText,
+          htmlContent: scrubbed.htmlContent,
+          plainTextContent: scrubbed.plainTextContent,
+        };
+        const { error } = await db.from('Campaign').update(updatePayload).eq('id', campaignId);
+        if (error) throw error;
+        campaign.subject = scrubbed.subject;
+        campaign.previewText = scrubbed.previewText;
+        campaign.htmlContent = scrubbed.htmlContent;
+        campaign.plainTextContent = scrubbed.plainTextContent;
+      }
+      const remaining = findRemainingSpamPhrases(
+        `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${stripHtmlTags(scrubbed.htmlContent)}`,
+      );
+      const blockers: string[] = [];
+      if (!scrubbed.subject.trim()) blockers.push('empty subject');
+      if (isImageOnlyHtml(scrubbed.htmlContent)) blockers.push('image-only content (no readable text)');
+      if (campaign.unsubscribeMode === 'NONE' && !campaign.includeUnsubscribeLink) {
+        blockers.push('no unsubscribe link / mode configured (CAN-SPAM / GDPR required)');
+      }
+      if (remaining.length > 0) blockers.push(`remaining high-risk spam phrases: ${remaining.slice(0, 3).join(', ')}`);
+      if (blockers.length > 0) {
+        await db.from('Campaign').update({
+          status: 'FAILED',
+          failReason: `Send cancelled by content filter. Fix: ${blockers.join('; ')}`,
+          failedAt: new Date().toISOString(),
+        }).eq('id', campaignId);
+        return jsonResponse({ error: `Campaign blocked by content filter: ${blockers.join('; ')}`, scrubbedRemoved: scrubbed.removed }, 400);
+      }
       if (!campaign.subject || !campaign.htmlContent) {
         return jsonResponse({ error: 'Campaign needs subject and content before sending' }, 400);
       }
@@ -432,6 +516,55 @@ Deno.serve(async (req) => {
       const recipientId = String(body.recipientId ?? '').trim();
       if (!recipientId) {
         return jsonResponse({ error: 'recipientId is required' }, 400);
+      }
+
+      // Scrub + last-resort hard-block
+      const scrubbed = scrubCampaignContent({
+        subject: String(campaign.subject || ''),
+        previewText: String(campaign.previewText || ''),
+        htmlContent: String(campaign.htmlContent || ''),
+        plainTextContent: String(campaign.plainTextContent || ''),
+      });
+      if (scrubbed.changed) {
+        const updatePayload: Record<string, unknown> = {
+          subject: scrubbed.subject,
+          previewText: scrubbed.previewText,
+          htmlContent: scrubbed.htmlContent,
+          plainTextContent: scrubbed.plainTextContent,
+        };
+        const { error } = await db.from('Campaign').update(updatePayload).eq('id', campaignId);
+        if (error) throw error;
+        campaign.subject = scrubbed.subject;
+        campaign.previewText = scrubbed.previewText;
+        campaign.htmlContent = scrubbed.htmlContent;
+        campaign.plainTextContent = scrubbed.plainTextContent;
+      }
+      const remaining = findRemainingSpamPhrases(
+        `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${stripHtmlTags(scrubbed.htmlContent)}`,
+      );
+      const blockers: string[] = [];
+      if (!scrubbed.subject.trim()) blockers.push('empty subject');
+      if (isImageOnlyHtml(scrubbed.htmlContent)) blockers.push('image-only content (no readable text)');
+      if (campaign.unsubscribeMode === 'NONE' && !campaign.includeUnsubscribeLink) {
+        blockers.push('no unsubscribe link / mode configured (CAN-SPAM / GDPR required)');
+      }
+      if (remaining.length > 0) blockers.push(`remaining high-risk spam phrases: ${remaining.slice(0, 3).join(', ')}`);
+      if (blockers.length > 0) {
+        await db.from('Campaign').update({
+          status: 'FAILED',
+          failReason: `Send cancelled by content filter. Fix: ${blockers.join('; ')}`,
+          failedAt: new Date().toISOString(),
+        }).eq('id', campaignId);
+        await db.from('CampaignRecipient').update({
+          status: 'FAILED',
+          error: 'Campaign blocked by content filter',
+        }).eq('campaignId', campaignId).eq('id', recipientId);
+        return jsonResponse({
+          success: false,
+          error: `Campaign blocked by content filter: ${blockers.join('; ')}`,
+          scrubbedRemoved: scrubbed.removed,
+          jobId: passedJobId || null,
+        }, 400);
       }
 
       if (['PAUSED', 'CANCELLED'].includes(String(campaign.status))) {

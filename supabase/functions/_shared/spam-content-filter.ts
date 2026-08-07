@@ -130,3 +130,64 @@ export function findRemainingSpamPhrases(text: string): string[] {
   }
   return [...new Set(remaining)];
 }
+
+export function stripHtmlTags(html: string | null | undefined): string {
+  if (!html) return '';
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&[a-z0-9]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isImageOnlyHtml(html: string | null | undefined): boolean {
+  if (!html) return false;
+  const text = stripHtmlTags(html).replace(/\s+/g, ' ').trim();
+  if (text.length > 40) return false;
+  const imgCount = (html.match(/<img[\s>]/gi) || []).length;
+  return imgCount > 0 && text.length < 20;
+}
+
+export interface SpamFilterResult {
+  text: string;
+  removed: string[];
+  changed: boolean;
+}
+
+export function scrubCampaignContent(input: {
+  subject?: string | null;
+  previewText?: string | null;
+  htmlContent?: string | null;
+  plainTextContent?: string | null;
+}) {
+  const subjectScrub = scrubSpamFromText(sentenceCaseSubject(input.subject || '').replace(/!{2,}/g, '!'));
+  const previewScrub = scrubSpamFromText(input.previewText || '');
+  const htmlScrub = scrubSpamFromHtml(input.htmlContent || '');
+  const textScrub = scrubSpamFromText(input.plainTextContent || '', { trim: false });
+
+  const removed = [
+    ...new Set([
+      ...subjectScrub.removed,
+      ...previewScrub.removed,
+      ...htmlScrub.removed,
+      ...textScrub.removed,
+    ]),
+  ];
+
+  return {
+    subject: subjectScrub.text.slice(0, 180),
+    previewText: previewScrub.text,
+    htmlContent: htmlScrub.text,
+    plainTextContent: textScrub.text,
+    removed,
+    changed:
+      subjectScrub.changed ||
+      previewScrub.changed ||
+      htmlScrub.changed ||
+      textScrub.changed,
+  };
+}

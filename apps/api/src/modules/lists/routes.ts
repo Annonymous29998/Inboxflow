@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { requireOrg } from '../../utils/org.js';
 import { authenticate } from '../../middleware/auth.js';
+import { scrubCampaignContent, scrubSpamFromHtml, scrubSpamFromText } from '../deliverability/spam-scrubber.js';
 
 export async function listRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -149,19 +150,78 @@ export async function templateRoutes(app: FastifyInstance) {
         })
         .parse(request.body);
 
+      const htmlScrub = scrubSpamFromHtml(body.htmlContent || '');
+      const textScrub = scrubSpamFromText(body.plainText || '', { trim: false });
+      const mjmlScrub = body.mjmlSource ? scrubSpamFromText(body.mjmlSource, { trim: false }) : null;
+
       const template = await prisma.template.create({
         data: {
           organizationId: orgId,
           createdById: request.user.id,
           name: body.name,
           description: body.description,
-          htmlContent: body.htmlContent,
-          plainText: body.plainText,
+          htmlContent: htmlScrub.text,
+          plainText: textScrub.text,
           editorJson: body.editorJson as object | undefined,
-          mjmlSource: body.mjmlSource,
+          mjmlSource: mjmlScrub ? mjmlScrub.text : body.mjmlSource,
         },
       });
-      return reply.status(201).send({ template });
+      return reply.status(201).send({
+        template,
+        scrubbed: htmlScrub.changed || textScrub.changed || mjmlScrub?.changed || false,
+        removed: [...new Set([...htmlScrub.removed, ...textScrub.removed, ...(mjmlScrub?.removed || [])])],
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.patch('/:id', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const body = z
+        .object({
+          name: z.string().optional(),
+          description: z.string().nullable().optional(),
+          htmlContent: z.string().nullable().optional(),
+          plainText: z.string().nullable().optional(),
+          editorJson: z.unknown().optional(),
+          mjmlSource: z.string().nullable().optional(),
+          thumbnailUrl: z.string().nullable().optional(),
+        })
+        .parse(request.body);
+
+      const existing = await prisma.template.findFirst({
+        where: { id, organizationId: orgId },
+      });
+      if (!existing) throw new AppError(404, 'Template not found');
+
+      const data: Record<string, unknown> = {};
+      const removed: string[] = [];
+      if (body.name !== undefined) data.name = body.name;
+      if (body.description !== undefined) data.description = body.description;
+      if (body.thumbnailUrl !== undefined) data.thumbnailUrl = body.thumbnailUrl;
+      if (body.editorJson !== undefined) data.editorJson = body.editorJson as object | undefined;
+
+      if (body.htmlContent !== undefined) {
+        const s = scrubSpamFromHtml(body.htmlContent || '');
+        data.htmlContent = s.text;
+        removed.push(...s.removed);
+      }
+      if (body.plainText !== undefined) {
+        const s = scrubSpamFromText(body.plainText || '', { trim: false });
+        data.plainText = s.text;
+        removed.push(...s.removed);
+      }
+      if (body.mjmlSource !== undefined) {
+        const s = scrubSpamFromText(body.mjmlSource || '', { trim: false });
+        data.mjmlSource = s.text;
+        removed.push(...s.removed);
+      }
+
+      const template = await prisma.template.update({ where: { id }, data });
+      return reply.send({ template, scrubbed: removed.length > 0, removed: [...new Set(removed)] });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -175,19 +235,28 @@ export async function templateRoutes(app: FastifyInstance) {
         where: { id, OR: [{ organizationId: orgId }, { isPublic: true }] },
       });
       if (!source) throw new AppError(404, 'Template not found');
+
+      const htmlScrub = scrubSpamFromHtml(source.htmlContent || '');
+      const textScrub = scrubSpamFromText(source.plainText || '', { trim: false });
+      const mjmlScrub = source.mjmlSource ? scrubSpamFromText(source.mjmlSource, { trim: false }) : null;
+
       const template = await prisma.template.create({
         data: {
           organizationId: orgId,
           createdById: request.user.id,
           name: `${source.name} (Copy)`,
           description: source.description,
-          htmlContent: source.htmlContent,
-          plainText: source.plainText,
+          htmlContent: htmlScrub.text,
+          plainText: textScrub.text,
           editorJson: source.editorJson ?? undefined,
-          mjmlSource: source.mjmlSource,
+          mjmlSource: mjmlScrub ? mjmlScrub.text : source.mjmlSource,
         },
       });
-      return reply.status(201).send({ template });
+      return reply.status(201).send({
+        template,
+        scrubbed: htmlScrub.changed || textScrub.changed || mjmlScrub?.changed || false,
+        removed: [...new Set([...htmlScrub.removed, ...textScrub.removed, ...(mjmlScrub?.removed || [])])],
+      });
     } catch (error) {
       return sendError(reply, error);
     }

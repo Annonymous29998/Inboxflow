@@ -11,6 +11,7 @@ import {
 import { env } from '../../config/env.js';
 import { prisma } from '../../config/prisma.js';
 import { analyzeCampaign } from '../../modules/deliverability/analyzer.js';
+import { scrubCampaignContent, findRemainingSpamPhrases, stripHtmlTags, isImageOnlyHtml } from '../../modules/deliverability/spam-scrubber.js';
 import { sendCampaignEmailToRecipient } from './campaign-send.js';
 
 export type EmailJobData = {
@@ -169,6 +170,78 @@ async function dispatchCampaign(campaignId: string) {
 
   if (campaign.scheduledAt && campaign.scheduledAt.getTime() > Date.now()) {
     return;
+  }
+
+  // Final LAST-RESORT gate: scrub spam phrases regardless of how campaign was saved
+  // (handles old campaigns created before scrubber existed / edge functions / API bypass / manual DB edits)
+  const scrubbed = scrubCampaignContent({
+    subject: campaign.subject,
+    previewText: campaign.previewText,
+    htmlContent: campaign.htmlContent,
+    plainTextContent: campaign.plainTextContent,
+  });
+  const remainingSpam = findRemainingSpamPhrases(
+    `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${stripHtmlTags(scrubbed.htmlContent)}`,
+  );
+  const imageOnly = scrubbed.htmlContent && isImageOnlyHtml(scrubbed.htmlContent);
+  const combinedText = `${scrubbed.plainTextContent || ''} ${stripHtmlTags(scrubbed.htmlContent)}`.toLowerCase();
+  const missingUnsub =
+    !combinedText.includes('unsubscribe') &&
+    !combinedText.includes('opt-out') &&
+    !combinedText.includes('opt out') &&
+    !combinedText.includes('list-unsubscribe');
+  const emptySubject = !scrubbed.subject.trim();
+
+  if (emptySubject || imageOnly || remainingSpam.length > 0 || missingUnsub) {
+    const blockers: string[] = [];
+    if (emptySubject) blockers.push('empty subject');
+    if (imageOnly) blockers.push('image-only content (no readable text)');
+    if (missingUnsub) blockers.push('no unsubscribe link (CAN-SPAM / GDPR required)');
+    if (remainingSpam.length > 0) blockers.push(`remaining high-risk spam phrases: ${remainingSpam.join(', ')}`);
+    const failText = `Send cancelled by content filter. Fix: ${blockers.join('; ')}`;
+
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        status: 'FAILED',
+        completedAt: new Date(),
+      },
+    });
+    try {
+      await prisma.job.create({
+        data: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          type: 'CAMPAIGN_SEND',
+          status: 'FAILED',
+          total: 0,
+          processed: 0,
+          error: failText,
+          meta: { blockers },
+        },
+      });
+    } catch { /* ignore job write failures */ }
+    throw new Error(`Campaign blocked by send-side content filter: ${blockers.join('; ')}`);
+  }
+
+  let subject: string = scrubbed.subject;
+  let previewText: string | null = scrubbed.previewText;
+  let htmlContent: string | null = scrubbed.htmlContent;
+  let plainTextContent: string | null = scrubbed.plainTextContent;
+  if (scrubbed.changed) {
+    const updated = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        subject,
+        previewText,
+        htmlContent,
+        plainTextContent,
+      },
+    });
+    campaign.subject = updated.subject;
+    campaign.previewText = updated.previewText;
+    campaign.htmlContent = updated.htmlContent;
+    campaign.plainTextContent = updated.plainTextContent;
   }
 
   const report = analyzeCampaign({
