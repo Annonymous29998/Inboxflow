@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils';
 import { TerminalPanel } from '@/components/layout/TerminalPanel';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { Toaster } from '@/components/ui/Toaster';
+import { ConfirmViewport } from '@/components/ui/ConfirmViewport';
 
 const LG = '(min-width: 1024px)';
 
@@ -533,6 +534,7 @@ export function AppLayout() {
         </div>
       ) : null}
       <Toaster />
+      <ConfirmViewport />
     </div>
   );
 }

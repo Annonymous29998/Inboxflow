@@ -3,6 +3,7 @@ import { api } from '@/lib/api';
 import { Badge, Button, Card, Input, Label, Progress, Select } from '@/components/ui';
 import { Download, FileUp, Plus, Search, Upload, AlertTriangle, Trash2, ListPlus, Users, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown, MinusSquare, PlusSquare } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
 
 type Contact = {
@@ -301,8 +302,20 @@ export function ContactsPage() {
           ? `all contacts with status "${status}"`
           : 'all visible filtered contacts'
       : `${total.toLocaleString()} contacts across ALL lists`;
-    if (!confirm(`Are you sure you want to DELETE ${scopeLabel}? This cannot be undone.`)) return;
-    if (!confirm(`Really? Type YES in your head. This permanently removes the contacts.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete ${scopeLabel}`,
+      description: `You are about to DELETE ${scopeLabel}.\n\nThis action cannot be undone — all rows are permanently removed from your audience.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: `Yes, delete ${scopeLabel.split(' ')[0] || 'contacts'}`,
+    }))) return;
+    if (!(await confirmDialog({
+      title: `Final confirmation`,
+      description: `This is your last warning. Once confirmed, ${scopeLabel.toLowerCase()} will be PERMANENTLY erased from the database and cannot be recovered.\n\nAre you absolutely sure?`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Permanently delete',
+    }))) return;
     setClearingAll(true);
     try {
       const params = new URLSearchParams();
@@ -326,7 +339,13 @@ export function ContactsPage() {
   }
 
   async function deleteContact(id: string, email: string) {
-    if (!confirm(`Delete contact ${email}?`)) return;
+    if (!(await confirmDialog({
+      title: 'Delete contact',
+      description: `Permanently delete <${email}> from your audience?\n\nThis cannot be undone.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Delete contact',
+    }))) return;
     try {
       await api.delete(`/api/contacts/${id}`);
       toast.success('Contact deleted');

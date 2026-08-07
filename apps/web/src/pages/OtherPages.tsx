@@ -6,6 +6,7 @@ import { NewTemplateModal } from '@/components/templates/NewTemplateModal';
 import { Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { Sparkles, Trash2 } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { confirmDialog } from '@/stores/confirm';
 
 const TYPES = [
   'subject_lines',
@@ -169,7 +170,13 @@ export function TemplatesPage() {
   }
 
   async function remove(t: (typeof templates)[number]) {
-    if (!confirm(`Delete “${t.name}”? This cannot be undone.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete template`,
+      description: `Permanently delete template “${t.name}”?\n\nCampaigns already using this template keep their saved body copy, but the reusable source template is gone and cannot be recovered.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Delete template',
+    }))) return;
     setDeletingId(t.id);
     try {
       await api.delete(`/api/templates/${t.id}`);

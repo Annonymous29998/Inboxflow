@@ -5,6 +5,7 @@ import { smtpService, type SmtpProfile } from '@/services/smtp.service';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { toast } from '@/stores/toast';
+import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
 
 type FormState = {
@@ -333,7 +334,13 @@ export function SmtpManagerPage() {
   }
 
   async function remove(id: string) {
-    if (!confirm('Delete this SMTP profile?')) return;
+    if (!(await confirmDialog({
+      title: `Delete SMTP profile`,
+      description: `Permanently remove this SMTP provider?\n\nAny campaign queued using this profile will fall back to the default provider; if no other provider exists, sends will be paused until one is configured.\n\nThis cannot be undone.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Delete provider',
+    }))) return;
     try {
       await smtpService.remove(id);
       if (editingId === id) {

@@ -34,6 +34,7 @@ import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 import { toast } from '@/stores/toast';
+import { confirmDialog, promptDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
 
 function flash(message: string, tone: 'success' | 'error' | 'warning' | 'info' = 'success') {
@@ -222,7 +223,13 @@ export function CampaignsPage() {
       flash('Cancel the send first, then delete this campaign.', 'warning');
       return;
     }
-    if (!confirm(`Delete “${c.name}”? This cannot be undone.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete campaign`,
+      description: `Permanently delete campaign “${c.name}”?\n\nThis removes every send log, statistic row, and link tied to this campaign and cannot be undone.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Delete campaign',
+    }))) return;
     setDeletingId(c.id);
     try {
       await api.delete(`/api/campaigns/${c.id}`);
@@ -910,7 +917,13 @@ export function CampaignEditorPage() {
       flash('Cancel the send first, then delete this campaign.', 'warning');
       return;
     }
-    if (!confirm(`Delete “${campaign.name || 'this campaign'}”? This cannot be undone.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete campaign`,
+      description: `Permanently delete campaign “${campaign.name || 'this campaign'}”?\n\nAll send data, open/click stats and queue rows for this campaign are removed — this cannot be undone.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: 'Delete campaign',
+    }))) return;
     try {
       await api.delete(`/api/campaigns/${id}`);
       navigate('/app/campaigns');
@@ -1127,7 +1140,12 @@ export function CampaignEditorPage() {
                 size="sm"
                 className="mt-2 w-full"
                 onClick={async () => {
-                  const name = window.prompt('New list name');
+                  const name = await promptDialog('New list name', {
+                    description: 'Create a new contact list to organize your audience.',
+                    placeholder: 'e.g. Q4 launch prospects',
+                    validate: (v) => (!v.trim() ? 'Enter a list name' : null),
+                    confirmText: 'Create list',
+                  });
                   if (!name?.trim()) return;
                   try {
                     const data = await api.post<{ list: { id: string; name: string } }>('/api/lists', {
