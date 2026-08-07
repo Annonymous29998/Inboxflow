@@ -207,6 +207,7 @@ function blocksToHtml(blocks: EditorBlock[], dark = false): string {
 export function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [busyCreate, setBusyCreate] = useState(false);
   const navigate = useNavigate();
 
   async function load() {
@@ -217,6 +218,24 @@ export function CampaignsPage() {
   useEffect(() => {
     load().catch(console.error);
   }, []);
+
+  async function createNewDraftCampaign() {
+    if (busyCreate) return;
+    setBusyCreate(true);
+    try {
+      const created = await api.post<{ campaign: Campaign }>('/api/campaigns', {
+        name: 'Untitled campaign',
+        type: 'REGULAR',
+        status: 'DRAFT',
+      });
+      await load();
+      navigate(`/app/campaigns/${created.campaign.id}`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Failed to create draft campaign', 'error');
+    } finally {
+      setBusyCreate(false);
+    }
+  }
 
   async function deleteCampaign(c: Campaign, e: React.MouseEvent) {
     e.preventDefault();
@@ -251,7 +270,7 @@ export function CampaignsPage() {
           <h1 className="page-title">Campaigns</h1>
           <p className="page-sub">Create, analyze, and send with confidence</p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={() => navigate('/app/campaigns/new')}>
+        <Button className="w-full sm:w-auto" disabled={busyCreate} onClick={() => void createNewDraftCampaign()}>
           <Plus className="h-4 w-4" /> New campaign
         </Button>
       </div>
@@ -310,7 +329,7 @@ export function CampaignsPage() {
         {!campaigns.length && (
           <Card className="space-y-3 py-10 text-center">
             <p className="text-ink-muted">No campaigns yet.</p>
-            <Button onClick={() => navigate('/app/campaigns/new')}>
+            <Button disabled={busyCreate} onClick={() => void createNewDraftCampaign()}>
               <Plus className="h-4 w-4" /> Create your first campaign
             </Button>
           </Card>
@@ -477,6 +496,35 @@ export function CampaignEditorPage() {
         template.editorJson?.blocks?.length && template.editorJson.blocks[0]?.content && !scrubbed.changed
           ? template.editorJson.blocks
           : templateHtmlToBlocks(html);
+
+      const resolvedName = (campaign.name && campaign.name !== 'Untitled campaign') ? campaign.name : template.name;
+
+      if (isNew) {
+        const created = await api.post<{ campaign: Campaign }>('/api/campaigns', {
+          name: resolvedName,
+          type: campaign.type || 'REGULAR',
+          subject: campaign.subject,
+          previewText: campaign.previewText,
+          senderName: campaign.senderName,
+          senderEmail: campaign.senderEmail,
+          listId: campaign.listId,
+          segmentId: (campaign as unknown as { segmentId?: string | null }).segmentId ?? undefined,
+          templateId,
+          providerId: campaign.providerId,
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+          htmlContent: html,
+          plainTextContent: plain || undefined,
+          editorJson: { blocks: nextBlocks },
+          status: 'DRAFT',
+        });
+        const clearDraft = useDraftStore.getState().clearDraft;
+        clearDraft(`campaign:new:campaign`);
+        clearDraft(`campaign:new:blocks`);
+        flash(`Template applied & saved as new draft: ${resolvedName}`);
+        navigate(`/app/campaigns/${created.campaign.id}`, { replace: true });
+        return;
+      }
 
       setBlocks(nextBlocks);
       setCampaign((c) => ({

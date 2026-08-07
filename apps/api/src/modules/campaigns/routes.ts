@@ -146,8 +146,19 @@ export async function campaignRoutes(app: FastifyInstance) {
           utmSource: z.string().optional(),
           utmMedium: z.string().optional(),
           utmCampaign: z.string().optional(),
+          htmlContent: z.string().optional().nullable(),
+          plainTextContent: z.string().optional().nullable(),
+          editorJson: z.unknown().optional(),
+          status: z.enum(['DRAFT', 'READY', 'SCHEDULED']).default('DRAFT'),
         })
         .parse(request.body);
+
+      const scrubbed = scrubCampaignContent({
+        subject: body.subject,
+        previewText: body.previewText,
+        htmlContent: body.htmlContent || null,
+        plainTextContent: body.plainTextContent || null,
+      });
 
       const campaign = await prisma.campaign.create({
         data: {
@@ -155,8 +166,9 @@ export async function campaignRoutes(app: FastifyInstance) {
           createdById: request.user.id,
           name: body.name,
           type: body.type,
-          subject: body.subject,
-          previewText: body.previewText,
+          status: body.status,
+          subject: scrubbed.subject || null,
+          previewText: scrubbed.previewText || null,
           senderName: body.senderName,
           senderEmail: body.senderEmail || null,
           replyTo: body.replyTo || null,
@@ -169,10 +181,13 @@ export async function campaignRoutes(app: FastifyInstance) {
           utmSource: body.utmSource,
           utmMedium: body.utmMedium,
           utmCampaign: body.utmCampaign,
+          htmlContent: scrubbed.htmlContent || null,
+          plainTextContent: scrubbed.plainTextContent || null,
+          editorJson: body.editorJson as object | undefined,
         },
       });
 
-      return reply.status(201).send({ campaign });
+      return reply.status(201).send({ campaign, scrubbed: scrubbed.changed, removed: scrubbed.removed });
     } catch (error) {
       return sendError(reply, error);
     }
