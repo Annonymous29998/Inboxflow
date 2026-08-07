@@ -64,11 +64,15 @@ function mapEdgeAccount(row: EdgeAccount): SmtpProfile {
 
 export const smtpService = {
   async list(): Promise<SmtpProfile[]> {
-    if (edgeFunctionsEnabled) {
-      const data = await invokeEdgeFunction<{ ok: boolean; accounts: EdgeAccount[] }>('manage-smtp', {
-        action: 'list',
-      });
-      return (data.accounts ?? []).map(mapEdgeAccount);
+    try {
+      if (edgeFunctionsEnabled) {
+        const data = await invokeEdgeFunction<{ ok: boolean; accounts: EdgeAccount[] }>('manage-smtp', {
+          action: 'list',
+        });
+        return (data.accounts ?? []).map(mapEdgeAccount);
+      }
+    } catch {
+      // Fall through — edge functions unreachable (Railway / no deploy)
     }
 
     const data = await api.get<{ providers: SmtpProfile[] }>('/api/providers');
@@ -76,23 +80,28 @@ export const smtpService = {
   },
 
   async get(id: string): Promise<SmtpProfile & { config?: Record<string, string> }> {
-    if (edgeFunctionsEnabled) {
-      const accounts = await smtpService.list();
-      const found = accounts.find((a) => a.id === id);
-      if (!found) throw new Error('SMTP profile not found');
-      return {
-        ...found,
-        config: {
-          host: found.host || '',
-          port: found.port || '587',
-          encryption: found.encryption || 'STARTTLS',
-          user: found.user || '',
-          pass: '••••••••',
-          fromEmail: found.fromEmail || '',
-          fromName: found.fromName || '',
-          replyTo: found.replyTo || '',
-        },
-      };
+    try {
+      if (edgeFunctionsEnabled) {
+        const accounts = await smtpService.list();
+        const found = accounts.find((a) => a.id === id);
+        if (found) {
+          return {
+            ...found,
+            config: {
+              host: found.host || '',
+              port: found.port || '587',
+              encryption: found.encryption || 'STARTTLS',
+              user: found.user || '',
+              pass: '••••••••',
+              fromEmail: found.fromEmail || '',
+              fromName: found.fromName || '',
+              replyTo: found.replyTo || '',
+            },
+          };
+        }
+      }
+    } catch {
+      // Fall through — edge functions unreachable
     }
 
     return api.get<{ provider: SmtpProfile & { config?: Record<string, string> } }>(
@@ -112,20 +121,24 @@ export const smtpService = {
     priority?: number;
     notes?: string | null;
   }): Promise<SmtpProfile> {
-    if (edgeFunctionsEnabled) {
-      const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
-        action: 'create',
-        name: input.name,
-        label: input.label,
-        config: input.config,
-        isDefault: input.isDefault,
-        isActive: input.isActive,
-        dailyLimit: input.dailyLimit,
-        hourlyLimit: input.hourlyLimit,
-        priority: input.priority,
-        notes: input.notes,
-      });
-      return mapEdgeAccount(data.account);
+    try {
+      if (edgeFunctionsEnabled) {
+        const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
+          action: 'create',
+          name: input.name,
+          label: input.label,
+          config: input.config,
+          isDefault: input.isDefault,
+          isActive: input.isActive,
+          dailyLimit: input.dailyLimit,
+          hourlyLimit: input.hourlyLimit,
+          priority: input.priority,
+          notes: input.notes,
+        });
+        return mapEdgeAccount(data.account);
+      }
+    } catch {
+      // Fall through — edge functions unreachable
     }
 
     const data = await api.post<{ provider: SmtpProfile }>('/api/providers', {
@@ -150,13 +163,17 @@ export const smtpService = {
       notes: string | null;
     }>,
   ): Promise<SmtpProfile> {
-    if (edgeFunctionsEnabled) {
-      const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
-        action: 'update',
-        id,
-        ...input,
-      });
-      return mapEdgeAccount(data.account);
+    try {
+      if (edgeFunctionsEnabled) {
+        const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
+          action: 'update',
+          id,
+          ...input,
+        });
+        return mapEdgeAccount(data.account);
+      }
+    } catch {
+      // Fall through — edge functions unreachable
     }
 
     const data = await api.patch<{ provider: SmtpProfile }>(`/api/providers/${id}`, input);
@@ -164,9 +181,13 @@ export const smtpService = {
   },
 
   async remove(id: string): Promise<void> {
-    if (edgeFunctionsEnabled) {
-      await invokeEdgeFunction('manage-smtp', { action: 'delete', id });
-      return;
+    try {
+      if (edgeFunctionsEnabled) {
+        await invokeEdgeFunction('manage-smtp', { action: 'delete', id });
+        return;
+      }
+    } catch {
+      // Fall through — edge functions unreachable
     }
     await api.delete(`/api/providers/${id}`);
   },
@@ -185,31 +206,35 @@ export const smtpService = {
     issues?: string[];
     deliverabilityWarnings?: string[];
   }> {
-    if (edgeFunctionsEnabled) {
-      const data = await invokeEdgeFunction<{
-        ok: boolean;
-        success: boolean;
-        message?: string;
-        error?: string;
-        messageId?: string;
-        issues?: string[];
-        deliverabilityWarnings?: string[];
-      }>('manage-smtp', {
-        action: 'test',
-        providerId: input.providerId,
-        config: input.config,
-        sendTestEmail: Boolean(input.sendTestEmail),
-        testEmailTo: input.testEmailTo,
-        notes: input.notes || undefined,
-      });
-      return {
-        success: Boolean(data.success),
-        message: data.message || (data.success ? 'SMTP connection verified' : 'Connection failed'),
-        error: data.error,
-        messageId: data.messageId,
-        issues: data.issues || [],
-        deliverabilityWarnings: data.deliverabilityWarnings || [],
-      };
+    try {
+      if (edgeFunctionsEnabled) {
+        const data = await invokeEdgeFunction<{
+          ok: boolean;
+          success: boolean;
+          message?: string;
+          error?: string;
+          messageId?: string;
+          issues?: string[];
+          deliverabilityWarnings?: string[];
+        }>('manage-smtp', {
+          action: 'test',
+          providerId: input.providerId,
+          config: input.config,
+          sendTestEmail: Boolean(input.sendTestEmail),
+          testEmailTo: input.testEmailTo,
+          notes: input.notes || undefined,
+        });
+        return {
+          success: Boolean(data.success),
+          message: data.message || (data.success ? 'SMTP connection verified' : 'Connection failed'),
+          error: data.error,
+          messageId: data.messageId,
+          issues: data.issues || [],
+          deliverabilityWarnings: data.deliverabilityWarnings || [],
+        };
+      }
+    } catch {
+      // Fall through — edge functions unreachable
     }
 
     // Prefer id+config merge when editing so unsaved form fields are tested
