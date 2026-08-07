@@ -25,6 +25,9 @@
     "docker:build": "docker compose build"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/nodemailer": "^6.4.24",
+    "@types/qrcode": "^1.5.6",
     "concurrently": "^9.1.2",
     "typescript": "^5.8.2"
   },
