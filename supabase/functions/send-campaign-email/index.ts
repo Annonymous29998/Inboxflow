@@ -6,7 +6,16 @@ import {
   signClickRedirect,
 } from '../_shared/signed-urls.ts';
 import { resolveSmtpProvider, sendViaSmtp } from '../_shared/smtp.ts';
-import { buildDeliverabilityHeaders, htmlToPlainText, stripAppUnsubscribeTokens, validateCampaignContent } from '../_shared/deliverability.ts';
+import { buildDeliverabilityHeaders, detectSmtpDeliverabilityWarnings, htmlToPlainText, stripAppUnsubscribeTokens, validateCampaignContent } from '../_shared/deliverability.ts';
+
+function cuidLike(): string {
+  const rnd = (len: number) =>
+    Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(len * 0.75))))
+      .map((b) => b.toString(36).padStart(2, '0'))
+      .join('')
+      .slice(0, len);
+  return `c${rnd(24)}`;
+}
 
 function personalize(
   template: string,
@@ -83,6 +92,7 @@ Deno.serve(async (req) => {
     const body = await req.json() as Record<string, unknown>;
     const action = String(body.action ?? 'send-one').trim().toLowerCase();
     const campaignId = String(body.campaignId ?? '').trim();
+    const createdById = typeof (auth as any).userId === 'string' ? String((auth as any).userId) : null;
 
     if (!campaignId) {
       return jsonResponse({ error: 'campaignId is required' }, 400);
@@ -99,6 +109,50 @@ Deno.serve(async (req) => {
 
     if (campaignError) throw campaignError;
     if (!campaign) return jsonResponse({ error: 'Campaign not found' }, 404);
+
+    async function upsertJob(input: {
+      id?: string;
+      type?: 'CONTACT_IMPORT' | 'CAMPAIGN_SEND' | 'LIST_CLEAR' | 'CONTACT_EXPORT' | 'TEMPLATE_RENDER' | 'DELIVERABILITY_ANALYZE';
+      total?: number;
+      processed?: number;
+      status?: 'PENDING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
+      meta?: Record<string, unknown>;
+      error?: string;
+      resourceId?: string;
+    }) {
+      try {
+        const id = input.id || cuidLike();
+        const type = input.type || 'CAMPAIGN_SEND';
+        const status = input.status || 'RUNNING';
+        const payload: Record<string, unknown> = {
+          id,
+          type,
+          status,
+          organizationId: orgId,
+          resourceId: input.resourceId ?? campaignId,
+          campaignId,
+          total: Number(input.total ?? 0),
+          processed: Number(input.processed ?? 0),
+          meta: input.meta ?? {},
+        };
+        if (createdById) payload.createdById = createdById;
+        if (input.startedAt !== undefined) payload.startedAt = input.startedAt;
+        if (input.error) payload.error = input.error;
+        if (input.finishedAt !== undefined) payload.finishedAt = input.finishedAt;
+
+        const { data, error } = await db
+          .from('Job')
+          .upsert(payload, { onConflict: 'id', ignoreDuplicates: false })
+          .select('*')
+          .maybeSingle();
+        if (error) console.warn('[send-campaign-email] job upsert failed', error);
+        return (data?.id as string) || id;
+      } catch {
+        return input.id || cuidLike();
+      }
+    }
+
+    const passedJobId = body.jobId ? String(body.jobId) : null;
 
     if (action === 'prepare') {
       if (!campaign.subject || !campaign.htmlContent) {
@@ -117,6 +171,19 @@ Deno.serve(async (req) => {
       if (!contacts.length) {
         return jsonResponse({ error: 'No eligible recipients' }, 400);
       }
+
+      const providerId = body.providerId === undefined ? campaign.providerId : (body.providerId as string | null);
+      const smtp = providerId
+        ? await resolveSmtpProvider(db, orgId, providerId as string | null, encryptionKey)
+        : null;
+      const deliverabilityWarnings = smtp
+        ? detectSmtpDeliverabilityWarnings({
+          host: smtp.host,
+          port: smtp.port,
+          fromEmail: String(campaign.senderEmail || smtp.fromEmail || smtp.user || ''),
+          user: smtp.user,
+        })
+        : [];
 
       const recipients = [];
       for (const contact of contacts) {
@@ -169,12 +236,29 @@ Deno.serve(async (req) => {
           status: 'SENDING',
           sentAt: new Date().toISOString(),
           sentCount: 0,
+          failedCount: 0,
           totalRecipients: contacts.length,
           providerId: body.providerId === undefined ? campaign.providerId : body.providerId,
         })
         .eq('id', campaignId);
 
-      return jsonResponse({ success: true, recipients });
+      const jobId = await upsertJob({
+        id: passedJobId || undefined,
+        type: 'CAMPAIGN_SEND',
+        total: contacts.length,
+        processed: 0,
+        status: 'RUNNING',
+        startedAt: new Date().toISOString(),
+        meta: { stage: 'prepared', sent: 0, failed: 0, pending: contacts.length, deliverabilityWarnings },
+      });
+
+      return jsonResponse({
+        success: true,
+        recipients,
+        totalRecipients: contacts.length,
+        jobId,
+        deliverabilityWarnings,
+      });
     }
 
     if (action === 'background-start') {
@@ -229,11 +313,22 @@ Deno.serve(async (req) => {
           status: 'SENDING',
           sentAt: new Date().toISOString(),
           sentCount: 0,
+          failedCount: 0,
           totalRecipients: contacts.length,
           providerId: body.providerId === undefined ? campaign.providerId : body.providerId,
           ...(queueSettings ? { queueSettings } : {}),
         })
         .eq('id', campaignId);
+
+      const jobId = await upsertJob({
+        id: passedJobId || undefined,
+        type: 'CAMPAIGN_SEND',
+        total: contacts.length,
+        processed: 0,
+        status: 'RUNNING',
+        startedAt: new Date().toISOString(),
+        meta: { stage: 'prepared', sent: 0, failed: 0, pending: contacts.length },
+      });
 
       await invokeBackgroundWorker(campaignId);
 
@@ -242,6 +337,7 @@ Deno.serve(async (req) => {
         background: true,
         totalRecipients: contacts.length,
         status: 'SENDING',
+        jobId,
       });
     }
 
@@ -254,7 +350,7 @@ Deno.serve(async (req) => {
 
       const { data: live } = await db
         .from('Campaign')
-        .select('status, totalRecipients, sentCount, completedAt')
+        .select('status, totalRecipients, sentCount, failedCount, completedAt')
         .eq('id', campaignId)
         .maybeSingle();
 
@@ -277,9 +373,9 @@ Deno.serve(async (req) => {
         db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'QUEUED'),
       ]);
 
-      const sent = sentCount ?? 0;
-      const failed = failedCount ?? 0;
-      const pending = pendingCount ?? 0;
+      const sent = Number(sentCount ?? 0);
+      const failed = Number(failedCount ?? 0);
+      const pending = Number(pendingCount ?? 0);
 
       const status = cancelled
         ? 'CANCELLED'
@@ -294,11 +390,42 @@ Deno.serve(async (req) => {
         .update({
           status,
           sentCount: sent,
+          failedCount: failed,
           completedAt: status === 'SENT' || status === 'CANCELLED' ? new Date().toISOString() : null,
         })
         .eq('id', campaignId);
 
-      return jsonResponse({ success: true, sentCount: sent, failedCount: failed, pendingCount: pending, status });
+      if (passedJobId) {
+        const jobStatus: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'PAUSED' = status === 'CANCELLED'
+          ? 'CANCELLED'
+          : status === 'FAILED'
+          ? 'FAILED'
+          : status === 'PAUSED'
+          ? 'PAUSED'
+          : 'COMPLETED';
+        await upsertJob({
+          id: passedJobId,
+          status: jobStatus,
+          processed: sent + failed,
+          total: Math.max(sent + failed + pending, 1),
+          finishedAt: new Date().toISOString(),
+          meta: {
+            stage: jobStatus === 'COMPLETED' ? 'completed' : 'finalized',
+            sent,
+            failed,
+            pending,
+          },
+        });
+      }
+
+      return jsonResponse({
+        success: true,
+        sentCount: sent,
+        failedCount: failed,
+        pendingCount: pending,
+        status,
+        jobId: passedJobId || null,
+      });
     }
 
     if (action === 'send-one') {
@@ -333,7 +460,7 @@ Deno.serve(async (req) => {
           .from('CampaignRecipient')
           .update({ status: 'FAILED', error: 'Contact not subscribed' })
           .eq('id', recipientId);
-        return jsonResponse({ success: false, error: 'Contact not subscribed' }, 400);
+        return jsonResponse({ success: false, error: 'Contact not subscribed', jobId: passedJobId || null }, 400);
       }
 
       const { data: org } = await db
@@ -400,7 +527,7 @@ Deno.serve(async (req) => {
       ).trim();
       if (!fromEmail) {
         return jsonResponse(
-          { error: 'Sender email is required. Set it on the campaign or SMTP profile.' },
+          { error: 'Sender email is required. Set it on the campaign or SMTP profile.', jobId: passedJobId || null },
           400,
         );
       }
@@ -425,22 +552,44 @@ Deno.serve(async (req) => {
           smtp,
         );
 
-        await db.from('CampaignRecipient').update({
+        const { data: updatedRecipient } = await db.from('CampaignRecipient').update({
           status: 'SENT',
           messageId: result.messageId,
           sentAt: new Date().toISOString(),
           error: null,
-        }).eq('id', recipientId);
+        }).eq('id', recipientId).select('*').maybeSingle();
+        void updatedRecipient;
 
-        const { data: currentCampaign } = await db
-          .from('Campaign')
-          .select('sentCount')
-          .eq('id', campaignId)
-          .maybeSingle();
+        const [{ count: sentCountRes }, { count: failedCountRes }, { count: pendingCountRes }] = await Promise.all([
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'SENT'),
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'FAILED'),
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'QUEUED'),
+        ]);
+        const sent = Number(sentCountRes ?? 0);
+        const failed = Number(failedCountRes ?? 0);
+        const pending = Number(pendingCountRes ?? 0);
 
         await db.from('Campaign').update({
-          sentCount: Number(currentCampaign?.sentCount ?? 0) + 1,
+          sentCount: sent,
+          failedCount: failed,
+          status: 'SENDING',
         }).eq('id', campaignId);
+
+        if (passedJobId) {
+          await upsertJob({
+            id: passedJobId,
+            status: 'RUNNING',
+            processed: sent + failed,
+            total: Math.max(sent + failed + pending, 1),
+            meta: {
+              stage: 'sending',
+              sent,
+              failed,
+              pending,
+              lastEmail: to,
+            },
+          });
+        }
 
         await db.from('TrackingEvent').insert({
           type: 'SENT',
@@ -460,11 +609,38 @@ Deno.serve(async (req) => {
           }).eq('id', smtp.id);
         }
 
-        return jsonResponse({ success: true, messageId: result.messageId });
+        return jsonResponse({ success: true, messageId: result.messageId, jobId: passedJobId || null });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Send failed';
         await db.from('CampaignRecipient').update({ status: 'FAILED', error: message }).eq('id', recipientId);
-        return jsonResponse({ success: false, error: message }, 400);
+
+        const [{ count: sentCountRes }, { count: failedCountRes }, { count: pendingCountRes }] = await Promise.all([
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'SENT'),
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'FAILED'),
+          db.from('CampaignRecipient').select('id', { count: 'exact', head: true }).eq('campaignId', campaignId).eq('status', 'QUEUED'),
+        ]);
+        const sent = Number(sentCountRes ?? 0);
+        const failed = Number(failedCountRes ?? 0);
+        const pending = Number(pendingCountRes ?? 0);
+
+        if (passedJobId) {
+          await upsertJob({
+            id: passedJobId,
+            status: 'RUNNING',
+            processed: sent + failed,
+            total: Math.max(sent + failed + pending, 1),
+            meta: {
+              stage: 'sending',
+              sent,
+              failed,
+              pending,
+              lastEmail: to,
+            },
+          });
+        }
+
+        await db.from('Campaign').update({ sentCount: sent, failedCount: failed, status: 'SENDING' }).eq('id', campaignId);
+        return jsonResponse({ success: false, error: message, jobId: passedJobId || null }, 400);
       }
     }
 

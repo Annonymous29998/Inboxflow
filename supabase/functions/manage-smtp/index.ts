@@ -2,6 +2,10 @@ import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
 import { encryptPayload, parseProviderConfig } from '../_shared/crypto.ts';
 import { getServiceClient, requireOrg, verifyInboxFlowJwt } from '../_shared/auth.ts';
 import { resolveSmtpProvider, sendViaSmtp, verifySmtpConnection } from '../_shared/smtp.ts';
+import {
+  detectSmtpConfigIssues,
+  detectSmtpDeliverabilityWarnings,
+} from '../_shared/deliverability.ts';
 
 function normalizeConfig(config: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -100,6 +104,49 @@ Deno.serve(async (req) => {
         return jsonResponse({ error: 'host, user, and pass are required' }, 400);
       }
 
+      const issues = detectSmtpConfigIssues(config);
+      const deliverabilityWarnings = detectSmtpDeliverabilityWarnings(config);
+
+      if (issues.length > 0) {
+        return jsonResponse({
+          ok: false,
+          success: false,
+          error: 'Fix SMTP configuration issues before saving.',
+          issues,
+          deliverabilityWarnings,
+        }, 400);
+      }
+
+      let testPassed = false;
+      let testMessage = '';
+      try {
+        await verifySmtpConnection({
+          id: 'test',
+          host: config.host,
+          port: Number(config.port || 587),
+          secure: config.secure === 'true' || config.encryption === 'SSL' || String(config.port || '587') === '465',
+          user: config.user,
+          pass: config.pass,
+          fromName: config.fromName || '',
+          fromEmail: config.fromEmail || config.user,
+          isDefault: Boolean(body.isDefault),
+        });
+        testPassed = true;
+      } catch (error) {
+        testMessage = error instanceof Error ? error.message : 'Connection failed';
+      }
+
+      if (!testPassed) {
+        return jsonResponse({
+          ok: false,
+          success: false,
+          error: `SMTP was NOT saved — connection test failed. Fix credentials first.\n\n${testMessage}`,
+          issues,
+          deliverabilityWarnings,
+        }, 400);
+      }
+
+      const isActive = Boolean(body.isActive);
       const { data, error } = await db
         .from('EmailProvider')
         .insert({
@@ -107,12 +154,14 @@ Deno.serve(async (req) => {
           label: body.label ? String(body.label) : null,
           type: 'SMTP',
           isDefault: Boolean(body.isDefault),
-          isActive: body.isActive !== false,
+          isActive,
           priority: Number(body.priority ?? 0),
           dailyLimit: body.dailyLimit ? Number(body.dailyLimit) : null,
           hourlyLimit: body.hourlyLimit ? Number(body.hourlyLimit) : null,
           notes: body.notes ? String(body.notes) : null,
-          lastTestStatus: 'Pending',
+          lastTestStatus: 'Connected',
+          lastTestAt: new Date().toISOString(),
+          lastTestError: null,
           organizationId: orgId,
           config: { encrypted: encryptPayload(JSON.stringify(config), encryptionKey) },
         })
@@ -120,7 +169,12 @@ Deno.serve(async (req) => {
         .single();
 
       if (error) throw error;
-      return jsonResponse({ ok: true, account: mapPublicProvider(data, encryptionKey) });
+      return jsonResponse({
+        ok: true,
+        account: mapPublicProvider(data, encryptionKey),
+        issues,
+        deliverabilityWarnings,
+      });
     }
 
     if (action === 'update') {
@@ -140,15 +194,65 @@ Deno.serve(async (req) => {
       const currentConfig = parseProviderConfig(existing.config, encryptionKey);
       const patch = normalizeConfig((body.config || {}) as Record<string, string>);
       const merged = { ...currentConfig, ...patch };
-      if (!patch.pass) merged.pass = currentConfig.pass;
+      if (!patch.pass || patch.pass === '••••••••') merged.pass = currentConfig.pass;
+
+      const credentialsChanged =
+        patch.pass && patch.pass !== '••••••••' && patch.pass !== currentConfig.pass ||
+        (patch.host && String(patch.host).trim() !== String(currentConfig.host || '').trim()) ||
+        (patch.user && String(patch.user).trim() !== String(currentConfig.user || '').trim()) ||
+        (patch.port && String(patch.port).trim() !== String(currentConfig.port || '').trim()) ||
+        (patch.fromEmail && String(patch.fromEmail).trim() !== String(currentConfig.fromEmail || '').trim());
+
+      const issues = detectSmtpConfigIssues(merged);
+      const deliverabilityWarnings = detectSmtpDeliverabilityWarnings(merged);
+
+      if (issues.length) {
+        return jsonResponse({
+          ok: false,
+          success: false,
+          error: 'Fix SMTP configuration issues before saving.',
+          issues,
+          deliverabilityWarnings,
+        }, 400);
+      }
 
       const update: Record<string, unknown> = {
         config: { encrypted: encryptPayload(JSON.stringify(merged), encryptionKey) },
         updatedAt: new Date().toISOString(),
       };
 
-      for (const key of ['name', 'label', 'notes', 'isDefault', 'isActive', 'priority', 'dailyLimit', 'hourlyLimit']) {
+      for (const key of ['name', 'label', 'notes', 'isDefault', 'priority', 'dailyLimit', 'hourlyLimit']) {
         if (body[key] !== undefined) update[key] = body[key];
+      }
+
+      if (body.isActive !== undefined) {
+        if (credentialsChanged || Boolean(body.isActive)) {
+          try {
+            await verifySmtpConnection({
+              id,
+              host: merged.host,
+              port: Number(merged.port || 587),
+              secure: merged.secure === 'true' || merged.encryption === 'SSL' || String(merged.port || '587') === '465',
+              user: merged.user,
+              pass: merged.pass,
+              fromName: merged.fromName || '',
+              fromEmail: merged.fromEmail || merged.user,
+              isDefault: Boolean(body.isDefault),
+            });
+          } catch (error) {
+            return jsonResponse({
+              ok: false,
+              success: false,
+              error: 'Saved, but activation blocked — connection test failed',
+              issues,
+              deliverabilityWarnings,
+            }, 400);
+          }
+        }
+        update.isActive = body.isActive;
+        update.lastTestStatus = 'Connected';
+        update.lastTestAt = new Date().toISOString();
+        update.lastTestError = null;
       }
 
       const { data, error } = await db
@@ -159,7 +263,12 @@ Deno.serve(async (req) => {
         .single();
 
       if (error) throw error;
-      return jsonResponse({ ok: true, account: mapPublicProvider(data, encryptionKey) });
+      return jsonResponse({
+        ok: true,
+        account: mapPublicProvider(data, encryptionKey),
+        issues,
+        deliverabilityWarnings,
+      });
     }
 
     if (action === 'delete') {
@@ -225,6 +334,19 @@ Deno.serve(async (req) => {
         smtp = await resolveSmtpProvider(db, orgId, providerId, encryptionKey);
       }
 
+      const issues = detectSmtpConfigIssues({
+        host: smtp.host,
+        port: smtp.port,
+        user: smtp.user,
+        pass: smtp.pass,
+      });
+      const deliverabilityWarnings = detectSmtpDeliverabilityWarnings({
+        host: smtp.host,
+        port: smtp.port,
+        fromEmail: smtp.fromEmail,
+        user: smtp.user,
+      });
+
       const started = Date.now();
       try {
         await verifySmtpConnection(smtp);
@@ -268,6 +390,8 @@ Deno.serve(async (req) => {
           success: true,
           message,
           messageId,
+          issues,
+          deliverabilityWarnings,
           details: {
             host: smtp.host,
             port: smtp.port,
@@ -285,7 +409,13 @@ Deno.serve(async (req) => {
             lastTestError: message,
           }).eq('id', providerId);
         }
-        return jsonResponse({ ok: false, success: false, error: message }, 400);
+        return jsonResponse({
+          ok: false,
+          success: false,
+          error: message,
+          issues,
+          deliverabilityWarnings,
+        }, 400);
       }
     }
 
@@ -296,3 +426,4 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: message }, 500);
   }
 });
+
