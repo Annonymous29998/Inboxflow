@@ -177,7 +177,14 @@ export const smtpService = {
     sendTestEmail?: boolean;
     testEmailTo?: string;
     notes?: string | null;
-  }): Promise<{ success: boolean; message: string; error?: string; messageId?: string }> {
+  }): Promise<{
+    success: boolean;
+    message: string;
+    error?: string;
+    messageId?: string;
+    issues?: string[];
+    deliverabilityWarnings?: string[];
+  }> {
     if (edgeFunctionsEnabled) {
       const data = await invokeEdgeFunction<{
         ok: boolean;
@@ -185,6 +192,8 @@ export const smtpService = {
         message?: string;
         error?: string;
         messageId?: string;
+        issues?: string[];
+        deliverabilityWarnings?: string[];
       }>('manage-smtp', {
         action: 'test',
         providerId: input.providerId,
@@ -198,6 +207,8 @@ export const smtpService = {
         message: data.message || (data.success ? 'SMTP connection verified' : 'Connection failed'),
         error: data.error,
         messageId: data.messageId,
+        issues: data.issues || [],
+        deliverabilityWarnings: data.deliverabilityWarnings || [],
       };
     }
 
@@ -206,17 +217,21 @@ export const smtpService = {
     if (input.providerId) {
       const data = await api.post<{
         result: { success: boolean; message: string; error?: string; messageId?: string };
+        issues?: string[];
+        deliverabilityWarnings?: string[];
       }>(`/api/providers/${input.providerId}/test`, {
         sendTestEmail: Boolean(input.sendTestEmail),
         testEmailTo: input.testEmailTo,
         config: input.config,
         notes: input.notes || undefined,
       });
-      return data.result;
+      return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
     }
 
     const data = await api.post<{
       result: { success: boolean; message: string; error?: string; messageId?: string };
+      issues?: string[];
+      deliverabilityWarnings?: string[];
     }>('/api/providers/test', {
       type: 'SMTP',
       config: input.config,
@@ -224,7 +239,7 @@ export const smtpService = {
       testEmailTo: input.testEmailTo,
       notes: input.notes || undefined,
     });
-    return data.result;
+    return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
   },
 
   async detectTls(port: string | number) {

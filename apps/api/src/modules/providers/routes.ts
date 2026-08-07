@@ -13,7 +13,11 @@ import {
   testSmtpConnection,
 } from '../../services/email/providers.js';
 import { migrateLegacySmtpBranding, removeEnvBootstrappedSmtpProviders } from '../../services/email/migrate-legacy-smtp.js';
-import { detectSmtpConfigIssues, writeSystemLog } from '../../services/system-log.js';
+import {
+  detectSmtpConfigIssues,
+  detectSmtpDeliverabilityWarnings,
+  writeSystemLog,
+} from '../../services/system-log.js';
 import { isBlockedSmtpHost } from '../../utils/signed-urls.js';
 import {
   detectTlsFromPort,
@@ -511,6 +515,8 @@ export async function providerRoutes(app: FastifyInstance) {
         throw new AppError(400, 'ignoreTLS is not allowed in production');
       }
       const issues = body.type === 'SMTP' ? detectSmtpConfigIssues(config) : [];
+      const deliverabilityWarnings =
+        body.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];
 
       let result;
       if (body.type === 'SMTP' && body.sendTestEmail) {
@@ -530,10 +536,10 @@ export async function providerRoutes(app: FastifyInstance) {
         message: result.success
           ? `SMTP test OK: ${config.host || body.type}`
           : `SMTP test failed: ${result.error || result.message}`,
-        meta: { issues },
+        meta: { issues, deliverabilityWarnings },
       });
 
-      return reply.send({ result, issues });
+      return reply.send({ result, issues, deliverabilityWarnings });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -574,6 +580,8 @@ export async function providerRoutes(app: FastifyInstance) {
       }
 
       const issues = provider.type === 'SMTP' ? detectSmtpConfigIssues(config) : [];
+      const deliverabilityWarnings =
+        provider.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];
 
       let result;
       if (provider.type === 'SMTP' && body.sendTestEmail) {
@@ -602,10 +610,10 @@ export async function providerRoutes(app: FastifyInstance) {
         message: result.success
           ? `Connected to SMTP: ${provider.name}`
           : `Authentication failed: ${provider.name} — ${result.error || result.message}`,
-        meta: { providerId: id, issues },
+        meta: { providerId: id, issues, deliverabilityWarnings },
       });
 
-      return reply.send({ result, issues, provider: await mapProvider(updated) });
+      return reply.send({ result, issues, deliverabilityWarnings, provider: await mapProvider(updated) });
     } catch (error) {
       return sendError(reply, error);
     }

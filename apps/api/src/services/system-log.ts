@@ -79,3 +79,110 @@ export function detectSmtpConfigIssues(config: {
 
   return issues;
 }
+
+const FREE_EMAIL_HOSTS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'yahoo.co.uk',
+  'yahoo.fr',
+  'hotmail.com',
+  'hotmail.co.uk',
+  'live.com',
+  'outlook.com',
+  'outlook.com.au',
+  'msn.com',
+  'aol.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'protonmail.com',
+  'proton.me',
+  'pm.me',
+  'gmx.com',
+  'gmx.net',
+  'gmx.de',
+  'mail.com',
+  'yandex.com',
+  'yandex.ru',
+  'qq.com',
+  'foxmail.com',
+  '163.com',
+  '126.com',
+  'sina.com',
+]);
+
+const SHARED_BULK_HOST_HINTS = [
+  'sendgrid',
+  'brevo',
+  'sendinblue',
+  'mailchimp',
+  'mandrill',
+  'elasticemail',
+  'sendpulse',
+  'smtp2go',
+  'socketlabs',
+  'sparkpost',
+  'postmark',
+];
+
+function extractDomain(email: string) {
+  const at = email.lastIndexOf('@');
+  return at < 0 ? '' : email.slice(at + 1).trim().toLowerCase();
+}
+
+export function detectSmtpDeliverabilityWarnings(config: {
+  host?: string;
+  port?: string | number;
+  fromEmail?: string;
+  user?: string;
+}): string[] {
+  const host = String(config.host || '').trim().toLowerCase();
+  const from = String(config.fromEmail || '').trim();
+  const fromDomain = extractDomain(from || String(config.user || ''));
+  const loginDomain = extractDomain(String(config.user || ''));
+  const port = Number(config.port || 0);
+  const warnings: string[] = [];
+
+  if (port === 25) {
+    warnings.push(
+      'Port 25 is server-to-server relay, not client submission. Almost all ISPs/cloud block outbound port 25 — switch to 587 (STARTTLS) or 465 (SSL). Sends on port 25 usually go to Spam or bounce.',
+    );
+  }
+
+  if (fromDomain && FREE_EMAIL_HOSTS.has(fromDomain)) {
+    warnings.push(
+      `From address uses free provider @${fromDomain}. Free mailboxes (Gmail / Outlook / Yahoo / iCloud) run strict DMARC reject on sends through 3rd-party SMTP. Marketing using FROM = from = marketing SMTP will go to Spam, almost all campaigns sent from free emails sent from them will not reach Primary inbox. Use a From email on your OWN verified domain that has SPF + DKIM + DMARC properly configured.`,
+    );
+  }
+
+  if (
+    fromDomain &&
+    loginDomain &&
+    fromDomain !== loginDomain &&
+    !fromDomain.endsWith(`.${loginDomain}`) &&
+    !loginDomain.endsWith(`.${fromDomain}`) &&
+    !FREE_EMAIL_HOSTS.has(fromDomain) &&
+    !FREE_EMAIL_HOSTS.has(loginDomain)
+  ) {
+    warnings.push(
+      `SMTP login domain (${loginDomain}) differs from From domain (${fromDomain}). Inbox providers score this as spam-like when SPF/DKIM alignment fails. Add SPF "v=spf1 include:${loginDomain} ~all` +
+        ' on the From domain OR align login to the same domain whenever possible to improve inbox placement.',
+    );
+  }
+
+  const isSharedBulk = SHARED_BULK_HOST_HINTS.some((h) => host.includes(h));
+  if (isSharedBulk && fromDomain && !FREE_EMAIL_HOSTS.has(fromDomain)) {
+    warnings.push(
+      'This SMTP host is a shared bulk/marketing SMTP (SendGrid / Brevo / Mailchimp / etc). You MUST verify/authenticate your From domain on their dashboard with SPF + DKIM + DMARC before sending. Sending without a verified domain on the shared provider delivers mail servers sends the provider will land in Spam/Gmail Promotions folder or bounce (poor sender reputation.)',
+    );
+  }
+
+  if (!fromDomain && host) {
+    warnings.push(
+      'From/Sender email blank — spam filters flag empty From field; SPF/DKIM/DMARC cannot validate the sender. Sends with empty From almost always go to Spam or bounce. Use a real From address on your own domain.',
+    );
+  }
+
+  return warnings;
+}

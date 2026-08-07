@@ -242,8 +242,6 @@ export function SmtpManagerPage() {
         return;
       }
 
-      // Always include current form config so unsaved edits are tested.
-      // When editing, also pass providerId so a masked password can reuse the stored secret.
       const result = await smtpService.testConnection({
         providerId: editingId || undefined,
         config: buildConfig(),
@@ -255,23 +253,11 @@ export function SmtpManagerPage() {
       setLastTestOk(result.success);
       if (result.success) {
         toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
-        const fromEmail = (form.fromEmail || form.user || '').trim();
-        const smtpUser = form.user.trim();
-        if (sendEmail && fromEmail.includes('@') && smtpUser.includes('@')) {
-          const fromDom = fromEmail.split('@')[1]?.toLowerCase();
-          const userDom = smtpUser.split('@')[1]?.toLowerCase();
-          if (
-            fromDom &&
-            userDom &&
-            fromDom !== userDom &&
-            !fromDom.endsWith(`.${userDom}`) &&
-            !userDom.endsWith(`.${fromDom}`)
-          ) {
-            toast.warning(
-              'From domain may hurt inbox placement',
-              `Sender email is @${fromDom} but SMTP login is @${userDom}. Use a From address on the same domain your SMTP provider authenticated (SPF/DKIM).`,
-            );
-          }
+        if (result.deliverabilityWarnings?.length) {
+          toast.warning(
+            'Inbox placement warnings',
+            `Deliverability warnings:\n• ${result.deliverabilityWarnings.join('\n• ')}`,
+          );
         }
       } else {
         toast.error('SMTP test failed', result.error || result.message);
@@ -301,10 +287,48 @@ export function SmtpManagerPage() {
         return;
       }
 
-      if (activate && !lastTestOk && (!selected || selected.lastTestStatus !== 'Connected')) {
-        toast.warning('Run Test Connection successfully before activating');
-        return;
+      const changedCredentials =
+        !editingId ||
+        (form.pass && form.pass !== '••••••••') ||
+        selected?.host !== form.host.trim() ||
+        selected?.user !== form.user.trim() ||
+        String(selected?.port ?? '') !== String(form.port ?? '') ||
+        selected?.fromEmail !== form.fromEmail.trim();
+
+      let warnings: string[] = [];
+      if (!lastTestOk || changedCredentials) {
+        toast.info('Verifying connection before saving…');
+        const test = await smtpService.testConnection({
+          providerId: editingId || undefined,
+          config: buildConfig(),
+        });
+        warnings = test.deliverabilityWarnings ?? [];
+        if (!test.success) {
+          setLastTestOk(false);
+          toast.error(
+            'SMTP was NOT saved — connection test failed',
+            `Dead SMTP credentials refused. Fix them first.\n\n${test.error || test.message}`,
+          );
+          return;
+        }
+        setLastTestOk(true);
       }
+
+      if (activate) {
+        // Final pass through test endpoint: refuses activation if SMTP host is no longer connecting
+        const test = await smtpService.testConnection({
+          providerId: editingId || undefined,
+          config: buildConfig(),
+        });
+        warnings = Array.from(new Set([...(warnings || []), ...(test.deliverabilityWarnings || [])]));
+        if (!test.success) {
+          setLastTestOk(false);
+          toast.error('Activation blocked — connection test failed', test.error || test.message);
+          return;
+        }
+        setLastTestOk(true);
+      }
+
       const payload = {
         name: autoSmtpName(form),
         label: form.label.trim() || null,
@@ -336,9 +360,26 @@ export function SmtpManagerPage() {
           return;
         }
         await smtpService.update(profileId, { isActive: true, isDefault: form.isDefault });
-        toast.success('SMTP saved and activated');
+        if (warnings.length) {
+          toast.warning(
+            'Saved & Activated — but inbox placement has warnings',
+            `Deliverability warnings:\n• ${warnings.join('\n• ')}`,
+          );
+        } else {
+          toast.success('SMTP saved and activated');
+        }
       } else {
-        toast.success('SMTP saved', 'Inactive until activated after a successful test');
+        if (warnings.length) {
+          toast.warning(
+            'SMTP saved — watch inbox placement',
+            `Deliverability warnings:\n• ${warnings.join('\n• ')}`,
+          );
+        } else {
+          toast.success(
+            'SMTP saved (live connection confirmed)',
+            'Inactive until activated after a successful test',
+          );
+        }
       }
       setLastTestOk(true);
       const clearDraft = useDraftStore.getState().clearDraft;

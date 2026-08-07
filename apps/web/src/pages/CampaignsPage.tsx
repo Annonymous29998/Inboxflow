@@ -70,7 +70,9 @@ type ProviderOption = {
   isActive: boolean;
   fromEmail?: string;
   fromName?: string;
+  user?: string;
   lastTestStatus?: string | null;
+  issues?: string[];
 };
 
 type Campaign = {
@@ -697,6 +699,47 @@ export function CampaignEditorPage() {
 
   async function confirmBackgroundSend(force = false) {
     if (!id || isNew) return;
+
+    if (!force) {
+      const failures = deliverability.failures;
+      const warnings = deliverability.warnings;
+      const smtpWarnings = selectedProvider?.issues?.length
+        ? selectedProvider.issues
+        : [];
+      if (failures.length) {
+        toast.error(
+          'Campaign send blocked — fix deliverability failures first',
+          failures.map((f) => `• ${f.title}: ${f.detail}`).join('\n'),
+        );
+        setSendPhase('confirm');
+        return;
+      }
+      const combinedWarns = Array.from(
+        new Set([
+          ...warnings.map((w: (typeof warnings)[number]) => `[content] ${w.title}: ${w.detail}`),
+          ...smtpWarnings.map((w) => `[smtp] ${w}`),
+          ...(selectedProvider?.fromEmail &&
+          selectedProvider?.user &&
+          (() => {
+            const atFrom = selectedProvider.fromEmail.lastIndexOf('@');
+            const atUser = selectedProvider.user.lastIndexOf('@');
+            if (atFrom < 0 || atUser < 0) return [] as string[];
+            const fDom = selectedProvider.fromEmail.slice(atFrom + 1).toLowerCase();
+            const uDom = selectedProvider.user.slice(atUser + 1).toLowerCase();
+            if (fDom === uDom || fDom.endsWith(`.${uDom}`) || uDom.endsWith(`.${fDom}`)) return [] as string[];
+            return [`[smtp] From domain (${fDom}) ≠ SMTP login domain (${uDom}) — this often lands in Spam (fix SPF/DKIM includes or align to the same domain).`];
+          })() || []),
+        ]),
+      );
+      if (combinedWarns.length) {
+        toast.warning(
+          'WARNING — these may send to Spam',
+          combinedWarns.slice(0, 12).join('\n') +
+            (combinedWarns.length > 12 ? `\n… +${combinedWarns.length - 12} more — use Deliverability panel in editor to inspect.` : ''),
+        );
+      }
+    }
+
     setSendPhase('background');
     setSendCancelled(false);
     setSendPaused(false);
