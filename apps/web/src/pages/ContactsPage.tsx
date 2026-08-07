@@ -678,13 +678,32 @@ export function ContactsPage() {
                   <div className="flex flex-wrap items-baseline gap-2">
                     <h3 className="truncate font-semibold tracking-tight">{g.name}</h3>
                     <Badge tone="neutral">
-                      {g.members.length} {g.members.length === 1 ? 'contact' : 'contacts'}
+                      {(() => {
+                        const total = g.id === '__unassigned__'
+                          ? g.members.length
+                          : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
+                        return `${total} ${total === 1 ? 'contact' : 'contacts'}`;
+                      })()}
                     </Badge>
                   </div>
                   {g.members[0]?.email && (
                     <p className="truncate text-xs text-muted-foreground">
                       {g.members[0].email}
-                      {g.members.length > 1 ? ` +${g.members.length - 1} more` : ''}
+                      {(() => {
+                        const total = g.id === '__unassigned__'
+                          ? g.members.length
+                          : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
+                        const visibleMinusOne = g.members.length - 1;
+                        const hiddenExtra = total - g.members.length;
+                        if (hiddenExtra > 0 && visibleMinusOne > 0) {
+                          return ` +${visibleMinusOne} more shown, +${hiddenExtra} on other pages`;
+                        } else if (hiddenExtra > 0) {
+                          return ` +${hiddenExtra} more on other pages`;
+                        } else if (visibleMinusOne > 0) {
+                          return ` +${visibleMinusOne} more`;
+                        }
+                        return '';
+                      })()}
                     </p>
                   )}
                 </div>
