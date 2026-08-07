@@ -766,10 +766,14 @@ export function SmtpManagerPage() {
 
             <div className="flex flex-wrap gap-2">
               {!editingId ? (
-                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy} onClick={() => void save(false)}>
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add SMTP profile
+                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy} onClick={() => void save(true)}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Add & Activate SMTP
                 </Button>
-              ) : null}
+              ) : (
+                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
+                </Button>
+              )}
               <Button className="flex-1 sm:flex-none" disabled={busy} onClick={() => void testConnection(false)}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                 Test Connection
@@ -779,9 +783,6 @@ export function SmtpManagerPage() {
               </Button>
               <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busy} onClick={() => void save(false)}>
                 {editingId ? 'Save changes' : 'Save draft'}
-              </Button>
-              <Button className="flex-1 sm:flex-none" disabled={busy || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
-                <Check className="h-4 w-4" /> Activate
               </Button>
               {editingId ? (
                 <>
