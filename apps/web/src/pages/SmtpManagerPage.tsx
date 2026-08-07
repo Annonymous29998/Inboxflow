@@ -571,12 +571,50 @@ export function SmtpManagerPage() {
         </div>
 
         <div className="tui-box">
-          <div className="tui-box-title">{editingId ? 'Edit SMTP' : 'New SMTP'}</div>
+          <div className="tui-box-title">
+            {editingId && selected
+              ? `Editing profile · ${selected.name || selected.fromEmail || selected.user || 'SMTP'}`
+              : 'New SMTP profile'}
+          </div>
           <div className="space-y-3 p-4">
-            <p className="text-[11px] text-muted-foreground">
-              Add any SMTP server — enter your host, port, username, and password. Works with Hostinger,
-              cPanel, Google Workspace, Microsoft 365, or any provider that gives you SMTP credentials.
-            </p>
+            {selected ? (
+              <div className="grid grid-cols-1 gap-1.5 border border-border bg-muted/40 p-3 text-[11px] sm:grid-cols-3">
+                <div>
+                  <span className="text-muted-foreground">Status</span>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                    <Badge tone={statusTone(selected.lastTestStatus)}>
+                      {selected.lastTestStatus || 'Pending test'}
+                    </Badge>
+                    {selected.isActive ? (
+                      <Badge tone="success">Active for sends</Badge>
+                    ) : (
+                      <Badge>Off</Badge>
+                    )}
+                    {selected.isDefault ? <Badge tone="info">Default</Badge> : null}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Sender</span>
+                  <div className="mt-0.5 truncate font-medium text-foreground">
+                    {selected.fromName
+                      ? `${selected.fromName} <${selected.fromEmail || selected.user || '—'}>`
+                      : selected.fromEmail || selected.user || '—'}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Host</span>
+                  <div className="mt-0.5 truncate font-medium text-foreground">
+                    {selected.host || '—'}
+                    {selected.port ? `:${selected.port}` : ''}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Add any SMTP server — enter your host, port, username, and password. Works with Hostinger,
+                cPanel, Google Workspace, Microsoft 365, or any provider that gives you SMTP credentials.
+              </p>
+            )}
 
             <div className="grid gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
