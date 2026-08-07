@@ -6,6 +6,7 @@ import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { parseContactImport } from './import-parser.js';
+import { upsertJobProgress } from '../jobs/progress.js';
 
 export async function contactRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -197,14 +198,17 @@ export async function contactRoutes(app: FastifyInstance) {
       const orgId = requireOrg(request.user.organizationId);
       const body = z
         .object({
-          /** Raw file or pasted document content */
           content: z.string().optional(),
-          /** @deprecated use content */
           csv: z.string().optional(),
           listId: z.string().optional(),
-          /** Create a new list and add imported contacts to it */
           listName: z.string().optional(),
           updateExisting: z.boolean().default(true),
+          /** Client-prefixed job UUID so multi-chunk imports share one progress stream */
+          jobId: z.string().optional(),
+          /** 0-based chunk index for this HTTP call (client splits into micro-batches) */
+          chunkIndex: z.number().int().nonnegative().default(0),
+          /** Total rows across *all* chunks (so percent is correct across chunks) */
+          totalRows: z.number().int().nonnegative().optional(),
         })
         .parse(request.body);
 
@@ -234,6 +238,28 @@ export async function contactRoutes(app: FastifyInstance) {
       let addedToList = 0;
       const duplicates: string[] = [];
 
+      const total = Math.max(0, body.totalRows ?? rows.length);
+      const jobId = body.jobId?.trim() || undefined;
+      let jobProcessedBase = 0;
+      if (jobId) {
+        try {
+          const existing = await prisma.job.findUnique({ where: { id: jobId }, select: { processed: true, total: true, id: true } });
+          if (existing) jobProcessedBase = Number(existing.processed) || 0;
+        } catch {}
+        await upsertJobProgress({
+          id: jobId,
+          type: 'CONTACT_IMPORT',
+          organizationId: orgId,
+          createdById: request.user.id ?? null,
+          resourceId: listId ?? null,
+          status: 'RUNNING',
+          total,
+          processed: Math.min(total, jobProcessedBase),
+          startedAt: new Date(),
+          meta: { stage: 'importing_rows', listId: listId ?? null, listName: body.listName ?? null, chunkIndex: body.chunkIndex, chunkSize: rows.length },
+        });
+      }
+
       async function ensureListMembership(contactId: string) {
         if (!listId) return;
         await prisma.contactListMember.upsert({
@@ -244,7 +270,41 @@ export async function contactRoutes(app: FastifyInstance) {
         addedToList++;
       }
 
-      for (const row of rows) {
+      async function emitProgress(force = false) {
+        if (!jobId) return;
+        const processed = Math.min(total, jobProcessedBase + created + updated + skipped);
+        const now = Date.now();
+        if (!force && (processed - (emitProgress as any).lastSent) < 10) return;
+        (emitProgress as any).lastSent = processed;
+        try {
+          await upsertJobProgress({
+            id: jobId,
+            type: 'CONTACT_IMPORT',
+            organizationId: orgId,
+            createdById: request.user.id ?? null,
+            resourceId: listId ?? null,
+            status: 'RUNNING',
+            total,
+            processed,
+            meta: {
+              stage: 'importing_rows',
+              listId: listId ?? null,
+              listName: body.listName ?? null,
+              chunkIndex: body.chunkIndex,
+              chunkSize: rows.length,
+              created,
+              updated,
+              skipped,
+              addedToList,
+            },
+          });
+        } catch {}
+      }
+      (emitProgress as any).lastSent = -99999;
+      await emitProgress(true);
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         const email = row.email;
         const data = {
           firstName: row.firstName || null,
@@ -271,6 +331,7 @@ export async function contactRoutes(app: FastifyInstance) {
           });
           if (suppressed) {
             skipped++;
+            await emitProgress();
             continue;
           }
 
@@ -286,6 +347,35 @@ export async function contactRoutes(app: FastifyInstance) {
           await ensureListMembership(contact.id);
           created++;
         }
+        if (i % 10 === 9) await emitProgress();
+      }
+      await emitProgress(true);
+
+      if (jobId) {
+        const processed = Math.min(total, jobProcessedBase + created + updated + skipped);
+        const isLastChunk = processed >= total || !body.totalRows;
+        await upsertJobProgress({
+          id: jobId,
+          type: 'CONTACT_IMPORT',
+          organizationId: orgId,
+          createdById: request.user.id ?? null,
+          resourceId: listId ?? null,
+          status: isLastChunk ? 'COMPLETED' : 'RUNNING',
+          total,
+          processed,
+          finishedAt: isLastChunk ? new Date() : null,
+          meta: {
+            stage: isLastChunk ? 'completed' : 'awaiting_next_chunk',
+            listId: listId ?? null,
+            listName: body.listName ?? null,
+            created,
+            updated,
+            skipped,
+            addedToList,
+            chunkIndex: body.chunkIndex,
+            chunkSize: rows.length,
+          },
+        });
       }
 
       return reply.send({
@@ -296,8 +386,26 @@ export async function contactRoutes(app: FastifyInstance) {
         listId: listId || null,
         duplicates: duplicates.slice(0, 100),
         total: rows.length,
+        jobId: jobId ?? null,
       });
-    } catch (error) {
+    } catch (error: any) {
+      // Mark job failed if client sent jobId
+      try {
+        const body = request.body as any;
+        const orgId = request.user?.organizationId;
+        const jobId = body?.jobId?.trim();
+        if (jobId && orgId) {
+          await upsertJobProgress({
+            id: jobId,
+            type: 'CONTACT_IMPORT',
+            organizationId: String(orgId),
+            createdById: request.user?.id ?? null,
+            status: 'FAILED',
+            error: String(error?.message || error || 'Import failed').slice(0, 500),
+            finishedAt: new Date(),
+          });
+        }
+      } catch {}
       return sendError(reply, error);
     }
   });

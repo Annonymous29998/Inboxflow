@@ -25,6 +25,7 @@ import { apiKeyRoutes } from './modules/api-keys/routes.js';
 import { adminRoutes } from './modules/admin/routes.js';
 import { systemLogRoutes } from './modules/system-logs/routes.js';
 import { importRoutes } from './modules/import/routes.js';
+import { jobRoutes } from './modules/jobs/routes.js';
 import { AppError } from './utils/errors.js';
 
 export async function buildApp() {
@@ -127,6 +128,7 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(systemLogRoutes, { prefix: '/api/logs' });
   await app.register(importRoutes, { prefix: '/api/import' });
+  await app.register(jobRoutes, { prefix: '/api/jobs' });
   await app.register(trackingRoutes, { prefix: '/api/t' });
   await app.register(webhookRoutes, { prefix: '/api/webhooks' });
 

@@ -410,19 +410,80 @@ export function ContactsPage() {
       listName: finalListName,
       errors: [],
     });
+    let streamCancel: { cancel: () => void } | null = null;
     try {
-      const CHUNK = 80;
+      const uuidFn =
+        (globalThis as any).crypto?.randomUUID?.bind((globalThis as any).crypto) ??
+        (() => {
+          const s = 'abcdef0123456789';
+          const rnd = (n: number) =>
+            Array.from({ length: n }, () => s[Math.floor(Math.random() * s.length)]).join('');
+          return `${rnd(8)}-${rnd(4)}-4${rnd(3)}-a${rnd(3)}-${rnd(12)}`;
+        });
+      const jobId = uuidFn();
+      const totalRows = parsed.length;
+      let chunkListIdCreated: string | null | undefined = undefined;
+
+      streamCancel = api.events(`/api/jobs/${jobId}/stream`, {
+        onEvent: (evt, d) => {
+          if (evt !== 'job' || !d || typeof d !== 'object') return;
+          const meta = (d.meta as any) ?? {};
+          setProgress((prev) => ({
+            ...prev,
+            total: Math.max(prev.total, Number(d.total) ?? prev.total),
+            processed: Math.min(Math.max(prev.processed, Number(d.processed) ?? 0), prev.total),
+            created: Math.max(prev.created, Number(meta.created ?? 0)),
+            updated: Math.max(prev.updated, Number(meta.updated ?? 0)),
+            skipped: Math.max(prev.skipped, Number(meta.skipped ?? 0)),
+            addedToList: Math.max(prev.addedToList, Number(meta.addedToList ?? 0)),
+            listId: meta.listId ?? chunkListIdCreated ?? prev.listId,
+            status:
+              d.status === 'COMPLETED'
+                ? 'done'
+                : d.status === 'FAILED'
+                  ? 'error'
+                  : d.status === 'CANCELLED'
+                    ? 'error'
+                    : 'running',
+            message:
+              d.status === 'COMPLETED'
+                ? 'Import complete'
+                : d.status === 'FAILED'
+                  ? String(d.error || 'Import failed')
+                  : `Importing rows… ${Math.round(d.percent ?? 0)}%`,
+            errors: d.error ? [String(d.error)] : prev.errors,
+          }));
+        },
+        onError: (err) => {
+          setProgress((p) => ({
+            ...p,
+            status: 'error',
+            message: String(err?.message || 'Progress stream failed'),
+            errors: [String(err?.message || 'Stream error')],
+          }));
+        },
+      });
+
+      const CHUNK = 20;
+      let chunkIndex = 0;
       let created = 0, updated = 0, skipped = 0, addedToList = 0, processed = 0;
-      // First chunk may create the list; subsequent chunks reuse that listId.
-      // We request list creation in the FIRST chunk only.
-      for (let i = 0; i < parsed.length; i += CHUNK) {
+      for (let i = 0; i < parsed.length; i += CHUNK, chunkIndex++) {
         const slice = parsed.slice(i, i + CHUNK);
         const payload: {
           content: string;
           updateExisting: boolean;
           listId?: string;
           listName?: string;
-        } = { content: rowsToText(slice), updateExisting: true };
+          jobId: string;
+          chunkIndex: number;
+          totalRows: number;
+        } = {
+          content: rowsToText(slice),
+          updateExisting: true,
+          jobId,
+          chunkIndex,
+          totalRows,
+        };
         if (finalListId) payload.listId = finalListId;
         else if (finalListName) payload.listName = finalListName;
         const result = await api.post<{
@@ -433,23 +494,28 @@ export function ContactsPage() {
           listId?: string | null;
           total: number;
           duplicates?: string[];
+          jobId?: string | null;
         }>('/api/contacts/import', payload);
         created += result.created || 0;
         updated += result.updated || 0;
         skipped += result.skipped || 0;
         addedToList += result.addedToList || 0;
         processed += result.total || slice.length;
-        if (result.listId && !finalListId) finalListId = result.listId;
-        if (finalListId && payload.listName) delete payload.listName;
+        if (result.listId && !finalListId && !chunkListIdCreated) {
+          finalListId = result.listId;
+          chunkListIdCreated = result.listId;
+          setProgress((p) => ({ ...p, listId: result.listId }));
+        }
+        if (finalListId && payload.listName) delete (payload as any).listName;
         setProgress((p) => ({
           ...p,
-          processed,
-          created,
-          updated,
-          skipped,
-          addedToList,
-          listId: finalListId,
-          message: `Imported ${processed} of ${parsed.length} rows…`,
+          processed: Math.min(totalRows, Math.max(p.processed, processed)),
+          created: Math.max(p.created, created),
+          updated: Math.max(p.updated, updated),
+          skipped: Math.max(p.skipped, skipped),
+          addedToList: Math.max(p.addedToList, addedToList),
+          listId: chunkListIdCreated ?? finalListId ?? p.listId,
+          message: `Imported ${processed} of ${totalRows} rows…`,
         }));
       }
       setProgress((p) => ({
@@ -482,6 +548,8 @@ export function ContactsPage() {
       setProgress((p) => ({ ...p, status: 'error', message: `Import failed: ${msg}`, errors: [msg] }));
       toast.error('Import failed', msg);
     } finally {
+      try { streamCancel?.cancel(); } catch {}
+      streamCancel = null;
       setImporting(false);
     }
   }

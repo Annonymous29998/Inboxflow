@@ -124,6 +124,50 @@ enum Severity {
   CRITICAL
 }
 
+enum JobType {
+  CONTACT_IMPORT
+  CAMPAIGN_SEND
+  LIST_CLEAR
+  CONTACT_EXPORT
+  TEMPLATE_RENDER
+  DELIVERABILITY_ANALYZE
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+model Job {
+  id             String        @id @default(cuid())
+  type           JobType
+  status         JobStatus     @default(PENDING)
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdById    String?
+  createdBy      User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  campaignId     String?
+  campaign       Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  resourceId     String?
+  total          Int           @default(0)
+  processed      Int           @default(0)
+  meta           Json?
+  error          String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([organizationId, status, createdAt])
+  @@index([type, status])
+  @@index([campaignId])
+  @@index([createdById])
+}
+
 model User {
   id                String     @id @default(cuid())
   email             String     @unique
@@ -150,6 +194,7 @@ model User {
   auditLogs         AuditLog[]
   campaigns         Campaign[]
   templates         Template[]
+  jobsCreated       Job[]
 
   @@index([organizationId])
   @@index([email])
@@ -183,6 +228,7 @@ model Organization {
   auditLogs         AuditLog[]
   dripSequences     DripSequence[]
   systemLogs        SystemLog[]
+  jobs              Job[]
 }
 
 model Session {
@@ -374,6 +420,7 @@ model Campaign {
   // Stats denormalized for dashboard
   totalRecipients  Int            @default(0)
   sentCount        Int            @default(0)
+  failedCount      Int            @default(0)
   deliveredCount   Int            @default(0)
   openedCount      Int            @default(0)
   clickedCount     Int            @default(0)
@@ -402,6 +449,7 @@ model Campaign {
   recipients       CampaignRecipient[]
   events           TrackingEvent[]
   dripSteps        DripStep[]
+  jobs             Job[]
 
   @@index([organizationId, status])
   @@index([scheduledAt])

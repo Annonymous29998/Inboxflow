@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -357,6 +357,12 @@ export function CampaignEditorPage() {
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
   const [importStatus, setImportStatus] = useState('');
+  const sendStreamCancelRef = useRef<{ cancel: () => void } | null>(null);
+
+  function stopSendStream() {
+    try { sendStreamCancelRef.current?.cancel(); } catch {}
+    sendStreamCancelRef.current = null;
+  }
 
   function parsePool(text: string): string[] {
     return text
@@ -494,6 +500,8 @@ export function CampaignEditorPage() {
     void applyTemplate(templateId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when opening /new?template=
   }, [searchParams, isNew]);
+
+  useEffect(() => () => stopSendStream(), []);
 
   function addBlock(type: string) {
     setBlocks((b) => [
@@ -686,6 +694,7 @@ export function CampaignEditorPage() {
     setSendCancelled(false);
     setSendPaused(false);
     setSendError('');
+    stopSendStream();
 
     try {
       const result = await campaignSendService.startBackgroundSend(id, {
@@ -697,6 +706,34 @@ export function CampaignEditorPage() {
       setSentCount(0);
       setFailedCount(0);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
+
+      if (result.jobId) {
+        sendStreamCancelRef.current = campaignSendService.streamProgress(result.jobId, {
+          onUpdate: (u) => {
+            const meta = (u.meta as any) ?? {};
+            const sent = Number(meta.sent ?? u.processed ?? 0);
+            const failed = Number(meta.failed ?? 0);
+            setSentCount((prev) => Math.max(prev, sent));
+            setFailedCount((prev) => Math.max(prev, failed));
+            if (u.total && Number(u.total) > 0) {
+              setSendCount((prev) => Math.max(prev, Number(u.total)));
+            }
+            if (u.status === 'COMPLETED' || u.status === 'CANCELLED' || u.status === 'FAILED') {
+              stopSendStream();
+              if (u.status === 'FAILED') {
+                setSendError(String(u.error || 'Send failed'));
+                setSendPhase('error');
+              } else {
+                setSendCancelled(u.status === 'CANCELLED');
+                setSendPhase('success');
+              }
+            }
+          },
+          onError: (err) => {
+            stopSendStream();
+          },
+        });
+      }
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Send failed');
       setSendPhase('error');
@@ -709,6 +746,7 @@ export function CampaignEditorPage() {
       setSendCancelled(true);
       setSendPaused(false);
     }
+    stopSendStream();
   }
 
   async function pauseBackgroundSend() {
@@ -721,6 +759,7 @@ export function CampaignEditorPage() {
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Pause failed', 'error');
     }
+    stopSendStream();
   }
 
   async function resumeBackgroundSend() {

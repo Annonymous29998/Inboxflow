@@ -17,21 +17,45 @@ export type SendStatus = {
   failedCount: number;
   pendingCount: number;
   completedAt?: string | null;
+  jobId?: string | null;
+};
+
+export type JobProgressEvent = {
+  id: string;
+  type: string;
+  status: 'PENDING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
+  total: number;
+  processed: number;
+  percent: number;
+  meta?: {
+    sent?: number;
+    failed?: number;
+    pending?: number;
+    stage?: string;
+    lastEmail?: string;
+    report?: unknown;
+    [k: string]: unknown;
+  } | null;
+  error?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  campaignId?: string | null;
+  resourceId?: string | null;
 };
 
 export const campaignSendService = {
   async prepareSend(
     campaignId: string,
     input: { providerId?: string | null; force?: boolean; scrub?: boolean },
-  ): Promise<{ success: boolean; recipients: SendRecipient[]; report?: unknown }> {
+  ): Promise<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }> {
     if (edgeFunctionsEnabled) {
-      return invokeEdgeFunction<{ success: boolean; recipients: SendRecipient[] }>(
+      return invokeEdgeFunction<{ success: boolean; recipients: SendRecipient[]; totalRecipients?: number; jobId?: string | null }>(
         'send-campaign-email',
         { action: 'prepare', campaignId, ...input },
       );
     }
 
-    return api.post<{ success: boolean; recipients: SendRecipient[]; report?: unknown }>(
+    return api.post<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/prepare-send`,
       input,
     );
@@ -44,7 +68,7 @@ export const campaignSendService = {
       force?: boolean;
       queueSettings?: Record<string, unknown>;
     },
-  ): Promise<{ success: boolean; totalRecipients: number; status: string; background?: boolean }> {
+  ): Promise<{ success: boolean; totalRecipients: number; status: string; background?: boolean; jobId?: string | null }> {
     if (edgeFunctionsEnabled) {
       return invokeEdgeFunction('send-campaign-email', {
         action: 'background-start',
@@ -53,12 +77,11 @@ export const campaignSendService = {
       });
     }
 
-    // Persist queue pacing before enqueue so the API worker can honor it
     if (input.queueSettings) {
       await api.patch(`/api/campaigns/${campaignId}`, { queueSettings: input.queueSettings });
     }
 
-    const prepared = await api.post<{ success: boolean; recipients: SendRecipient[] }>(
+    const prepared = await api.post<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/prepare-send`,
       {
         providerId: input.providerId,
@@ -67,7 +90,7 @@ export const campaignSendService = {
       },
     );
 
-    const queued = await api.post<{ success: boolean; status: string }>(
+    const queued = await api.post<{ success: boolean; status: string; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/send`,
       {
         mode: 'queue',
@@ -78,9 +101,10 @@ export const campaignSendService = {
 
     return {
       success: true,
-      totalRecipients: prepared.recipients.length,
+      totalRecipients: prepared.totalRecipients ?? prepared.recipients.length,
       status: queued.status ?? 'SENDING',
       background: true,
+      jobId: prepared.jobId ?? queued.jobId ?? null,
     };
   },
 
@@ -94,30 +118,30 @@ export const campaignSendService = {
 
   async sendOne(
     campaignId: string,
-    input: { recipientId: string; providerId?: string | null },
+    input: { recipientId: string; providerId?: string | null; jobId?: string },
   ) {
     if (edgeFunctionsEnabled) {
-      return invokeEdgeFunction<{ success: boolean; messageId?: string; error?: string }>(
+      return invokeEdgeFunction<{ success: boolean; messageId?: string; error?: string; jobId?: string | null }>(
         'send-campaign-email',
         { action: 'send-one', campaignId, ...input },
       );
     }
 
-    return api.post<{ success: boolean; messageId?: string; error?: string }>(
+    return api.post<{ success: boolean; messageId?: string; error?: string; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/send-one`,
       input,
     );
   },
 
-  async finalizeSend(campaignId: string, input: { cancelled?: boolean }) {
+  async finalizeSend(campaignId: string, input: { cancelled?: boolean; jobId?: string }) {
     if (edgeFunctionsEnabled) {
-      return invokeEdgeFunction<{ success: boolean; sentCount: number; failedCount: number }>(
+      return invokeEdgeFunction<{ success: boolean; sentCount: number; failedCount: number; pendingCount?: number; jobId?: string | null }>(
         'send-campaign-email',
         { action: 'finalize', campaignId, ...input },
       );
     }
 
-    return api.post<{ sentCount: number; failedCount: number }>(
+    return api.post<{ sentCount: number; failedCount: number; pendingCount?: number; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/finalize-send`,
       input,
     );
@@ -177,5 +201,23 @@ export const campaignSendService = {
 
   async importConfig(campaign: Record<string, unknown>) {
     return api.post<{ campaign: { id: string } }>('/api/campaigns/import-config', { campaign });
+  },
+
+  streamProgress(
+    jobId: string,
+    callbacks: {
+      onUpdate?: (u: JobProgressEvent) => void;
+      onError?: (e: Error) => void;
+      onDone?: () => void;
+    } = {},
+  ): { cancel: () => void } {
+    return api.events(`/api/jobs/${jobId}/stream`, {
+      onEvent: (evt, d) => {
+        if (evt !== 'job' || !d || typeof d !== 'object') return;
+        callbacks.onUpdate?.(d as JobProgressEvent);
+      },
+      onError: callbacks.onError,
+      onDone: callbacks.onDone,
+    });
   },
 };

@@ -9,6 +9,7 @@ import { drainCampaignJobs, enqueueCampaign, enqueueCampaignScheduled } from '..
 import { sendCampaignEmailToRecipient } from '../../services/email/campaign-send.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases } from '../deliverability/spam-scrubber.js';
+import { upsertJobProgress } from '../jobs/progress.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -611,22 +612,45 @@ export async function campaignRoutes(app: FastifyInstance) {
         ),
       );
 
+      const total = contacts.length;
+
       await prisma.campaign.update({
         where: { id },
         data: {
           status: 'SENDING',
           sentAt: new Date(),
           sentCount: 0,
-          totalRecipients: contacts.length,
+          failedCount: 0,
+          totalRecipients: total,
           deliverabilityScore: report.score,
           analysisReport: report as object,
           providerId: body.providerId === undefined ? campaign.providerId : body.providerId,
         },
       });
 
+      let jobId: string | null = null;
+      try {
+        const { randomUUID } = await import('node:crypto');
+        jobId = randomUUID();
+        await upsertJobProgress({
+          id: jobId,
+          type: 'CAMPAIGN_SEND',
+          organizationId: orgId,
+          createdById: request.user?.id ?? null,
+          campaignId: id,
+          status: 'RUNNING',
+          total,
+          processed: 0,
+          startedAt: new Date(),
+          meta: { stage: 'prepared', sent: 0, failed: 0, queued: total, report: report as unknown as Prisma.InputJsonValue },
+        });
+      } catch {}
+
       return reply.send({
         success: true,
         report,
+        totalRecipients: total,
+        jobId,
         recipients: recipients.map((r, i) => ({
           id: r.id,
           contactId: contacts[i].id,
@@ -649,12 +673,13 @@ export async function campaignRoutes(app: FastifyInstance) {
         .object({
           recipientId: z.string(),
           providerId: z.string().optional().nullable(),
+          jobId: z.string().optional(),
         })
         .parse(request.body);
 
       const campaign = await prisma.campaign.findFirst({
         where: { id, organizationId: orgId },
-        select: { id: true, status: true, providerId: true },
+        select: { id: true, status: true, providerId: true, totalRecipients: true, sentCount: true, failedCount: true },
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
       if (campaign.status === 'CANCELLED') throw new AppError(400, 'Campaign was cancelled');
@@ -674,11 +699,44 @@ export async function campaignRoutes(app: FastifyInstance) {
         providerId: body.providerId ?? campaign.providerId,
       });
 
+      let jobId: string | null = body.jobId?.trim() || null;
+      try {
+        const jobTotal = Math.max(1, Number(campaign.totalRecipients) || 1);
+        let jobProcessed = 0;
+        let sentCountVal = Number(campaign.sentCount) || 0;
+        let failedCountVal = Number(campaign.failedCount) || 0;
+        if (result.success) sentCountVal++;
+        else failedCountVal++;
+
+        if (!jobId) {
+          const found = await prisma.job.findFirst({
+            where: { organizationId: orgId, campaignId: id, type: 'CAMPAIGN_SEND', status: 'RUNNING' },
+            orderBy: [{ createdAt: 'desc' }],
+            select: { id: true, processed: true },
+          });
+          if (found) { jobId = found.id; jobProcessed = Number(found.processed) || 0; }
+        }
+        if (jobId) {
+          jobProcessed = Math.min(jobTotal, jobProcessed + 1);
+          await upsertJobProgress({
+            id: jobId,
+            type: 'CAMPAIGN_SEND',
+            organizationId: orgId,
+            createdById: request.user?.id ?? null,
+            campaignId: id,
+            status: 'RUNNING',
+            total: jobTotal,
+            processed: jobProcessed,
+            meta: { stage: 'sending', sent: sentCountVal, failed: failedCountVal, lastEmail: recipient.contact.email },
+          });
+        }
+      } catch {}
+
       if (!result.success) {
-        return reply.status(400).send({ success: false, error: result.error });
+        return reply.status(400).send({ success: false, error: result.error, jobId });
       }
 
-      return reply.send({ success: true, messageId: result.messageId });
+      return reply.send({ success: true, messageId: result.messageId, jobId });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -691,6 +749,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       const body = z
         .object({
           cancelled: z.boolean().default(false),
+          jobId: z.string().optional(),
         })
         .parse(request.body ?? {});
 
@@ -718,11 +777,47 @@ export async function campaignRoutes(app: FastifyInstance) {
         data: {
           status,
           sentCount,
+          failedCount,
           completedAt: status === 'SENT' || status === 'CANCELLED' ? new Date() : null,
         },
       });
 
-      return reply.send({ campaign: updated, sentCount, failedCount, pendingCount });
+      let jobId: string | null = body.jobId?.trim() || null;
+      try {
+        const jobTotal = Math.max(1, Number(updated.totalRecipients) || sentCount + failedCount + pendingCount);
+        if (!jobId) {
+          const found = await prisma.job.findFirst({
+            where: { organizationId: orgId, campaignId: id, type: 'CAMPAIGN_SEND' },
+            orderBy: [{ createdAt: 'desc' }],
+            select: { id: true },
+          });
+          if (found) jobId = found.id;
+        }
+        if (jobId) {
+          const jobStatus =
+            status === 'CANCELLED'
+              ? 'CANCELLED'
+              : status === 'FAILED'
+                ? 'FAILED'
+                : status === 'PAUSED'
+                  ? 'PAUSED'
+                  : 'COMPLETED';
+          await upsertJobProgress({
+            id: jobId,
+            type: 'CAMPAIGN_SEND',
+            organizationId: orgId,
+            createdById: request.user?.id ?? null,
+            campaignId: id,
+            status: jobStatus as any,
+            total: jobTotal,
+            processed: Math.min(jobTotal, sentCount + failedCount),
+            finishedAt: new Date(),
+            meta: { stage: status === 'CANCELLED' ? 'cancelled' : 'finalized', sent: sentCount, failed: failedCount, pending: pendingCount },
+          });
+        }
+      } catch {}
+
+      return reply.send({ campaign: updated, sentCount, failedCount, pendingCount, jobId });
     } catch (error) {
       return sendError(reply, error);
     }
