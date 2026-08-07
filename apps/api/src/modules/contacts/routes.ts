@@ -302,6 +302,46 @@ export async function contactRoutes(app: FastifyInstance) {
     }
   });
 
+  app.delete('/', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const query = request.query as { listId?: string; status?: string; confirm?: string };
+      if (query.confirm !== 'yes') {
+        throw new AppError(400, 'Missing confirm=yes parameter');
+      }
+      const where: Prisma.ContactWhereInput = { organizationId: orgId };
+      if (query.listId) {
+        where.listMemberships = { some: { listId: query.listId } };
+      }
+      if (query.status) {
+        where.status = query.status as 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'BOUNCED' | 'COMPLAINED' | 'CLEANED';
+      }
+      const count = await prisma.contact.count({ where });
+      if (!count) {
+        return reply.send({ deleted: 0 });
+      }
+      // Delete in chunks of 500 to avoid huge transactions / locks
+      const CHUNK = 500;
+      let deleted = 0;
+      while (deleted < count) {
+        const ids = await prisma.contact.findMany({ where, select: { id: true }, take: CHUNK });
+        if (!ids.length) break;
+        await prisma.$transaction([
+          prisma.contactListMember.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
+          prisma.contactTag.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
+          prisma.trackingEvent.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
+          prisma.contact.deleteMany({ where: { id: { in: ids.map((c) => c.id) } } }),
+        ]);
+        deleted += ids.length;
+        // Avoid tight loop starving other queries
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return reply.send({ deleted });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/export/csv', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);

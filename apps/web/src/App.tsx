@@ -22,13 +22,15 @@ import { useAuthStore } from '@/stores/auth';
 const queryClient = new QueryClient();
 
 function Protected({ children }: { children: React.ReactNode }) {
-  const { user, loading, fetchMe } = useAuthStore();
+  const { user, loading, hydrated, fetchMe } = useAuthStore();
 
   useEffect(() => {
     fetchMe();
   }, [fetchMe]);
 
-  if (loading) {
+  // Wait for BOTH: initial state hydration from sessionStorage AND fetchMe to settle.
+  // Prevents flicker redirect to /login on page refresh when user was previously logged in.
+  if (!hydrated || loading) {
     return (
       <div className="relative flex h-full min-h-screen items-center justify-center overflow-y-auto bg-background font-mono text-muted-foreground">
         <div className="nd-atmosphere" aria-hidden />

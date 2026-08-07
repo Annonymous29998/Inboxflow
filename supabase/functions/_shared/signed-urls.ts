@@ -1,4 +1,13 @@
+declare global {
+  const Deno: {
+    env: {
+      get(key: string): string | undefined;
+    };
+  };
+}
+
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 function secret(): string {
   const value = Deno.env.get('JWT_ACCESS_SECRET');

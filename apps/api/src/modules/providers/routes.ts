@@ -452,14 +452,34 @@ export async function providerRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const existing = await prisma.emailProvider.findFirst({ where: { id, organizationId: orgId } });
       if (!existing) throw new AppError(404, 'Provider not found');
-      await prisma.emailProvider.delete({ where: { id } });
+      // If the deleted provider was default, promote another active one so we don't have NO default
+      let promotedDefault: string | null = null;
+      if (existing.isDefault) {
+        const replacement = await prisma.emailProvider.findFirst({
+          where: { organizationId: orgId, id: { not: id }, isActive: true },
+          orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+          select: { id: true },
+        });
+        promotedDefault = replacement?.id ?? null;
+      }
+      await prisma.$transaction([
+        // Make sure any campaigns stuck referencing old provider (before Prisma SetNull kicks in) also have a safe fallback
+        prisma.campaign.updateMany({
+          where: { organizationId: orgId, providerId: id },
+          data: { providerId: promotedDefault, updatedAt: new Date() },
+        }),
+        promotedDefault
+          ? prisma.emailProvider.update({ where: { id: promotedDefault }, data: { isDefault: true } })
+          : prisma.emailProvider.updateMany({ where: { id } , data: { isDefault: false } }),
+        prisma.emailProvider.delete({ where: { id } }),
+      ]);
       await writeSystemLog({
         organizationId: orgId,
         level: 'WARNING',
         category: 'smtp',
-        message: `SMTP profile deleted: ${existing.name}`,
+        message: `SMTP profile deleted: ${existing.name}` + (promotedDefault ? ` (new default: ${promotedDefault})` : ''),
       });
-      return reply.send({ success: true });
+      return reply.send({ success: true, promotedDefault });
     } catch (error) {
       return sendError(reply, error);
     }

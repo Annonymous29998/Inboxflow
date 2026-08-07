@@ -5,6 +5,7 @@ import { smtpService, type SmtpProfile } from '@/services/smtp.service';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { toast } from '@/stores/toast';
+import { useDraft, useDraftStore } from '@/stores/draft';
 
 type FormState = {
   name: string;
@@ -79,13 +80,13 @@ function statusTone(status?: string | null) {
 
 export function SmtpManagerPage() {
   const [providers, setProviders] = useState<SmtpProfile[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm);
-  const [testTo, setTestTo] = useState('');
-  const [issues, setIssues] = useState<string[]>([]);
+  const [editingId, setEditingId] = useDraft<string | null>('smtp:editingId', null);
+  const [form, setForm] = useDraft<FormState>('smtp:form', emptyForm);
+  const [testTo, setTestTo] = useDraft<string>('smtp:testTo', '');
+  const [issues, setIssues] = useDraft<string[]>('smtp:issues', []);
   const [busy, setBusy] = useState(false);
-  const [showPass, setShowPass] = useState(false);
-  const [lastTestOk, setLastTestOk] = useState(false);
+  const [showPass, setShowPass] = useDraft<boolean>('smtp:showPass', false);
+  const [lastTestOk, setLastTestOk] = useDraft<boolean>('smtp:lastTestOk', false);
   const [rotationEnabled, setRotationEnabled] = useState(true);
   const [rotationMode, setRotationMode] = useState<
     'failover' | 'round_robin' | 'weighted' | 'performance'
@@ -127,7 +128,7 @@ export function SmtpManagerPage() {
     load().catch(console.error);
     loadRotation().catch(() => undefined);
     api.get<{ user: { email?: string } }>('/api/auth/me').then((d) => {
-      if (d.user.email) setTestTo(d.user.email);
+      if (d.user.email && !testTo) setTestTo(d.user.email);
     });
   }, []);
 
@@ -303,6 +304,12 @@ export function SmtpManagerPage() {
         toast.success('SMTP saved', 'Inactive until activated after a successful test');
       }
       setLastTestOk(true);
+      const clearDraft = useDraftStore.getState().clearDraft;
+      clearDraft('smtp:editingId');
+      clearDraft('smtp:form');
+      clearDraft('smtp:issues');
+      clearDraft('smtp:showPass');
+      clearDraft('smtp:lastTestOk');
       await load();
     } catch (err) {
       toast.error('Save failed', err instanceof Error ? err.message : undefined);
@@ -329,7 +336,15 @@ export function SmtpManagerPage() {
     if (!confirm('Delete this SMTP profile?')) return;
     try {
       await smtpService.remove(id);
-      if (editingId === id) startCreate();
+      if (editingId === id) {
+        startCreate();
+        const clearDraft = useDraftStore.getState().clearDraft;
+        clearDraft('smtp:editingId');
+        clearDraft('smtp:form');
+        clearDraft('smtp:issues');
+        clearDraft('smtp:showPass');
+        clearDraft('smtp:lastTestOk');
+      }
       await load();
       toast.success('SMTP profile deleted');
     } catch (err) {

@@ -32,7 +32,9 @@ import { scrubCampaignEditorContent, scrubSpamFromHtml, scrubSpamFromText } from
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
+import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 import { toast } from '@/stores/toast';
+import { useDraft, useDraftStore } from '@/stores/draft';
 
 function flash(message: string, tone: 'success' | 'error' | 'warning' | 'info' = 'success') {
   if (!message) return;
@@ -100,6 +102,11 @@ type Campaign = {
   trackOpens?: boolean;
   trackClicks?: boolean;
   editorJson?: { blocks?: EditorBlock[] } | null;
+  sentCount?: number;
+  openedCount?: number;
+  clickedCount?: number;
+  deliveredCount?: number;
+  sentAt?: string | null;
 };
 
 type DeliverabilityReport = {
@@ -247,6 +254,26 @@ export function CampaignsPage() {
               <Link to={`/app/campaigns/${c.id}`} className="min-w-0 flex-1">
                 <div className="font-medium hover:text-primary">{c.name}</div>
                 <div className="truncate text-sm text-ink-muted">{c.subject || 'No subject'}</div>
+                {c.status === 'SENT' && (c.sentCount ?? 0) > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-ink-muted">
+                    <span>
+                      <span className="font-semibold text-success">{c.deliveredCount || c.sentCount}</span>
+                      /{c.sentCount} delivered
+                    </span>
+                    <span>
+                      <span className="font-semibold text-primary">{c.openedCount ?? 0}</span> opened
+                      {c.sentCount
+                        ? ` (${Math.round(((c.openedCount ?? 0) / c.sentCount) * 100)}%)`
+                        : ''}
+                    </span>
+                    <span>
+                      <span className="font-semibold text-primary">{c.clickedCount ?? 0}</span> clicked
+                      {c.sentCount
+                        ? ` (${Math.round(((c.clickedCount ?? 0) / c.sentCount) * 100)}%)`
+                        : ''}
+                    </span>
+                  </div>
+                ) : null}
               </Link>
               <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 {c.deliverabilityScore != null && (
@@ -289,7 +316,8 @@ export function CampaignEditorPage() {
   const [searchParams] = useSearchParams();
   const isNew = id === 'new';
   const navigate = useNavigate();
-  const [campaign, setCampaign] = useState<Partial<Campaign>>({
+  const draftKey = `campaign:${id || 'new'}`;
+  const defaultCampaign: Partial<Campaign> = {
     name: 'Untitled campaign',
     type: 'REGULAR',
     subject: '',
@@ -298,13 +326,14 @@ export function CampaignEditorPage() {
     senderEmail: '',
     trackOpens: true,
     trackClicks: true,
-  });
+  };
+  const [campaign, setCampaign] = useDraft<Partial<Campaign>>(`${draftKey}:campaign`, defaultCampaign);
   const [lists, setLists] = useState<Array<{ id: string; name: string; _count?: { members: number } }>>([]);
   const [templates, setTemplates] = useState<EmailTemplateSummary[]>([]);
   const [templateLoading, setTemplateLoading] = useState(false);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
-  const [blocks, setBlocks] = useState<EditorBlock[]>([]);
-  const [previewMode, setPreviewMode] = useState<'desktop' | 'tablet' | 'mobile' | 'dark'>('desktop');
+  const [blocks, setBlocks] = useDraft<EditorBlock[]>(`${draftKey}:blocks`, []);
+  const [previewMode, setPreviewMode] = useDraft<'desktop' | 'tablet' | 'mobile' | 'dark'>(`${draftKey}:previewMode`, 'desktop');
   const [report, setReport] = useState<DeliverabilityReport | null>(null);
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -316,16 +345,17 @@ export function CampaignEditorPage() {
   const [sendCancelled, setSendCancelled] = useState(false);
   const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
-  const [queueSettings, setQueueSettings] = useState({
+  const defaultQueueSettings = {
     batchSize: 10,
     batchPauseMs: 5000,
     betweenEmailMs: 500,
     maxPerMinute: 60,
     maxPerHour: 2000,
-  });
-  const [subjectPoolText, setSubjectPoolText] = useState('');
-  const [fromNamePoolText, setFromNamePoolText] = useState('');
-  const [testMatrixTo, setTestMatrixTo] = useState('');
+  };
+  const [queueSettings, setQueueSettings] = useDraft(`${draftKey}:queueSettings`, defaultQueueSettings);
+  const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
+  const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
+  const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
   const [importStatus, setImportStatus] = useState('');
 
   function parsePool(text: string): string[] {
@@ -538,6 +568,15 @@ export function CampaignEditorPage() {
       } else {
         flash('Saved');
       }
+      const clearDraft = useDraftStore.getState().clearDraft;
+      const savedDraftKey = `campaign:${campaignId || 'new'}`;
+      clearDraft(`${savedDraftKey}:campaign`);
+      clearDraft(`${savedDraftKey}:blocks`);
+      clearDraft(`${savedDraftKey}:previewMode`);
+      clearDraft(`${savedDraftKey}:queueSettings`);
+      clearDraft(`${savedDraftKey}:subjectPoolText`);
+      clearDraft(`${savedDraftKey}:fromNamePoolText`);
+      clearDraft(`${savedDraftKey}:testMatrixTo`);
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Save failed', 'error');
     } finally {
@@ -1541,6 +1580,14 @@ export function CampaignEditorPage() {
           </Card>
         </div>
       </div>
+
+      {!isNew && id && campaign.status && ['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'].includes(campaign.status) ? (
+        <CampaignRecipientsPanel
+          campaignId={id}
+          campaignName={campaign.subject || campaign.name}
+          sentAt={campaign.sentAt}
+        />
+      ) : null}
     </div>
   );
 }

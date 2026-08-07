@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 function getKey(secret: string): Buffer {
   return scryptSync(secret, 'inboxflow-salt', 32);

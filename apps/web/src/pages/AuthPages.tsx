@@ -23,6 +23,27 @@ export function LoginPage() {
         setNeeds2FA(true);
         return;
       }
+      // Yield to microtask queue so zustand persist middleware + syncPersistNow() finish writing
+      // sessionStorage + localStorage BEFORE the React Router navigate flushes the SPA.
+      // This prevents a "refresh kicks to /login" race: page reload before persist writes completes.
+      await new Promise((r) => setTimeout(r, 150));
+      if (typeof window !== 'undefined') {
+        // Defensive final check: make sure storage actually contains the authenticated user.
+        // If not, write it a final time here.
+        try {
+          const raw = window.sessionStorage.getItem('inboxflow-auth');
+          if (!raw || raw.includes('"user":null')) {
+            // zustand persist not yet committed — manually force-write what we can from current auth store state
+            const { useAuthStore } = await import('@/stores/auth');
+            const st = useAuthStore.getState();
+            const slice = { user: st.user, accessToken: st.accessToken, refreshToken: st.refreshToken };
+            if (slice.user && slice.accessToken) {
+              window.sessionStorage.setItem('inboxflow-auth', JSON.stringify({ state: slice, version: 0 }));
+              window.localStorage.setItem('inboxflow-auth-fallback', JSON.stringify(slice));
+            }
+          }
+        } catch {}
+      }
       navigate('/app');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to sign in');

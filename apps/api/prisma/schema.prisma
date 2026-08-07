@@ -384,17 +384,17 @@ model Campaign {
   organizationId   String
   organization     Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdById      String?
-  createdBy        User?          @relation(fields: [createdById], references: [id])
+  createdBy        User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
   listId           String?
-  list             ContactList?   @relation(fields: [listId], references: [id])
+  list             ContactList?   @relation(fields: [listId], references: [id], onDelete: SetNull)
   segmentId        String?
-  segment          Segment?       @relation(fields: [segmentId], references: [id])
+  segment          Segment?       @relation(fields: [segmentId], references: [id], onDelete: SetNull)
   templateId       String?
-  template         Template?      @relation(fields: [templateId], references: [id])
+  template         Template?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
   providerId       String?
-  provider         EmailProvider? @relation(fields: [providerId], references: [id])
+  provider         EmailProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
   domainId         String?
-  domain           Domain?        @relation(fields: [domainId], references: [id])
+  domain           Domain?        @relation(fields: [domainId], references: [id], onDelete: SetNull)
 
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt

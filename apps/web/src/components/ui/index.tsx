@@ -80,19 +80,36 @@ export function Card({
 export function Badge({
   children,
   tone = 'neutral',
+  variant = 'default',
+  className,
 }: {
   children: ReactNode;
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
+  variant?: 'default' | 'outline';
+  className?: string;
 }) {
   return (
     <span
       className={cn(
         'inline-flex items-center rounded-none px-2 py-0.5 font-mono text-xs font-medium',
-        tone === 'neutral' && 'border border-border text-muted-foreground',
-        tone === 'success' && 'border border-primary/40 text-primary',
-        tone === 'warning' && 'border border-warning/40 text-warning',
-        tone === 'danger' && 'border border-destructive/40 text-destructive',
-        tone === 'info' && 'border border-accent/40 text-accent',
+        variant === 'default' &&
+          tone === 'neutral' &&
+          'border border-border text-muted-foreground',
+        variant === 'default' &&
+          tone === 'success' &&
+          'border border-primary/40 text-primary',
+        variant === 'default' &&
+          tone === 'warning' &&
+          'border border-warning/40 text-warning',
+        variant === 'default' &&
+          tone === 'danger' &&
+          'border border-destructive/40 text-destructive',
+        variant === 'default' &&
+          tone === 'info' &&
+          'border border-accent/40 text-accent',
+        variant === 'outline' &&
+          'border border-border text-foreground bg-transparent',
+        className,
       )}
     >
       {children}
@@ -130,5 +147,30 @@ export function Select({
     >
       {children}
     </select>
+  );
+}
+
+export function Progress({
+  value = 0,
+  max = 100,
+  className,
+}: { value?: number; max?: number; className?: string }) {
+  const pct = Math.max(0, Math.min(100, max > 0 ? (value / max) * 100 : 0));
+  return (
+    <div
+      role="progressbar"
+      aria-valuenow={Math.round(pct)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className={cn(
+        'relative h-2 w-full overflow-hidden border border-border bg-muted/60',
+        className,
+      )}
+    >
+      <div
+        className="h-full bg-gradient-to-r from-primary via-accent to-primary transition-[width] duration-300 ease-out"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
   );
 }

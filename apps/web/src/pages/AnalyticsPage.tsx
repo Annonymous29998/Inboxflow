@@ -14,10 +14,12 @@ import {
 } from 'recharts';
 import { api } from '@/lib/api';
 import { Button, Card, Select } from '@/components/ui';
+import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 
 export function AnalyticsPage() {
   const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedId, setSelectedId] = useState('');
+  const [activeTab, setActiveTab] = useState<'overview' | 'recipients'>('overview');
   const [detail, setDetail] = useState<{
     campaign: {
       name: string;
@@ -26,6 +28,7 @@ export function AnalyticsPage() {
       clickedCount: number;
       bouncedCount: number;
       deliverabilityScore: number | null;
+      sentAt?: string | null;
     };
     timeline: Array<{ date: string; opened: number; clicked: number; delivered: number }>;
     topLinks: Array<{ url: string; clicks: number }>;
@@ -104,6 +107,34 @@ export function AnalyticsPage() {
       ) : null}
 
       {detail && (
+        <div className="flex gap-1 border-b border-border">
+          {(['overview', 'recipients'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={[
+                'px-4 py-2 text-sm font-medium capitalize transition-colors',
+                activeTab === tab
+                  ? 'border-b-2 border-primary text-primary'
+                  : 'text-ink-muted hover:text-foreground',
+              ].join(' ')}
+            >
+              {tab === 'recipients' ? `Recipients (${detail.campaign.sentCount})` : tab}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {detail && activeTab === 'recipients' && selectedId ? (
+        <CampaignRecipientsPanel
+          campaignId={selectedId}
+          campaignName={detail.campaign.name}
+          sentAt={detail.campaign.sentAt}
+          compact
+        />
+      ) : null}
+
+      {detail && activeTab === 'overview' && (
         <>
           <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
             {[

@@ -143,7 +143,7 @@ export async function authRoutes(app: FastifyInstance) {
       await sendTransactionalEmail({
         to: user.email,
         subject: 'Verify your Inbox Flow account',
-        html: `<p>Hi ${user.firstName},</p><p>Verify your email:</p><p><a href="${env.APP_URL}/verify-email?token=${verifyToken}">Verify Email</a></p>`,
+        html: `<p>Hi ${user.firstName},</p><p>Verify your email:</p><p><a href="${env.APP_URL || 'http://localhost:5173'}/verify-email?token=${verifyToken}">Verify Email</a></p>`,
       });
 
       const tokens = await createTokens(app, user, {
@@ -243,6 +243,9 @@ export async function authRoutes(app: FastifyInstance) {
       if (!session || session.revokedAt || session.expiresAt < new Date()) {
         throw new AppError(401, 'Invalid refresh token');
       }
+      if (!session.user) {
+        throw new AppError(401, 'User no longer exists');
+      }
 
       await prisma.session.update({
         where: { id: session.id },
@@ -311,7 +314,7 @@ export async function authRoutes(app: FastifyInstance) {
         await sendTransactionalEmail({
           to: user.email,
           subject: 'Reset your Inbox Flow password',
-          html: `<p>Reset your password:</p><p><a href="${env.APP_URL}/reset-password?token=${token}">Reset Password</a></p><p>This link expires in 1 hour.</p>`,
+          html: `<p>Reset your password:</p><p><a href="${env.APP_URL || 'http://localhost:5173'}/reset-password?token=${token}">Reset Password</a></p><p>This link expires in 1 hour.</p>`,
         });
       }
       return reply.send({ success: true, message: 'If that email exists, a reset link was sent.' });
@@ -384,6 +387,7 @@ export async function authRoutes(app: FastifyInstance) {
           organization: { select: { id: true, name: true, slug: true, physicalAddress: true } },
         },
       });
+      if (!user) throw new AppError(404, 'User not found');
       return reply.send({ user });
     } catch (error) {
       return sendError(reply, error);

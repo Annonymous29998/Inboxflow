@@ -121,6 +121,10 @@ export async function trackingRoutes(app: FastifyInstance) {
     const ua = parseUa(request.headers['user-agent']);
 
     try {
+      const existingClick = await prisma.trackingEvent.findFirst({
+        where: { campaignId, contactId, type: 'CLICKED' },
+      });
+
       await prisma.trackingEvent.create({
         data: {
           type: 'CLICKED',
@@ -132,10 +136,14 @@ export async function trackingRoutes(app: FastifyInstance) {
           ...ua,
         },
       });
-      await prisma.campaign.update({
-        where: { id: campaignId },
-        data: { clickedCount: { increment: 1 } },
-      });
+
+      if (!existingClick) {
+        await prisma.campaign.update({
+          where: { id: campaignId },
+          data: { clickedCount: { increment: 1 } },
+        });
+      }
+
       await prisma.campaignRecipient.updateMany({
         where: { campaignId, contactId },
         data: { clickedAt: new Date(), status: 'CLICKED' },

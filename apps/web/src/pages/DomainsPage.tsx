@@ -3,6 +3,7 @@ import { CheckCircle2, Circle, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Badge, Button, Card, Input, Label } from '@/components/ui';
 import { toast } from '@/stores/toast';
+import { useDraft, useDraftStore } from '@/stores/draft';
 
 type Domain = {
   id: string;
@@ -21,13 +22,13 @@ type Domain = {
 
 export function DomainsPage() {
   const [domains, setDomains] = useState<Domain[]>([]);
-  const [domainInput, setDomainInput] = useState('');
-  const [selected, setSelected] = useState<Domain | null>(null);
-  const [instructions, setInstructions] = useState<{
+  const [domainInput, setDomainInput] = useDraft<string>('domains:domainInput', '');
+  const [selected, setSelected] = useDraft<Domain | null>('domains:selected', null);
+  const [instructions, setInstructions] = useDraft<{
     title: string;
     tip: string;
     steps: Array<{ step: number; title: string; description: string; record?: { type: string; host: string; value: string; status: string } }>;
-  } | null>(null);
+  } | null>('domains:instructions', null);
 
   async function load() {
     const data = await api.get<{ domains: Domain[] }>('/api/domains');
@@ -51,6 +52,8 @@ export function DomainsPage() {
       setDomainInput('');
       setSelected(data.domain);
       setInstructions(data.instructions);
+      const clearDraft = useDraftStore.getState().clearDraft;
+      clearDraft('domains:domainInput');
       await load();
       toast.success('Domain added', data.domain.domain);
     } catch (err) {

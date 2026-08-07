@@ -201,22 +201,34 @@ export async function campaignRoutes(app: FastifyInstance) {
         },
       });
 
-      const rows = await Promise.all(
-        campaigns.map(async (c) => {
-          const [pending, sent, failed] = await Promise.all([
-            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'QUEUED' } }),
-            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'SENT' } }),
-            prisma.campaignRecipient.count({ where: { campaignId: c.id, status: 'FAILED' } }),
-          ]);
-          return {
-            ...c,
-            pending,
-            sent,
-            failed,
-            total: c.totalRecipients || pending + sent + failed,
-          };
-        }),
-      );
+      // Single groupBy query across all campaigns × status to eliminate N+1 (120 queries → 1)
+      const allIds = campaigns.map((c) => c.id);
+      const statuses = allIds.length
+        ? await prisma.campaignRecipient.groupBy({
+            by: ['campaignId', 'status'],
+            where: { campaignId: { in: allIds } },
+            _count: { _all: true },
+          })
+        : [];
+
+      type K = `${string}:${string}`;
+      const counts = new Map<K, number>();
+      for (const r of statuses) {
+        counts.set(`${r.campaignId}:${r.status}` as K, r._count._all);
+      }
+
+      const rows = campaigns.map((c) => {
+        const pending = counts.get(`${c.id}:QUEUED` as K) ?? 0;
+        const sent = counts.get(`${c.id}:SENT` as K) ?? 0;
+        const failed = counts.get(`${c.id}:FAILED` as K) ?? 0;
+        return {
+          ...c,
+          pending,
+          sent,
+          failed,
+          total: c.totalRecipients || pending + sent + failed,
+        };
+      });
 
       return reply.send({ campaigns: rows });
     } catch (error) {
@@ -301,17 +313,21 @@ export async function campaignRoutes(app: FastifyInstance) {
               isActive: true,
             },
           },
-          recipients: {
-            take: 500,
-            orderBy: { createdAt: 'asc' },
-            include: {
-              contact: { select: { id: true, email: true, firstName: true, lastName: true } },
-            },
-          },
+          // Don't eager-load 500 recipients here (slow). Use GET /campaigns/:id/recipients?pagination instead.
         },
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
-      return reply.send({ campaign });
+      // Attach a lightweight summary count so the UI can still show "x recipients" without loading them all
+      const totalRecipientsCount = await prisma.campaignRecipient.count({ where: { campaignId: id } });
+      return reply.send({
+        campaign: {
+          ...campaign,
+          recipients: undefined, // remove field (kept for type compat; will serialize as `undefined` i.e. omitted)
+          _meta: {
+            recipientCount: totalRecipientsCount,
+          },
+        },
+      });
     } catch (error) {
       return sendError(reply, error);
     }

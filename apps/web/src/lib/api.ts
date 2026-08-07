@@ -30,6 +30,10 @@ class ApiClient {
     return this.accessToken;
   }
 
+  getTokens() {
+    return { accessToken: this.accessToken, refreshToken: this.refreshToken };
+  }
+
   clearSession() {
     this.accessToken = null;
     this.refreshToken = null;
@@ -110,6 +114,42 @@ class ApiClient {
 
   delete<T>(path: string) {
     return this.request<T>(path, { method: 'DELETE' });
+  }
+
+  async blob(path: string, options: RequestOptions = {}): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    if (options.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
+
+    let res = await fetch(`${API_URL}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      credentials: 'include',
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+
+    if (res.status === 401) {
+      const refreshed = await this.tryRefresh();
+      if (refreshed) {
+        if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
+        else delete headers.Authorization;
+        res = await fetch(`${API_URL}${path}`, {
+          method: options.method || 'GET',
+          headers,
+          credentials: 'include',
+          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        });
+      }
+    }
+
+    if (!res.ok) {
+      let data: any = {};
+      try { data = await res.json().catch(() => ({})); } catch {}
+      throw new Error(data.error || data.message || `Request failed (${res.status})`);
+    }
+    return await res.blob();
   }
 }
 

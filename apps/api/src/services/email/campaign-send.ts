@@ -181,12 +181,13 @@ export async function sendCampaignEmailToRecipient(input: {
             status: 'SENT',
             messageId: result.messageId,
             sentAt: new Date(),
+            deliveredAt: new Date(),
             error: null,
           },
         }),
         prisma.campaign.update({
           where: { id: campaignId },
-          data: { sentCount: { increment: 1 } },
+          data: { sentCount: { increment: 1 }, deliveredCount: { increment: 1 } },
         }),
         prisma.trackingEvent.create({
           data: {
