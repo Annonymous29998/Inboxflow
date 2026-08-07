@@ -499,6 +499,7 @@ export async function providerRoutes(app: FastifyInstance) {
           sendTestEmail: z.boolean().default(false),
           testEmailTo: z.string().email().optional(),
           notes: z.string().optional().nullable(),
+          skipLiveVerify: z.boolean().default(false),
         })
         .parse(request.body);
 
@@ -519,7 +520,13 @@ export async function providerRoutes(app: FastifyInstance) {
         body.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];
 
       let result;
-      if (body.type === 'SMTP' && body.sendTestEmail) {
+      if (body.skipLiveVerify && !body.sendTestEmail) {
+        result = {
+          success: issues.length === 0,
+          message: issues.length === 0 ? 'Static checks passed' : `Static issues detected: ${issues.join(', ')}`,
+          error: issues.length ? issues.join('\n') : undefined,
+        };
+      } else if (body.type === 'SMTP' && body.sendTestEmail) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
         result = await sendSmtpTestEmail(config, body.testEmailTo, { notes: body.notes });
       } else {
@@ -536,7 +543,7 @@ export async function providerRoutes(app: FastifyInstance) {
         message: result.success
           ? `SMTP test OK: ${config.host || body.type}`
           : `SMTP test failed: ${result.error || result.message}`,
-        meta: { issues, deliverabilityWarnings },
+        meta: { issues, deliverabilityWarnings, skipLiveVerify: body.skipLiveVerify },
       });
 
       return reply.send({ result, issues, deliverabilityWarnings });
@@ -555,6 +562,7 @@ export async function providerRoutes(app: FastifyInstance) {
           testEmailTo: z.string().email().optional(),
           notes: z.string().optional().nullable(),
           config: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+          skipLiveVerify: z.boolean().default(false),
         })
         .parse(request.body ?? {});
 
@@ -584,7 +592,13 @@ export async function providerRoutes(app: FastifyInstance) {
         provider.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];
 
       let result;
-      if (provider.type === 'SMTP' && body.sendTestEmail) {
+      if (body.skipLiveVerify && !body.sendTestEmail) {
+        result = {
+          success: issues.length === 0,
+          message: issues.length === 0 ? 'Static checks passed' : `Static issues detected: ${issues.join(', ')}`,
+          error: issues.length ? issues.join('\n') : undefined,
+        };
+      } else if (provider.type === 'SMTP' && body.sendTestEmail) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
         result = await sendSmtpTestEmail(config, body.testEmailTo, {
           notes: body.notes ?? (typeof provider.notes === 'string' ? provider.notes : null),
@@ -596,8 +610,8 @@ export async function providerRoutes(app: FastifyInstance) {
       const updated = await prisma.emailProvider.update({
         where: { id },
         data: {
-          lastTestStatus: result.success ? 'Connected' : 'Failed',
-          lastTestAt: new Date(),
+          lastTestStatus: result.success ? (body.skipLiveVerify ? 'Pending' : 'Connected') : 'Failed',
+          lastTestAt: body.skipLiveVerify ? null : new Date(),
           lastTestError: result.success ? null : result.error || result.message,
           isActive: result.success ? provider.isActive : false,
         },
@@ -610,7 +624,7 @@ export async function providerRoutes(app: FastifyInstance) {
         message: result.success
           ? `Connected to SMTP: ${provider.name}`
           : `Authentication failed: ${provider.name} — ${result.error || result.message}`,
-        meta: { providerId: id, issues, deliverabilityWarnings },
+        meta: { providerId: id, issues, deliverabilityWarnings, skipLiveVerify: body.skipLiveVerify },
       });
 
       return reply.send({ result, issues, deliverabilityWarnings, provider: await mapProvider(updated) });

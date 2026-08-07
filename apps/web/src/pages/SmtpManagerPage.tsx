@@ -296,37 +296,38 @@ export function SmtpManagerPage() {
         selected?.fromEmail !== form.fromEmail.trim();
 
       let warnings: string[] = [];
-      if (!lastTestOk || changedCredentials) {
-        toast.info('Verifying connection before saving…');
-        const test = await smtpService.testConnection({
-          providerId: editingId || undefined,
-          config: buildConfig(),
-        });
-        warnings = test.deliverabilityWarnings ?? [];
-        if (!test.success) {
-          setLastTestOk(false);
-          toast.error(
-            'SMTP was NOT saved — connection test failed',
-            `Dead SMTP credentials refused. Fix them first.\n\n${test.error || test.message}`,
-          );
-          return;
-        }
-        setLastTestOk(true);
-      }
 
       if (activate) {
-        // Final pass through test endpoint: refuses activation if SMTP host is no longer connecting
-        const test = await smtpService.testConnection({
-          providerId: editingId || undefined,
-          config: buildConfig(),
-        });
-        warnings = Array.from(new Set([...(warnings || []), ...(test.deliverabilityWarnings || [])]));
-        if (!test.success) {
-          setLastTestOk(false);
-          toast.error('Activation blocked — connection test failed', test.error || test.message);
-          return;
+        if (!lastTestOk || changedCredentials) {
+          toast.info('Verifying connection before activation…');
+          const test = await smtpService.testConnection({
+            providerId: editingId || undefined,
+            config: buildConfig(),
+          });
+          warnings = Array.from(new Set([...(warnings || []), ...(test.deliverabilityWarnings || [])]));
+          if (!test.success) {
+            setLastTestOk(false);
+            toast.error(
+              'SMTP was NOT saved — connection test failed',
+              `Dead SMTP credentials refused. Fix them first.\n\n${test.error || test.message}`,
+            );
+            return;
+          }
+          setLastTestOk(true);
         }
-        setLastTestOk(true);
+      } else {
+        // Draft / Save changes — only compute static deliverability warnings, do NOT force a live SMTP handshake
+        // (Nexlogs parity: save always succeeds, test is optional via explicit Test button)
+        try {
+          const probe = await smtpService.testConnection({
+            providerId: editingId || undefined,
+            config: buildConfig(),
+            skipLiveVerify: true,
+          });
+          warnings = probe.deliverabilityWarnings ?? [];
+        } catch {
+          warnings = [];
+        }
       }
 
       const payload = {
@@ -353,12 +354,6 @@ export function SmtpManagerPage() {
       }
 
       if (activate && profileId) {
-        const test = await smtpService.testConnection({ providerId: profileId });
-        if (!test.success) {
-          toast.error('Saved, but activation blocked', 'Connection test failed');
-          await load();
-          return;
-        }
         await smtpService.update(profileId, { isActive: true, isDefault: form.isDefault });
         if (warnings.length) {
           toast.warning(
@@ -371,17 +366,17 @@ export function SmtpManagerPage() {
       } else {
         if (warnings.length) {
           toast.warning(
-            'SMTP saved — watch inbox placement',
+            activate ? 'SMTP saved — watch inbox placement' : 'SMTP saved as draft',
             `Deliverability warnings:\n• ${warnings.join('\n• ')}`,
           );
         } else {
           toast.success(
-            'SMTP saved (live connection confirmed)',
-            'Inactive until activated after a successful test',
+            activate ? 'SMTP saved (live connection confirmed)' : (editingId ? 'Changes saved' : 'SMTP draft saved'),
+            activate ? 'Inactive until activated after a successful test' : 'Click Activate or Test Connection when ready.',
           );
         }
       }
-      setLastTestOk(true);
+      setLastTestOk(activate ? true : lastTestOk);
       const clearDraft = useDraftStore.getState().clearDraft;
       clearDraft('smtp:editingId');
       clearDraft('smtp:form');

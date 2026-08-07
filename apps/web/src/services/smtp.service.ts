@@ -198,6 +198,7 @@ export const smtpService = {
     sendTestEmail?: boolean;
     testEmailTo?: string;
     notes?: string | null;
+    skipLiveVerify?: boolean;
   }): Promise<{
     success: boolean;
     message: string;
@@ -223,10 +224,11 @@ export const smtpService = {
           sendTestEmail: Boolean(input.sendTestEmail),
           testEmailTo: input.testEmailTo,
           notes: input.notes || undefined,
+          skipLiveVerify: Boolean(input.skipLiveVerify),
         });
         return {
-          success: Boolean(data.success),
-          message: data.message || (data.success ? 'SMTP connection verified' : 'Connection failed'),
+          success: Boolean(data.success) || Boolean(input.skipLiveVerify && (data.issues?.length ?? 0) === 0),
+          message: data.message || (Boolean(input.skipLiveVerify) ? 'Static checks passed' : (data.success ? 'SMTP connection verified' : 'Connection failed')),
           error: data.error,
           messageId: data.messageId,
           issues: data.issues || [],
@@ -249,6 +251,7 @@ export const smtpService = {
         testEmailTo: input.testEmailTo,
         config: input.config,
         notes: input.notes || undefined,
+        skipLiveVerify: Boolean(input.skipLiveVerify),
       });
       return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
     }
@@ -263,6 +266,7 @@ export const smtpService = {
       sendTestEmail: Boolean(input.sendTestEmail),
       testEmailTo: input.testEmailTo,
       notes: input.notes || undefined,
+      skipLiveVerify: Boolean(input.skipLiveVerify),
     });
     return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
   },

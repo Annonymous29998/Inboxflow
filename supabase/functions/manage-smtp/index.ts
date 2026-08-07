@@ -289,6 +289,7 @@ Deno.serve(async (req) => {
       const providerId = body.providerId ? String(body.providerId) : null;
       const inlineConfig = body.config ? normalizeConfig(body.config as Record<string, string>) : null;
       const sendTestEmail = Boolean(body.sendTestEmail);
+      const skipLiveVerify = Boolean(body.skipLiveVerify);
       const testEmailTo = body.testEmailTo ? String(body.testEmailTo).trim() : '';
 
       if (sendTestEmail && !testEmailTo) {
@@ -346,6 +347,19 @@ Deno.serve(async (req) => {
         fromEmail: smtp.fromEmail,
         user: smtp.user,
       });
+
+      if (skipLiveVerify && !sendTestEmail) {
+        const success = issues.length === 0;
+        const message = success ? 'Static checks passed' : `Static issues detected: ${issues.join(', ')}`;
+        return jsonResponse({
+          ok: true,
+          success,
+          message,
+          error: success ? undefined : issues.join('\n'),
+          issues,
+          deliverabilityWarnings,
+        });
+      }
 
       const started = Date.now();
       try {
