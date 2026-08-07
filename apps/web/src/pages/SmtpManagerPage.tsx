@@ -98,7 +98,8 @@ export function SmtpManagerPage() {
   const [form, setForm] = useDraft<FormState>('smtp:form', emptyForm);
   const [testTo, setTestTo] = useDraft<string>('smtp:testTo', '');
   const [issues, setIssues] = useDraft<string[]>('smtp:issues', []);
-  const [busyTest, setBusyTest] = useState(false);
+  const [busyTestVerify, setBusyTestVerify] = useState(false);
+  const [busyTestSend, setBusyTestSend] = useState(false);
   const [busySave, setBusySave] = useState(false);
   const [busyToggle, setBusyToggle] = useState(false);
   const [busyDelete, setBusyDelete] = useState(false);
@@ -243,7 +244,10 @@ export function SmtpManagerPage() {
   }
 
   async function testConnection(sendEmail = false, opts?: { silent?: boolean }) {
-    if (!opts?.silent) setBusyTest(true);
+    if (!opts?.silent) {
+      if (sendEmail) setBusyTestSend(true);
+      else setBusyTestVerify(true);
+    }
     if (!opts?.silent) toast.info(sendEmail ? 'Testing and sending…' : 'Testing connection…');
     type TestResult = {
       success: boolean;
@@ -290,7 +294,10 @@ export function SmtpManagerPage() {
       if (!opts?.silent) toast.error('SMTP test failed', msg);
       return { success: false, message: msg, error: msg } as TestResult;
     } finally {
-      if (!opts?.silent) setBusyTest(false);
+      if (!opts?.silent) {
+        if (sendEmail) setBusyTestSend(false);
+        else setBusyTestVerify(false);
+      }
     }
   }
 
@@ -884,12 +891,12 @@ export function SmtpManagerPage() {
                   {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
                 </Button>
               )}
-              <Button className="flex-1 sm:flex-none" disabled={busyTest} onClick={() => void testConnection(false)}>
-                {busyTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+              <Button className="flex-1 sm:flex-none" disabled={busyTestVerify} onClick={() => void testConnection(false)}>
+                {busyTestVerify ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                 Test Connection
               </Button>
-              <Button className="flex-1 sm:flex-none" variant="outline" disabled={busyTest || !testTo} onClick={() => void testConnection(true)}>
-                {busyTest ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Test & send
+              <Button className="flex-1 sm:flex-none" variant="outline" disabled={busyTestSend || !testTo} onClick={() => void testConnection(true)}>
+                {busyTestSend ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Test & send
               </Button>
               <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busySave} onClick={() => void save(false)}>
                 {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
