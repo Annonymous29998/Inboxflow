@@ -2,6 +2,8 @@ import { buildApp } from './app.js';
 import { env } from './config/env.js';
 import { startWorkers } from './services/email/queue.js';
 
+// Railway: trigger watched-filter redeploy so skipped railway.json + /health-first fixes actually apply.
+
 async function main() {
   const app = await buildApp();
 
