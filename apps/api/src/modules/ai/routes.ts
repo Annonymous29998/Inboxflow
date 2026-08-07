@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { OpenAI } from 'openai';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { sendError } from '../../utils/errors.js';
@@ -41,6 +40,7 @@ export async function aiRoutes(app: FastifyInstance) {
         });
       }
 
+      const { OpenAI } = await import('openai');
       const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
       const system = `You are an expert email marketing copywriter focused on deliverability-safe messaging.
 Avoid spam trigger phrases (act now, free!!!, guarantee, winner, etc.).
@@ -84,6 +84,7 @@ Do not promise inbox placement. Write clear, honest, engaging copy.`;
         });
       }
 
+      const { OpenAI } = await import('openai');
       const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
       const completion = await client.chat.completions.create({
         model: env.OPENAI_MODEL,
