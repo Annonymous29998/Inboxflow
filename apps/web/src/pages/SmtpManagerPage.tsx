@@ -98,7 +98,14 @@ export function SmtpManagerPage() {
   const [form, setForm] = useDraft<FormState>('smtp:form', emptyForm);
   const [testTo, setTestTo] = useDraft<string>('smtp:testTo', '');
   const [issues, setIssues] = useDraft<string[]>('smtp:issues', []);
-  const [busy, setBusy] = useState(false);
+  const [busyTest, setBusyTest] = useState(false);
+  const [busySave, setBusySave] = useState(false);
+  const [busyToggle, setBusyToggle] = useState(false);
+  const [busyDelete, setBusyDelete] = useState(false);
+  const [busyExport, setBusyExport] = useState(false);
+  const [busyImport, setBusyImport] = useState(false);
+  const [busyDetect, setBusyDetect] = useState(false);
+  const [busyRotate, setBusyRotate] = useState(false);
   const [showPass, setShowPass] = useDraft<boolean>('smtp:showPass', false);
   const [lastTestOk, setLastTestOk] = useDraft<boolean>('smtp:lastTestOk', false);
   const [rotationEnabled, setRotationEnabled] = useState(true);
@@ -147,6 +154,7 @@ export function SmtpManagerPage() {
   }, []);
 
   async function saveRotation() {
+    setBusyRotate(true);
     try {
       await api.patch('/api/admin/organization', {
         sendSettings: {
@@ -161,6 +169,8 @@ export function SmtpManagerPage() {
       );
     } catch (err) {
       toast.error('Could not save rotation', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyRotate(false);
     }
   }
 
@@ -232,47 +242,60 @@ export function SmtpManagerPage() {
     };
   }
 
-  async function testConnection(sendEmail = false) {
-    setBusy(true);
-    toast.info(sendEmail ? 'Testing and sending…' : 'Testing connection…');
+  async function testConnection(sendEmail = false, opts?: { silent?: boolean }) {
+    if (!opts?.silent) setBusyTest(true);
+    if (!opts?.silent) toast.info(sendEmail ? 'Testing and sending…' : 'Testing connection…');
+    type TestResult = {
+      success: boolean;
+      message: string;
+      error?: string;
+      messageId?: string;
+      issues?: string[];
+      deliverabilityWarnings?: string[];
+    };
+    let result: TestResult = { success: false, message: 'Not run' };
     try {
       if (sendEmail && !testTo.trim()) {
         setLastTestOk(false);
-        toast.warning('Enter a recipient email for Test & send');
-        return;
+        if (!opts?.silent) toast.warning('Enter a recipient email for Test & send');
+        return { success: false, message: 'Recipient email required', error: 'Enter a recipient email for Test & send' } as TestResult;
       }
 
-      const result = await smtpService.testConnection({
+      const r = await smtpService.testConnection({
         providerId: editingId || undefined,
         config: buildConfig(),
         sendTestEmail: sendEmail,
         testEmailTo: sendEmail ? testTo.trim() : undefined,
         notes: form.notes.trim() || null,
       });
+      result = r;
 
       setLastTestOk(result.success);
       if (result.success) {
-        toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
-        if (result.deliverabilityWarnings?.length) {
+        if (!opts?.silent) toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
+        if (result.deliverabilityWarnings?.length && !opts?.silent) {
           toast.warning(
             'Inbox placement warnings',
             `Deliverability warnings:\n• ${result.deliverabilityWarnings.join('\n• ')}`,
           );
         }
-      } else {
+      } else if (!opts?.silent) {
         toast.error('SMTP test failed', result.error || result.message);
       }
       if (editingId) await load();
+      return result;
     } catch (err) {
       setLastTestOk(false);
-      toast.error('SMTP test failed', err instanceof Error ? err.message : undefined);
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      if (!opts?.silent) toast.error('SMTP test failed', msg);
+      return { success: false, message: msg, error: msg } as TestResult;
     } finally {
-      setBusy(false);
+      if (!opts?.silent) setBusyTest(false);
     }
   }
 
   async function save(activate: boolean) {
-    setBusy(true);
+    setBusySave(true);
     try {
       const missing: string[] = [];
       if (!form.host.trim()) missing.push('SMTP host (e.g. smtp.yourdomain.com)');
@@ -300,10 +323,7 @@ export function SmtpManagerPage() {
       if (activate) {
         if (!lastTestOk || changedCredentials) {
           toast.info('Verifying connection before activation…');
-          const test = await smtpService.testConnection({
-            providerId: editingId || undefined,
-            config: buildConfig(),
-          });
+          const test = await testConnection(false, { silent: true });
           warnings = Array.from(new Set([...(warnings || []), ...(test.deliverabilityWarnings || [])]));
           if (!test.success) {
             setLastTestOk(false);
@@ -387,11 +407,12 @@ export function SmtpManagerPage() {
     } catch (err) {
       toast.error('Save failed', err instanceof Error ? err.message : undefined);
     } finally {
-      setBusy(false);
+      setBusySave(false);
     }
   }
 
   async function toggleActive(p: SmtpProfile) {
+    setBusyToggle(true);
     try {
       if (!p.isActive && p.lastTestStatus !== 'Connected') {
         toast.warning('Test connection first before enabling');
@@ -402,6 +423,8 @@ export function SmtpManagerPage() {
       await load();
     } catch (err) {
       toast.error('Update failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyToggle(false);
     }
   }
 
@@ -413,6 +436,7 @@ export function SmtpManagerPage() {
       destructive: true,
       confirmText: 'Delete provider',
     }))) return;
+    setBusyDelete(true);
     try {
       await smtpService.remove(id);
       if (editingId === id) {
@@ -428,10 +452,13 @@ export function SmtpManagerPage() {
       toast.success('SMTP profile deleted');
     } catch (err) {
       toast.error('Delete failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyDelete(false);
     }
   }
 
   async function autoDetectTls() {
+    setBusyDetect(true);
     try {
       const detected = await smtpService.detectTls(form.port || 587);
       setForm((f) => ({
@@ -443,10 +470,13 @@ export function SmtpManagerPage() {
       toast.success('TLS auto-detected', detected.hint);
     } catch (err) {
       toast.error('Detect failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyDetect(false);
     }
   }
 
   async function exportSmtp() {
+    setBusyExport(true);
     try {
       const data = await smtpService.exportProfiles();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -459,10 +489,13 @@ export function SmtpManagerPage() {
       toast.success('SMTP exported', 'Passwords omitted — re-enter after import');
     } catch (err) {
       toast.error('Export failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyExport(false);
     }
   }
 
   async function importSmtp(file: File) {
+    setBusyImport(true);
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as { profiles?: unknown[] };
@@ -472,6 +505,8 @@ export function SmtpManagerPage() {
       await load();
     } catch (err) {
       toast.error('Import failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBusyImport(false);
     }
   }
 
@@ -496,15 +531,16 @@ export function SmtpManagerPage() {
             often land in Spam until reputation builds.
           </div>
         </div>
-        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void exportSmtp()}>
-          Export
+        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void exportSmtp()} disabled={busyExport}>
+          {busyExport ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Export
         </Button>
-        <label className="inline-flex w-full cursor-pointer items-center justify-center border border-border px-3 py-2 text-sm sm:w-auto">
-          Import
+        <label className={cn('inline-flex w-full cursor-pointer items-center justify-center border border-border px-3 py-2 text-sm sm:w-auto', busyImport && 'pointer-events-none opacity-50')}>
+          {busyImport ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Import
           <input
             type="file"
             accept="application/json,.json"
             className="hidden"
+            disabled={busyImport}
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) void importSmtp(f);
@@ -550,8 +586,8 @@ export function SmtpManagerPage() {
               <option value="performance">Performance — prefer higher success rate</option>
             </Select>
           </div>
-          <Button size="sm" onClick={() => void saveRotation()}>
-            Save rotation settings
+          <Button size="sm" onClick={() => void saveRotation()} disabled={busyRotate}>
+            {busyRotate ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Save rotation settings
           </Button>
         </div>
       </div>
@@ -676,8 +712,8 @@ export function SmtpManagerPage() {
                     }}
                     placeholder="587 or 465"
                   />
-                  <Button type="button" variant="outline" size="sm" onClick={() => void autoDetectTls()}>
-                    Auto TLS
+                  <Button type="button" variant="outline" size="sm" onClick={() => void autoDetectTls()} disabled={busyDetect}>
+                    {busyDetect ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Auto TLS
                   </Button>
                 </div>
               </div>
@@ -840,31 +876,33 @@ export function SmtpManagerPage() {
 
             <div className="flex flex-wrap gap-2">
               {!editingId ? (
-                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy} onClick={() => void save(true)}>
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Add & Activate SMTP
+                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave} onClick={() => void save(true)}>
+                  {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Add & Activate SMTP
                 </Button>
               ) : (
-                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
+                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
+                  {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
                 </Button>
               )}
-              <Button className="flex-1 sm:flex-none" disabled={busy} onClick={() => void testConnection(false)}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+              <Button className="flex-1 sm:flex-none" disabled={busyTest} onClick={() => void testConnection(false)}>
+                {busyTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                 Test Connection
               </Button>
-              <Button className="flex-1 sm:flex-none" variant="outline" disabled={busy || !testTo} onClick={() => void testConnection(true)}>
-                Test & send
+              <Button className="flex-1 sm:flex-none" variant="outline" disabled={busyTest || !testTo} onClick={() => void testConnection(true)}>
+                {busyTest ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Test & send
               </Button>
-              <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busy} onClick={() => void save(false)}>
+              <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busySave} onClick={() => void save(false)}>
+                {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {editingId ? 'Save changes' : 'Save draft'}
               </Button>
               {editingId ? (
                 <>
-                  <Button variant="outline" onClick={() => void toggleActive(selected!)}>
+                  <Button variant="outline" onClick={() => void toggleActive(selected!)} disabled={busyToggle}>
+                    {busyToggle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                     {selected?.isActive ? 'Disable' : 'Enable'}
                   </Button>
-                  <Button variant="danger" onClick={() => void remove(editingId)}>
-                    <Trash2 className="h-4 w-4" /> Delete
+                  <Button variant="danger" onClick={() => void remove(editingId)} disabled={busyDelete}>
+                    {busyDelete ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete
                   </Button>
                 </>
               ) : null}
