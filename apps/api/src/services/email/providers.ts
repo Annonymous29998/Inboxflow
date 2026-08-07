@@ -228,7 +228,16 @@ export async function testProviderConnection(
   type: ProviderType,
   rawConfig: unknown,
 ): Promise<ConnectionTestResult> {
-  const config = parseProviderConfig(rawConfig);
+  // Accept both: (a) raw Prisma config { encrypted: '...' } store object and (b) already-decoded flat Record<string,string>.
+  // (Avoids double-decode crash when /:id/test passes already-parsed config.)
+  let config: Record<string, string>;
+  try {
+    config = parseProviderConfig(rawConfig);
+  } catch {
+    config = Object.fromEntries(
+      Object.entries((rawConfig ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')]),
+    );
+  }
   if (type === 'SMTP') {
     return testSmtpConnection(config);
   }

@@ -79,6 +79,19 @@ function statusTone(status?: string | null) {
   return 'warning' as const;
 }
 
+function formHasInput(f: FormState) {
+  return (
+    Boolean(f.host?.trim()) ||
+    Boolean(f.user?.trim()) ||
+    Boolean(f.pass?.trim()) ||
+    Boolean(f.fromEmail?.trim()) ||
+    Boolean(f.label?.trim()) ||
+    Boolean(f.fromName?.trim()) ||
+    Boolean(f.replyTo?.trim()) ||
+    Boolean(f.notes?.trim())
+  );
+}
+
 export function SmtpManagerPage() {
   const [providers, setProviders] = useState<SmtpProfile[]>([]);
   const [editingId, setEditingId] = useDraft<string | null>('smtp:editingId', null);
@@ -158,7 +171,17 @@ export function SmtpManagerPage() {
     setLastTestOk(false);
   }
 
-  function startCreate() {
+  async function startCreate() {
+    if (!editingId && formHasInput(form)) {
+      const ok = await confirmDialog({
+        title: 'Discard draft?',
+        description: 'You have unsaved entries in this SMTP form. Starting a new profile will clear your changes.',
+        tone: 'warning',
+        confirmText: 'Discard & start new',
+        cancelText: 'Keep editing',
+      });
+      if (!ok) return;
+    }
     setEditingId(null);
     setForm(emptyForm);
     setShowPass(false);
@@ -265,6 +288,19 @@ export function SmtpManagerPage() {
   async function save(activate: boolean) {
     setBusy(true);
     try {
+      const missing: string[] = [];
+      if (!form.host.trim()) missing.push('SMTP host (e.g. smtp.yourdomain.com)');
+      if (!form.user.trim()) missing.push('SMTP username (usually your login email)');
+      if (!editingId && !form.pass.trim()) missing.push('SMTP password or app password');
+      if (!form.fromEmail.trim()) missing.push('Sender email address');
+      if (missing.length) {
+        toast.warning(
+          'Required fields missing',
+          missing.length === 1 ? missing[0] : `Please add:\n• ${missing.join('\n• ')}`,
+        );
+        return;
+      }
+
       if (activate && !lastTestOk && (!selected || selected.lastTestStatus !== 'Connected')) {
         toast.warning('Run Test Connection successfully before activating');
         return;
@@ -440,8 +476,8 @@ export function SmtpManagerPage() {
             }}
           />
         </label>
-        <Button className="w-full sm:w-auto" onClick={startCreate}>
-          <Plus className="h-4 w-4" /> Add SMTP
+        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void startCreate()}>
+          <Plus className="h-4 w-4" /> New profile
         </Button>
       </div>
 
@@ -729,6 +765,11 @@ export function SmtpManagerPage() {
             </div>
 
             <div className="flex flex-wrap gap-2">
+              {!editingId ? (
+                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busy} onClick={() => void save(false)}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add SMTP profile
+                </Button>
+              ) : null}
               <Button className="flex-1 sm:flex-none" disabled={busy} onClick={() => void testConnection(false)}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                 Test Connection
@@ -737,7 +778,7 @@ export function SmtpManagerPage() {
                 Test & send
               </Button>
               <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busy} onClick={() => void save(false)}>
-                Save draft
+                {editingId ? 'Save changes' : 'Save draft'}
               </Button>
               <Button className="flex-1 sm:flex-none" disabled={busy || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
                 <Check className="h-4 w-4" /> Activate
