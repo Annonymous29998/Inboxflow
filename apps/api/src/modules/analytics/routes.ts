@@ -230,7 +230,14 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       const campaign = await prisma.campaign.findFirst({
         where: { id, organizationId: orgId },
-        select: { id: true, sentCount: true, deliveredCount: true, openedCount: true, clickedCount: true },
+        select: {
+          id: true,
+          sentCount: true,
+          deliveredCount: true,
+          openedCount: true,
+          clickedCount: true,
+          failedCount: true,
+        },
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
@@ -241,7 +248,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       const where = { campaignId: id, ...statusFilter, ...searchFilter };
 
-      const [recipients, total] = await Promise.all([
+      const [recipients, total, failedLive] = await Promise.all([
         prisma.campaignRecipient.findMany({
           where,
           include: {
@@ -252,6 +259,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
           take: limit,
         }),
         prisma.campaignRecipient.count({ where }),
+        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
       ]);
 
       // Get per-contact open/click counts from tracking events
@@ -278,6 +286,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
           delivered: campaign.deliveredCount || campaign.sentCount,
           opened: campaign.openedCount,
           clicked: campaign.clickedCount,
+          failed: failedLive || campaign.failedCount || 0,
         },
         recipients: recipients.map((r) => ({
           id: r.id,

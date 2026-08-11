@@ -147,7 +147,7 @@ export function TemplatesPage() {
       if (input.file) {
         const content = await input.file.text();
         const format = input.file.name.endsWith('.mjml') ? 'mjml' : 'html';
-        await templateService.importHtml({
+        const result = await templateService.importHtml({
           filename: input.file.name,
           content,
           format,
@@ -155,6 +155,12 @@ export function TemplatesPage() {
           saveAsTemplate: true,
         });
         toast.success('Template imported', input.name);
+        if (result.removed?.length) {
+          toast.info(
+            'Spam phrases cleaned for inbox placement',
+            result.removed.slice(0, 6).join(', ') + (result.removed.length > 6 ? '…' : ''),
+          );
+        }
       } else {
         await api.post('/api/templates', {
           name: input.name,

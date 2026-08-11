@@ -25,6 +25,7 @@ type Summary = {
   delivered: number;
   opened: number;
   clicked: number;
+  failed?: number;
 };
 
 type Props = {
@@ -119,6 +120,18 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
               <span className="font-semibold text-primary">{summary.clicked}</span>
               <span className="text-ink-muted"> clicked ({clickPct}%)</span>
             </span>
+            {(summary.failed ?? 0) > 0 ? (
+              <button
+                type="button"
+                className="text-destructive hover:underline"
+                onClick={() => {
+                  setFilter('FAILED');
+                  setPage(1);
+                }}
+              >
+                <span className="font-semibold">{summary.failed}</span> failed — view
+              </button>
+            ) : null}
           </div>
         </Card>
       ) : null}
@@ -164,18 +177,19 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
                 <th className="px-4 py-2.5 font-medium">Delivered</th>
                 <th className="px-4 py-2.5 font-medium">Opened</th>
                 <th className="px-4 py-2.5 font-medium">Clicked</th>
+                <th className="px-4 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={4} className="py-10 text-center text-ink-muted">
+                  <td colSpan={5} className="py-10 text-center text-ink-muted">
                     Loading recipients…
                   </td>
                 </tr>
               ) : recipients.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-10 text-center text-ink-muted">
+                  <td colSpan={5} className="py-10 text-center text-ink-muted">
                     No recipients found for this campaign yet.
                   </td>
                 </tr>
@@ -200,6 +214,8 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
                           <Mail className="h-3.5 w-3.5" />
                           Yes
                         </span>
+                      ) : r.status === 'FAILED' ? (
+                        <span className="inline-flex items-center gap-1.5 text-destructive">No</span>
                       ) : (
                         <span className="text-ink-muted">—</span>
                       )}
@@ -222,6 +238,21 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
                         </span>
                       ) : (
                         <span className="text-ink-muted">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {r.status === 'FAILED' ? (
+                        <span className="font-medium text-destructive" title={r.error || undefined}>
+                          Failed
+                        </span>
+                      ) : r.clicked || r.clickCount > 0 ? (
+                        <span className="text-primary">Clicked</span>
+                      ) : r.opened || r.openCount > 0 ? (
+                        <span className="text-primary">Opened</span>
+                      ) : isDelivered(r) ? (
+                        <span className="text-success">Delivered</span>
+                      ) : (
+                        <span className="text-ink-muted">{r.status}</span>
                       )}
                     </td>
                   </tr>

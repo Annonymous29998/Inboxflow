@@ -372,15 +372,16 @@ export function CampaignEditorPage() {
   const [sendCount, setSendCount] = useState(0);
   const [sentCount, setSentCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
+  const [recentFailures, setRecentFailures] = useState<Array<{ email: string; error: string }>>([]);
   const [sendCancelled, setSendCancelled] = useState(false);
   const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
   const defaultQueueSettings = {
-    batchSize: 10,
-    batchPauseMs: 5000,
-    betweenEmailMs: 500,
-    maxPerMinute: 60,
-    maxPerHour: 2000,
+    batchSize: 5,
+    batchPauseMs: 30_000,
+    betweenEmailMs: 4_000,
+    maxPerMinute: 12,
+    maxPerHour: 400,
   };
   const [queueSettings, setQueueSettings] = useDraft(`${draftKey}:queueSettings`, defaultQueueSettings);
   const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
@@ -391,6 +392,10 @@ export function CampaignEditorPage() {
   const [viewHtmlDraft, setViewHtmlDraft] = useState('');
   const [viewHtmlBlockId, setViewHtmlBlockId] = useState<string | null>(null);
   const [savingHtml, setSavingHtml] = useState(false);
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
+  const [hydrated, setHydrated] = useState(isNew);
+  const skipAutoSaveRef = useRef(true);
+  const autoSaveTimerRef = useRef<number | null>(null);
   const sendStreamCancelRef = useRef<{ cancel: () => void } | null>(null);
 
   function stopSendStream() {
@@ -453,27 +458,42 @@ export function CampaignEditorPage() {
       });
     }).catch(console.error);
     if (!isNew && id) {
-      api.get<{ campaign: Campaign & { queueSettings?: typeof queueSettings } }>(`/api/campaigns/${id}`).then((d) => {
-        setCampaign(d.campaign);
-        const savedBlocks = d.campaign.editorJson?.blocks;
-        if (savedBlocks?.length) {
-          setBlocks(savedBlocks);
-        } else if (d.campaign.htmlContent?.trim()) {
-          setBlocks(templateHtmlToBlocks(d.campaign.htmlContent));
-        } else {
-          setBlocks([]);
-        }
-        if (d.campaign.analysisReport) setReport(d.campaign.analysisReport as DeliverabilityReport);
-        if (d.campaign.queueSettings) {
-          setQueueSettings((q) => ({ ...q, ...d.campaign.queueSettings }));
-        }
-        const subjects = Array.isArray(d.campaign.subjectPool)
-          ? d.campaign.subjectPool
-          : [];
-        const names = Array.isArray(d.campaign.fromNamePool) ? d.campaign.fromNamePool : [];
-        setSubjectPoolText(subjects.join('\n'));
-        setFromNamePoolText(names.join('\n'));
-      });
+      setHydrated(false);
+      skipAutoSaveRef.current = true;
+      api
+        .get<{ campaign: Campaign & { queueSettings?: typeof queueSettings } }>(`/api/campaigns/${id}`)
+        .then((d) => {
+          setCampaign(d.campaign);
+          const savedBlocks = d.campaign.editorJson?.blocks;
+          if (savedBlocks?.length) {
+            setBlocks(savedBlocks);
+          } else if (d.campaign.htmlContent?.trim()) {
+            setBlocks(templateHtmlToBlocks(d.campaign.htmlContent));
+          } else {
+            setBlocks([]);
+          }
+          if (d.campaign.analysisReport) setReport(d.campaign.analysisReport as DeliverabilityReport);
+          if (d.campaign.queueSettings) {
+            setQueueSettings((q) => ({ ...q, ...d.campaign.queueSettings }));
+          }
+          const subjects = Array.isArray(d.campaign.subjectPool) ? d.campaign.subjectPool : [];
+          const names = Array.isArray(d.campaign.fromNamePool) ? d.campaign.fromNamePool : [];
+          setSubjectPoolText(subjects.join('\n'));
+          setFromNamePoolText(names.join('\n'));
+          setHydrated(true);
+          setAutoSaveState('idle');
+          window.setTimeout(() => {
+            skipAutoSaveRef.current = false;
+          }, 400);
+        })
+        .catch((err) => {
+          console.error(err);
+          setHydrated(true);
+          skipAutoSaveRef.current = false;
+        });
+    } else {
+      setHydrated(true);
+      skipAutoSaveRef.current = false;
     }
   }, [id, isNew]);
 
@@ -577,8 +597,10 @@ export function CampaignEditorPage() {
     ]);
   }
 
-  async function save(andAnalyze = false) {
-    setSaving(true);
+  async function save(andAnalyze = false, opts?: { silent?: boolean }) {
+    const silent = opts?.silent === true;
+    if (!silent) setSaving(true);
+    else setAutoSaveState('saving');
     try {
       const htmlForSave = blocksToHtml(blocks, false);
       const plainFromBlocks = blocks
@@ -597,6 +619,8 @@ export function CampaignEditorPage() {
         editorJson: { blocks },
         queueSettings,
         providerId: campaign.providerId,
+        listId: campaign.listId || null,
+        templateId: campaign.templateId || null,
         subjectPool: parsePool(subjectPoolText),
         fromNamePool: parsePool(fromNamePoolText),
       };
@@ -625,25 +649,86 @@ export function CampaignEditorPage() {
       if (andAnalyze && campaignId) {
         const result = await api.post<{ report: DeliverabilityReport }>(`/api/campaigns/${campaignId}/analyze`);
         setReport(result.report);
-        flash(`Deliverability score: ${result.report.score}/100 (${scoreLabel(result.report.score)})`);
-      } else {
+        if (!silent) {
+          flash(`Deliverability score: ${result.report.score}/100 (${scoreLabel(result.report.score)})`);
+        }
+      } else if (!silent) {
         flash('Saved');
       }
-      const clearDraft = useDraftStore.getState().clearDraft;
-      const savedDraftKey = `campaign:${campaignId || 'new'}`;
-      clearDraft(`${savedDraftKey}:campaign`);
-      clearDraft(`${savedDraftKey}:blocks`);
-      clearDraft(`${savedDraftKey}:previewMode`);
-      clearDraft(`${savedDraftKey}:queueSettings`);
-      clearDraft(`${savedDraftKey}:subjectPoolText`);
-      clearDraft(`${savedDraftKey}:fromNamePoolText`);
-      clearDraft(`${savedDraftKey}:testMatrixTo`);
+
+      if (!silent) {
+        const savedDraftKey = `campaign:${campaignId || 'new'}`;
+        const store = useDraftStore.getState();
+        store.setDraft(`${savedDraftKey}:campaign`, {
+          ...campaign,
+          htmlContent: htmlForSave,
+          plainTextContent,
+          listId: campaign.listId || null,
+          templateId: campaign.templateId || null,
+          editorJson: { blocks },
+          queueSettings,
+          subjectPool: parsePool(subjectPoolText),
+          fromNamePool: parsePool(fromNamePoolText),
+        });
+        store.setDraft(`${savedDraftKey}:blocks`, blocks);
+        store.setDraft(`${savedDraftKey}:queueSettings`, queueSettings);
+        store.setDraft(`${savedDraftKey}:subjectPoolText`, subjectPoolText);
+        store.setDraft(`${savedDraftKey}:fromNamePoolText`, fromNamePoolText);
+        store.setDraft(`${savedDraftKey}:previewMode`, previewMode);
+      }
+
+      setAutoSaveState('saved');
+      // Prevent the post-save state write from immediately queuing another autosave
+      skipAutoSaveRef.current = true;
+      window.setTimeout(() => {
+        skipAutoSaveRef.current = false;
+      }, 600);
     } catch (err) {
-      flash(err instanceof Error ? err.message : 'Save failed', 'error');
+      setAutoSaveState('error');
+      if (!silent) {
+        flash(err instanceof Error ? err.message : 'Save failed', 'error');
+      }
     } finally {
-      setSaving(false);
+      if (!silent) setSaving(false);
     }
   }
+
+  // Auto-save list, subject, template, SMTP, HTML, queue — so leave/return restores everything
+  useEffect(() => {
+    if (!hydrated || isNew || !id) return;
+    if (skipAutoSaveRef.current) return;
+    if (campaign.status === 'SENDING') return;
+
+    setAutoSaveState('dirty');
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      void save(false, { silent: true });
+    }, 900);
+
+    return () => {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hydrated,
+    isNew,
+    id,
+    campaign.name,
+    campaign.type,
+    campaign.subject,
+    campaign.previewText,
+    campaign.senderName,
+    campaign.senderEmail,
+    campaign.listId,
+    campaign.templateId,
+    campaign.providerId,
+    campaign.trackOpens,
+    campaign.trackClicks,
+    blocks,
+    queueSettings,
+    subjectPoolText,
+    fromNamePoolText,
+  ]);
 
   function openHtmlViewer(blockId: string, content: string) {
     setViewHtmlBlockId(blockId);
@@ -789,6 +874,7 @@ export function CampaignEditorPage() {
       setSendPhase('confirm');
       setSentCount(0);
       setFailedCount(0);
+      setRecentFailures([]);
       setSendCancelled(false);
       setSendPaused(false);
       setSendError('');
@@ -856,6 +942,7 @@ export function CampaignEditorPage() {
       setSendCount(result.totalRecipients ?? sendCount);
       setSentCount(0);
       setFailedCount(0);
+      setRecentFailures([]);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
 
       if (result.jobId) {
@@ -933,6 +1020,7 @@ export function CampaignEditorPage() {
       setSendPaused(false);
       setSendPhase('background');
       setFailedCount(0);
+      setRecentFailures([]);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
       flash(`Re-queued ${result.retried} failed recipient(s)`, 'success');
     } catch (err) {
@@ -1000,6 +1088,7 @@ export function CampaignEditorPage() {
         if (stopped) return;
         setSentCount(status.sentCount);
         setFailedCount(status.failedCount);
+        if (status.recentFailures) setRecentFailures(status.recentFailures);
         if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
 
         if (status.status === 'PAUSED') {
@@ -1020,8 +1109,10 @@ export function CampaignEditorPage() {
           flash(
             status.status === 'CANCELLED'
               ? `Send cancelled — ${status.sentCount} sent, ${status.failedCount} failed`
-              : `Send complete — ${status.sentCount} sent, ${status.failedCount} failed`,
-            status.status === 'CANCELLED' ? 'warning' : 'success',
+              : status.failedCount > 0
+                ? `Send complete — ${status.sentCount} sent, ${status.failedCount} failed (see list)`
+                : `Send complete — ${status.sentCount} sent`,
+            status.failedCount > 0 || status.status === 'CANCELLED' ? 'warning' : 'success',
           );
         }
       } catch {
@@ -1091,7 +1182,18 @@ export function CampaignEditorPage() {
           <p className="text-sm text-ink-muted">Select a template · set subject & list · send</p>
         </div>
         <div className="page-toolbar">
-          <Button variant="outline" size="sm" onClick={() => save(false)} disabled={saving}>
+          <span className="mr-1 hidden text-[10px] uppercase tracking-wide text-ink-muted sm:inline">
+            {autoSaveState === 'saving'
+              ? 'Saving…'
+              : autoSaveState === 'saved'
+                ? 'Saved'
+                : autoSaveState === 'dirty'
+                  ? 'Unsaved…'
+                  : autoSaveState === 'error'
+                    ? 'Save failed'
+                    : ''}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => void save(false)} disabled={saving}>
             Save
           </Button>
           <Button variant="outline" size="sm" onClick={scrubSpam} disabled={saving || isNew}>
@@ -1126,6 +1228,7 @@ export function CampaignEditorPage() {
         sendCount={sendCount}
         sentCount={sentCount}
         failedCount={failedCount}
+        recentFailures={recentFailures}
         errorMessage={sendError}
         fromLabel={fromLabel}
         batchSize={queueSettings.batchSize}
@@ -1390,6 +1493,9 @@ export function CampaignEditorPage() {
 
           <Card className="space-y-3">
             <h3 className="font-medium text-xs uppercase tracking-wider text-accent">Intelligent queue</h3>
+            <p className="text-[11px] text-muted-foreground">
+              Human-like pacing: ~4s between emails (±jitter), small batches, longer pauses. Faster bursts look automated and hurt inbox placement.
+            </p>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <Label>Batch size</Label>
@@ -1397,7 +1503,7 @@ export function CampaignEditorPage() {
                   type="number"
                   value={queueSettings.batchSize}
                   onChange={(e) =>
-                    setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 10 })
+                    setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 5 })
                   }
                 />
               </div>
@@ -1409,7 +1515,7 @@ export function CampaignEditorPage() {
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      batchPauseMs: Number(e.target.value) || 5000,
+                      batchPauseMs: Number(e.target.value) || 30_000,
                     })
                   }
                 />
@@ -1422,7 +1528,7 @@ export function CampaignEditorPage() {
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      betweenEmailMs: Number(e.target.value) || 500,
+                      betweenEmailMs: Number(e.target.value) || 4_000,
                     })
                   }
                 />

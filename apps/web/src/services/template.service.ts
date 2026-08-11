@@ -52,6 +52,8 @@ export const templateService = {
       plainText: string;
       template?: EmailTemplate;
       validation: { warnings: string[]; flags: string[] };
+      scrubbed?: boolean;
+      removed?: string[];
     }>('/api/import/html', input);
   },
 };

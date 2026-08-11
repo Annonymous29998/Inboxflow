@@ -11,6 +11,7 @@ interface SendProgressModalProps {
   sendCount: number;
   sentCount?: number;
   failedCount?: number;
+  recentFailures?: Array<{ email: string; error: string }>;
   errorMessage?: string;
   confirmTitle?: string;
   confirmMessage?: string;
@@ -62,6 +63,7 @@ export function SendProgressModal({
   sendCount,
   sentCount = 0,
   failedCount = 0,
+  recentFailures = [],
   errorMessage,
   confirmTitle = 'Send campaign?',
   confirmMessage,
@@ -259,6 +261,27 @@ export function SendProgressModal({
                 className="col-span-2 sm:col-span-1"
               />
             </div>
+
+            {phase === 'success' && recentFailures.length > 0 ? (
+              <div className="mt-4 max-h-40 overflow-auto border border-destructive/30 bg-destructive/5 px-3 py-2 text-left">
+                <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-destructive">
+                  Failed recipients ({failedCount})
+                </div>
+                <ul className="space-y-1 text-[11px]">
+                  {recentFailures.map((f) => (
+                    <li key={f.email} className="break-all">
+                      <span className="font-medium text-foreground">{f.email}</span>
+                      <span className="text-muted-foreground"> — {f.error}</span>
+                    </li>
+                  ))}
+                  {failedCount > recentFailures.length ? (
+                    <li className="text-muted-foreground">
+                      +{failedCount - recentFailures.length} more — open Recipients → Failed
+                    </li>
+                  ) : null}
+                </ul>
+              </div>
+            ) : null}
 
             <div className="mt-5 flex flex-wrap justify-center gap-3">
               {phase === 'background' && !paused && onPauseSend ? (

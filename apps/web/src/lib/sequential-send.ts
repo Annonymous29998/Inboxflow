@@ -1,9 +1,19 @@
 /** Send this many emails, then pause before the next batch. */
-export const EMAIL_SEND_BATCH_SIZE = 10;
-/** Pause between batches (after every 10 sends). */
-export const EMAIL_SEND_BATCH_PAUSE_MS = 5_000;
-/** Short gap between each individual email so sending feels like a real mail client. */
-export const EMAIL_SEND_BETWEEN_MS = 500;
+export const EMAIL_SEND_BATCH_SIZE = 5;
+/** Pause between batches (human-like break after a short burst). */
+export const EMAIL_SEND_BATCH_PAUSE_MS = 30_000;
+/**
+ * Base gap between each email. Actual wait uses ±40% jitter so timing
+ * doesn't look like a bot metronome (closer to one-by-one human sending).
+ */
+export const EMAIL_SEND_BETWEEN_MS = 4_000;
+
+/** Apply light random jitter around a base delay (never goes negative). */
+export function humanDelayMs(baseMs: number): number {
+  if (baseMs <= 0) return 0;
+  const factor = 0.6 + Math.random() * 0.8; // 60%–140% of base
+  return Math.max(250, Math.round(baseMs * factor));
+}
 
 export type SendRecipient = {
   id: string;
@@ -123,7 +133,7 @@ export async function runSequentialEmailSend(options: {
       const indexInBatch = index % batchSize;
 
       if (index > 0 && indexInBatch === 0 && batchPauseMs > 0) {
-        let remaining = batchPauseMs;
+        let remaining = humanDelayMs(batchPauseMs);
         while (remaining > 0) {
           assertNotCancelled(signal);
           const pauseSecondsLeft = Math.ceil(remaining / 1000);
@@ -172,7 +182,7 @@ export async function runSequentialEmailSend(options: {
       });
 
       if (index < recipients.length - 1 && betweenEmailMs > 0 && indexInBatch + 1 < batchSize) {
-        await sleep(betweenEmailMs, signal);
+        await sleep(humanDelayMs(betweenEmailMs), signal);
       }
     }
 

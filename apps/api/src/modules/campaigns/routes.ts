@@ -390,10 +390,16 @@ export async function campaignRoutes(app: FastifyInstance) {
       const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
-      const [sentCount, failedCount, pendingCount] = await Promise.all([
+      const [sentCount, failedCount, pendingCount, recentFailures] = await Promise.all([
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'SENT' } }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'QUEUED' } }),
+        prisma.campaignRecipient.findMany({
+          where: { campaignId: id, status: 'FAILED' },
+          include: { contact: { select: { email: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 40,
+        }),
       ]);
 
       return reply.send({
@@ -404,6 +410,10 @@ export async function campaignRoutes(app: FastifyInstance) {
         failedCount,
         pendingCount,
         completedAt: campaign.completedAt,
+        recentFailures: recentFailures.map((r) => ({
+          email: r.contact.email,
+          error: r.error || 'Send failed',
+        })),
       });
     } catch (error) {
       return sendError(reply, error);

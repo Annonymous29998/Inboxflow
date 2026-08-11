@@ -102,9 +102,14 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
     batchSize?: number;
     batchPauseMs?: number;
   };
-  const betweenEmailMs = queueSettings.betweenEmailMs ?? 500;
-  const batchSize = queueSettings.batchSize ?? 10;
-  const batchPauseMs = queueSettings.batchPauseMs ?? 5000;
+  const betweenEmailMs = queueSettings.betweenEmailMs ?? 4_000;
+  const batchSize = queueSettings.batchSize ?? 5;
+  const batchPauseMs = queueSettings.batchPauseMs ?? 30_000;
+  const humanDelay = (baseMs: number) => {
+    if (baseMs <= 0) return 0;
+    const factor = 0.6 + Math.random() * 0.8;
+    return Math.max(250, Math.round(baseMs * factor));
+  };
 
   let processed = 0;
   let sentInBatch = 0;
@@ -117,7 +122,7 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
 
     if (sentInBatch >= batchSize) {
       sentInBatch = 0;
-      await sleep(batchPauseMs);
+      await sleep(humanDelay(batchPauseMs));
       continue;
     }
 
@@ -252,7 +257,7 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
 
     processed += 1;
     sentInBatch += 1;
-    await sleep(betweenEmailMs);
+    await sleep(humanDelay(betweenEmailMs));
   }
 
   const { count: pendingCount } = await db

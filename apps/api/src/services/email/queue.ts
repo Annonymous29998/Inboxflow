@@ -303,9 +303,16 @@ async function dispatchCampaign(campaignId: string) {
     batchPauseMs?: number;
     betweenEmailMs?: number;
   };
-  const batchSize = Math.max(1, Number(queueSettings.batchSize || env.BATCH_SIZE || 10));
-  const batchPauseMs = Math.max(0, Number(queueSettings.batchPauseMs ?? 0));
-  const betweenEmailMs = Math.max(0, Number(queueSettings.betweenEmailMs ?? 0));
+  const batchSize = Math.max(1, Number(queueSettings.batchSize || 5));
+  const batchPauseMs = Math.max(0, Number(queueSettings.batchPauseMs ?? 30_000));
+  const betweenEmailMs = Math.max(0, Number(queueSettings.betweenEmailMs ?? 4_000));
+
+  /** ±40% jitter so gaps aren't a fixed bot rhythm. */
+  const humanDelay = (baseMs: number) => {
+    if (baseMs <= 0) return 0;
+    const factor = 0.6 + Math.random() * 0.8;
+    return Math.max(250, Math.round(baseMs * factor));
+  };
 
   for (let i = 0; i < contacts.length; i += batchSize) {
     const live = await prisma.campaign.findUnique({
@@ -317,7 +324,7 @@ async function dispatchCampaign(campaignId: string) {
     }
 
     if (i > 0 && batchPauseMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, batchPauseMs));
+      await new Promise((resolve) => setTimeout(resolve, humanDelay(batchPauseMs)));
     }
 
     const batch = contacts.slice(i, i + batchSize);
@@ -341,7 +348,7 @@ async function dispatchCampaign(campaignId: string) {
       const r = recipients[idx]!;
       const contact = batch[idx]!;
       if (idx > 0 && betweenEmailMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, betweenEmailMs));
+        await new Promise((resolve) => setTimeout(resolve, humanDelay(betweenEmailMs)));
       }
       await pgmqSend<EmailJobData>('email-send', {
         campaignId,
