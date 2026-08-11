@@ -25,6 +25,8 @@ type FormState = {
   priority: string;
   notes: string;
   isDefault: boolean;
+  /** Skip TLS cert hostname verification (self-signed / mismatched certs). */
+  ignoreTLS: boolean;
 };
 
 const QUICK_FILLS: { id: string; label: string; patch: Partial<FormState> }[] = [
@@ -48,6 +50,11 @@ const QUICK_FILLS: { id: string; label: string; patch: Partial<FormState> }[] = 
     label: 'SES',
     patch: { host: 'email-smtp.us-east-1.amazonaws.com', port: '587', encryption: 'STARTTLS' },
   },
+  {
+    id: 'bulko',
+    label: 'Bulko',
+    patch: { host: 'smtp.bulko.io', port: '2525', encryption: 'STARTTLS', ignoreTLS: true },
+  },
 ];
 
 const emptyForm: FormState = {
@@ -67,6 +74,7 @@ const emptyForm: FormState = {
   priority: '10',
   notes: '',
   isDefault: false,
+  ignoreTLS: false,
 };
 
 function autoSmtpName(form: FormState) {
@@ -223,19 +231,22 @@ export function SmtpManagerPage() {
       priority: String(detail.priority ?? 0),
       notes: detail.notes || '',
       isDefault: detail.isDefault,
+      ignoreTLS: cfg.ignoreTLS === 'true' || cfg.ignoreTLS === true,
     });
     setIssues(detail.issues || []);
   }
 
   function buildConfig() {
+    const portNum = Number(form.port);
+    const port = Number.isFinite(portNum) && portNum > 0 && portNum <= 65535 ? String(Math.trunc(portNum)) : form.port.trim();
+    const encryption = form.encryption || 'STARTTLS';
     return {
       host: form.host.trim(),
-      port: form.port,
-      encryption: form.encryption,
-      secure: form.encryption === 'SSL' || form.encryption === 'TLS' ? 'true' : 'false',
-      requireTLS: form.encryption === 'STARTTLS' ? 'true' : 'false',
-      // Bulko currently serves a slipjar.app cert on smtp.bulko.io — nodemailer rejects unless ignored.
-      ignoreTLS: /(^|\.)bulko\.io$/i.test(form.host.trim()) ? 'true' : 'false',
+      port,
+      encryption,
+      secure: encryption === 'SSL' || encryption === 'TLS' ? 'true' : 'false',
+      requireTLS: encryption === 'STARTTLS' ? 'true' : 'false',
+      ignoreTLS: form.ignoreTLS ? 'true' : 'false',
       user: form.user,
       // Mask / empty keeps existing password on the server when editing
       pass: form.pass && form.pass !== '••••••••' ? form.pass : editingId ? '••••••••' : '',
@@ -286,7 +297,14 @@ export function SmtpManagerPage() {
           );
         }
       } else if (!opts?.silent) {
-        toast.error('SMTP test failed', result.error || result.message);
+        const err = result.error || result.message || '';
+        toast.error('SMTP test failed', err);
+        if (/altnames|certificate|self[- ]signed|unable to verify/i.test(err) && !form.ignoreTLS) {
+          toast.warning(
+            'Certificate mismatch',
+            'Enable “Allow insecure TLS” on this profile if your provider uses a mismatched or self-signed certificate, then test again.',
+          );
+        }
       }
       if (editingId) await load();
       return result;
@@ -719,12 +737,13 @@ export function SmtpManagerPage() {
                     onBlur={() => {
                       if (form.port) void autoDetectTls();
                     }}
-                    placeholder="587 or 465"
+                    placeholder="Any port — 587, 465, 2525…"
                   />
                   <Button type="button" variant="outline" size="sm" onClick={() => void autoDetectTls()} disabled={busyDetect}>
                     {busyDetect ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Auto TLS
                   </Button>
                 </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">Use the port your provider gives you (not limited to 587/465).</p>
               </div>
               <div>
                 <Label>Encryption</Label>
@@ -732,9 +751,10 @@ export function SmtpManagerPage() {
                   value={form.encryption}
                   onChange={(e) => setForm({ ...form, encryption: e.target.value })}
                 >
-                  <option value="STARTTLS">STARTTLS (port 587)</option>
-                  <option value="SSL">SSL (port 465)</option>
+                  <option value="STARTTLS">STARTTLS (common on 587 / 2525)</option>
+                  <option value="SSL">SSL/TLS on connect (common on 465)</option>
                   <option value="TLS">TLS</option>
+                  <option value="NONE">None (not recommended)</option>
                 </Select>
               </div>
               <div>
@@ -865,6 +885,21 @@ export function SmtpManagerPage() {
                 onChange={(e) => setForm({ ...form, isDefault: e.target.checked })}
               />
               Set as default SMTP (gets 465↔587 failover)
+            </label>
+
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.ignoreTLS}
+                onChange={(e) => {
+                  setForm({ ...form, ignoreTLS: e.target.checked });
+                  setLastTestOk(false);
+                }}
+              />
+              <span>
+                Allow insecure TLS (ignore certificate errors). Use when the provider’s cert doesn’t match the SMTP hostname (e.g. Bulko). Prefer leaving this off for trusted providers.
+              </span>
             </label>
 
             {issues.length > 0 ? (

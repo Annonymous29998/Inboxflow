@@ -114,18 +114,14 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
     host,
     port,
     secure,
-    // 2525 is a common alternate submission port (e.g. Bulko) when 587 is blocked
-    requireTLS: toBool(
-      (config as SmtpTestInput).requireTLS,
-      !secure && (port === 587 || port === 2525),
-    ),
+    // Prefer explicit requireTLS from the form (STARTTLS on any port: 587, 2525, custom, …)
+    requireTLS: toBool((config as SmtpTestInput).requireTLS, !secure),
     ignoreTLS: toBool((config as SmtpTestInput).ignoreTLS, false),
     auth: user ? { user, pass } : undefined,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 20000,
     tls: {
-      // Allow self-signed only when explicitly requested via ignoreTLS
       rejectUnauthorized: !toBool((config as SmtpTestInput).ignoreTLS, false),
     },
   });
