@@ -114,6 +114,9 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
   const secure = toBool(config.secure, port === 465);
   const user = config.user ? String(config.user) : '';
   const pass = config.pass ? String(config.pass) : '';
+  // Form flag "ignoreTLS" / Allow insecure TLS means: accept mismatched/self-signed certs.
+  // It must NOT set nodemailer's ignoreTLS (that disables STARTTLS → 530 Authentication required on Bulko).
+  const allowInsecureCert = toBool((config as SmtpTestInput).ignoreTLS, false);
 
   return nodemailer.createTransport({
     host,
@@ -121,13 +124,14 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
     secure,
     // Prefer explicit requireTLS from the form (STARTTLS on any port: 587, 2525, custom, …)
     requireTLS: toBool((config as SmtpTestInput).requireTLS, !secure),
-    ignoreTLS: toBool((config as SmtpTestInput).ignoreTLS, false),
     auth: user ? { user, pass } : undefined,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 20000,
     tls: {
-      rejectUnauthorized: !toBool((config as SmtpTestInput).ignoreTLS, false),
+      // Skip hostname/CA checks when provider cert doesn't match (e.g. Bulko → slipjar.app)
+      rejectUnauthorized: !allowInsecureCert,
+      servername: host,
     },
   });
 }

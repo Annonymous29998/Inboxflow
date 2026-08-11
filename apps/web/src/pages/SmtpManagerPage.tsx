@@ -900,7 +900,9 @@ export function SmtpManagerPage() {
                 }}
               />
               <span>
-                Allow insecure TLS (ignore certificate errors). Use when the provider’s cert doesn’t match the SMTP hostname (e.g. Bulko). Prefer leaving this off for trusted providers.
+                Allow insecure TLS (skip certificate hostname checks only — STARTTLS still runs).
+                Needed when the cert doesn’t match the SMTP hostname (e.g. Bulko / slipjar.app). Prefer
+                leaving this off for trusted providers.
               </span>
             </label>
 

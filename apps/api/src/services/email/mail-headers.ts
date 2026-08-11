@@ -108,6 +108,12 @@ export function explainSmtpSendFailure(raw: string): string {
       `A plain “SMTP connection test” can succeed while campaign HTML is still rejected.`
     );
   }
+  if (/530|authentication required|auth required/i.test(msg)) {
+    return (
+      `${msg} — SMTP login did not complete. Re-enter the correct Username and Password from your provider, ` +
+      `Save, then Test Connection. If “Allow insecure TLS” is on, that only skips cert checks — STARTTLS/AUTH still run.`
+    );
+  }
   if (/550|sender.*reject|not owned|not allowed/i.test(msg)) {
     return (
       `${msg} — Sender address not allowed by SMTP. Use the From email your provider authorized.`

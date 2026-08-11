@@ -14,6 +14,7 @@ type ToastInput = {
   title: string;
   description?: string;
   tone?: ToastTone;
+  /** Auto-dismiss after ms. Omit or 0 = stay until the user clicks X. */
   durationMs?: number;
 };
 
@@ -23,8 +24,6 @@ type ToastState = {
   dismiss: (id: string) => void;
   clear: () => void;
 };
-
-const DEFAULT_DURATION = 4200;
 
 export const useToastStore = create<ToastState>((set, get) => ({
   items: [],
@@ -38,7 +37,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
       createdAt: Date.now(),
     };
     set((s) => ({ items: [...s.items.slice(-4), item] }));
-    const ms = input.durationMs ?? DEFAULT_DURATION;
+    const ms = input.durationMs ?? 0;
     if (ms > 0) {
       window.setTimeout(() => get().dismiss(id), ms);
     }
@@ -53,7 +52,7 @@ export const toast = {
   success: (title: string, description?: string) =>
     useToastStore.getState().push({ title, description, tone: 'success' }),
   error: (title: string, description?: string) =>
-    useToastStore.getState().push({ title, description, tone: 'error', durationMs: 6000 }),
+    useToastStore.getState().push({ title, description, tone: 'error' }),
   warning: (title: string, description?: string) =>
     useToastStore.getState().push({ title, description, tone: 'warning' }),
   info: (title: string, description?: string) =>
