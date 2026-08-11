@@ -20,6 +20,7 @@ import {
   Type,
   Video,
   Eye,
+  Loader2,
   X,
 } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -387,6 +388,8 @@ export function CampaignEditorPage() {
   const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
+  const [busyPlacementTest, setBusyPlacementTest] = useState(false);
+  const [busyTestMatrix, setBusyTestMatrix] = useState(false);
   const [importStatus, setImportStatus] = useState('');
   const [viewHtmlOpen, setViewHtmlOpen] = useState(false);
   const [viewHtmlDraft, setViewHtmlDraft] = useState('');
@@ -1028,6 +1031,49 @@ export function CampaignEditorPage() {
     }
   }
 
+  async function runPlacementTest() {
+    if (!id || isNew) return;
+    const to = testMatrixTo.trim();
+    if (!to) {
+      flash('Enter a test recipient email (Gmail/Outlook you can open)', 'warning');
+      return;
+    }
+    const subject = campaign.subject?.trim();
+    if (!subject) {
+      flash('Add a campaign subject before sending a placement test', 'warning');
+      return;
+    }
+    const hasHtml = Boolean(campaign.htmlContent?.trim()) || blocks.some((b) => b.type === 'html' || b.type === 'text');
+    if (!hasHtml && !html?.trim()) {
+      flash('Import or add an HTML template first', 'warning');
+      return;
+    }
+    try {
+      setBusyPlacementTest(true);
+      await save(false);
+      const fromNames = parsePool(fromNamePoolText);
+      if (campaign.senderName?.trim()) fromNames.unshift(campaign.senderName.trim());
+      const uniqueFrom = [...new Set(fromNames.map((n) => n.trim()).filter(Boolean))];
+      const result = await campaignSendService.testMatrix(id, {
+        to,
+        subjects: [subject],
+        fromNames: uniqueFrom.length ? [uniqueFrom[0]] : undefined,
+      });
+      if (result.sent > 0) {
+        toast.success(
+          `Placement test sent to ${to}`,
+          'Open that mailbox and check Primary/Inbox AND Spam/Promotions. Inbox Flow cannot see which folder it landed in.',
+        );
+      } else {
+        flash(`Placement test failed: ${result.results?.[0]?.error || 'Send failed'}`, 'error');
+      }
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Placement test failed', 'error');
+    } finally {
+      setBusyPlacementTest(false);
+    }
+  }
+
   async function runTestMatrix() {
     if (!id || isNew) return;
     const to = testMatrixTo.trim();
@@ -1045,6 +1091,7 @@ export function CampaignEditorPage() {
     const fromNames = parsePool(fromNamePoolText);
     if (campaign.senderName?.trim()) fromNames.unshift(campaign.senderName.trim());
     try {
+      setBusyTestMatrix(true);
       await save(false);
       const result = await campaignSendService.testMatrix(id, {
         to,
@@ -1057,6 +1104,8 @@ export function CampaignEditorPage() {
       );
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Test matrix failed', 'error');
+    } finally {
+      setBusyTestMatrix(false);
     }
   }
 
@@ -1563,23 +1612,36 @@ export function CampaignEditorPage() {
             </h3>
             <p className="text-[11px] text-muted-foreground">
               QA before a big send — emails each subject × from-name combo with a [TEST] prefix.
+              Use <span className="text-foreground">Send placement test</span> for one copy of your
+              current template, then check Primary/Inbox and Spam/Promotions yourself.
             </p>
             <div>
               <Label>Send tests to</Label>
               <Input
                 value={testMatrixTo}
                 onChange={(e) => setTestMatrixTo(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="you@gmail.com"
               />
             </div>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
+                variant="primary"
+                disabled={isNew || saving || busyPlacementTest}
+                onClick={() => void runPlacementTest()}
+              >
+                {busyPlacementTest ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Send placement test
+              </Button>
+              <Button
+                type="button"
+                size="sm"
                 variant="secondary"
-                disabled={isNew || saving}
+                disabled={isNew || saving || busyTestMatrix}
                 onClick={() => void runTestMatrix()}
               >
+                {busyTestMatrix ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Run test matrix
               </Button>
               <Button
