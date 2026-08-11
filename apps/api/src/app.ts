@@ -89,78 +89,73 @@ export async function buildApp() {
     return sendError(reply, error);
   });
 
-  // Register ALL business routes ASYNCHRONOUSLY IN BACKGROUND AFTER /health is online.
-  // Railway 30s healthcheck passes on Attempt 1 (< 1s) even if Prisma + routes + zod + prisma generate
-  // take a long time to initialize on 512MB free tier containers with slow shared disk.
-  // Any request before routes ready returns 404 from Fastify default, then retry works once loaded.
-  void (async () => {
-    const [
-      { authRoutes },
-      { contactRoutes },
-      { campaignRoutes },
-      { deliverabilityRoutes },
-      { domainRoutes },
-      { analyticsRoutes },
-      { aiRoutes },
-      lists,
-      { providerRoutes },
-      { apiKeyRoutes },
-      { adminRoutes },
-      { systemLogRoutes },
-      { importRoutes },
-      { jobRoutes },
-      tracking,
-    ] = await Promise.all([
-      import('./modules/auth/routes.js'),
-      import('./modules/contacts/routes.js'),
-      import('./modules/campaigns/routes.js'),
-      import('./modules/deliverability/routes.js'),
-      import('./modules/domains/routes.js'),
-      import('./modules/analytics/routes.js'),
-      import('./modules/ai/routes.js'),
-      import('./modules/lists/routes.js'),
-      import('./modules/providers/routes.js'),
-      import('./modules/api-keys/routes.js'),
-      import('./modules/admin/routes.js'),
-      import('./modules/system-logs/routes.js'),
-      import('./modules/import/routes.js'),
-      import('./modules/jobs/routes.js'),
-      import('./modules/tracking/routes.js'),
-    ]);
-    await app.register(authRoutes, { prefix: '/api/auth' });
-    await app.register(contactRoutes, { prefix: '/api/contacts' });
-    await app.register(campaignRoutes, { prefix: '/api/campaigns' });
-    await app.register(deliverabilityRoutes, { prefix: '/api/deliverability' });
-    await app.register(domainRoutes, { prefix: '/api/domains' });
-    await app.register(analyticsRoutes, { prefix: '/api/analytics' });
-    await app.register(aiRoutes, { prefix: '/api/ai' });
-    await app.register(lists.listRoutes, { prefix: '/api/lists' });
-    await app.register(lists.segmentRoutes, { prefix: '/api/segments' });
-    await app.register(lists.templateRoutes, { prefix: '/api/templates' });
-    await app.register(providerRoutes, { prefix: '/api/providers' });
-    await app.register(apiKeyRoutes, { prefix: '/api/api-keys' });
-    await app.register(adminRoutes, { prefix: '/api/admin' });
-    await app.register(systemLogRoutes, { prefix: '/api/logs' });
-    await app.register(importRoutes, { prefix: '/api/import' });
-    await app.register(jobRoutes, { prefix: '/api/jobs' });
-    await app.register(tracking.trackingRoutes, { prefix: '/api/t' });
-    await app.register(tracking.webhookRoutes, { prefix: '/api/webhooks' });
-    // Public unsubscribe also at /api/unsubscribe for List-Unsubscribe compatibility
-    app.route({
-      method: ['GET', 'POST'],
-      url: '/api/unsubscribe',
-      handler: async (request, reply) => {
-        const q = request.query as { c?: string; e?: string; cid?: string; s?: string };
-        const params = new URLSearchParams();
-        if (q.c) params.set('c', q.c);
-        if (q.e) params.set('e', q.e);
-        if (q.cid) params.set('cid', q.cid);
-        if (q.s) params.set('s', q.s);
-        return reply.redirect(`/api/t/unsubscribe?${params.toString()}`);
-      },
-    });
-  })().catch((err) => {
-    console.error('Background route registration failed:', err);
+  // Register routes BEFORE listen(). Fastify rejects app.register() after the root
+  // plugin has booted (AVV_ERR_ROOT_PLG_BOOTED), which left /health up but all
+  // /api/* routes as 404 when registration ran in a detached background task.
+  const [
+    { authRoutes },
+    { contactRoutes },
+    { campaignRoutes },
+    { deliverabilityRoutes },
+    { domainRoutes },
+    { analyticsRoutes },
+    { aiRoutes },
+    lists,
+    { providerRoutes },
+    { apiKeyRoutes },
+    { adminRoutes },
+    { systemLogRoutes },
+    { importRoutes },
+    { jobRoutes },
+    tracking,
+  ] = await Promise.all([
+    import('./modules/auth/routes.js'),
+    import('./modules/contacts/routes.js'),
+    import('./modules/campaigns/routes.js'),
+    import('./modules/deliverability/routes.js'),
+    import('./modules/domains/routes.js'),
+    import('./modules/analytics/routes.js'),
+    import('./modules/ai/routes.js'),
+    import('./modules/lists/routes.js'),
+    import('./modules/providers/routes.js'),
+    import('./modules/api-keys/routes.js'),
+    import('./modules/admin/routes.js'),
+    import('./modules/system-logs/routes.js'),
+    import('./modules/import/routes.js'),
+    import('./modules/jobs/routes.js'),
+    import('./modules/tracking/routes.js'),
+  ]);
+  await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(contactRoutes, { prefix: '/api/contacts' });
+  await app.register(campaignRoutes, { prefix: '/api/campaigns' });
+  await app.register(deliverabilityRoutes, { prefix: '/api/deliverability' });
+  await app.register(domainRoutes, { prefix: '/api/domains' });
+  await app.register(analyticsRoutes, { prefix: '/api/analytics' });
+  await app.register(aiRoutes, { prefix: '/api/ai' });
+  await app.register(lists.listRoutes, { prefix: '/api/lists' });
+  await app.register(lists.segmentRoutes, { prefix: '/api/segments' });
+  await app.register(lists.templateRoutes, { prefix: '/api/templates' });
+  await app.register(providerRoutes, { prefix: '/api/providers' });
+  await app.register(apiKeyRoutes, { prefix: '/api/api-keys' });
+  await app.register(adminRoutes, { prefix: '/api/admin' });
+  await app.register(systemLogRoutes, { prefix: '/api/logs' });
+  await app.register(importRoutes, { prefix: '/api/import' });
+  await app.register(jobRoutes, { prefix: '/api/jobs' });
+  await app.register(tracking.trackingRoutes, { prefix: '/api/t' });
+  await app.register(tracking.webhookRoutes, { prefix: '/api/webhooks' });
+  // Public unsubscribe also at /api/unsubscribe for List-Unsubscribe compatibility
+  app.route({
+    method: ['GET', 'POST'],
+    url: '/api/unsubscribe',
+    handler: async (request, reply) => {
+      const q = request.query as { c?: string; e?: string; cid?: string; s?: string };
+      const params = new URLSearchParams();
+      if (q.c) params.set('c', q.c);
+      if (q.e) params.set('e', q.e);
+      if (q.cid) params.set('cid', q.cid);
+      if (q.s) params.set('s', q.s);
+      return reply.redirect(`/api/t/unsubscribe?${params.toString()}`);
+    },
   });
 
   return app;
