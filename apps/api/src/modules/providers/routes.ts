@@ -315,10 +315,8 @@ export async function providerRoutes(app: FastifyInstance) {
         if (body.config.host && isBlockedSmtpHost(body.config.host)) {
           throw new AppError(400, 'SMTP host is not allowed');
         }
-        // Disallow TLS verification bypass in production
-        if (env.NODE_ENV === 'production' && ['true', '1', 'yes'].includes(String(body.config.ignoreTLS || '').toLowerCase())) {
-          throw new AppError(400, 'ignoreTLS is not allowed in production');
-        }
+        // ignoreTLS is allowed (e.g. relays that present a mismatched cert like Bulko → slipjar.app).
+        // UI should warn; do not use for untrusted hosts.
         const issues = detectSmtpConfigIssues(body.config);
         if (issues.length && body.isActive) {
           throw new AppError(400, `Fix SMTP issues before activating: ${issues[0]}`);
@@ -509,12 +507,7 @@ export async function providerRoutes(app: FastifyInstance) {
       if (body.type === 'SMTP' && config.host && isBlockedSmtpHost(config.host)) {
         throw new AppError(400, 'SMTP host is not allowed');
       }
-      if (
-        env.NODE_ENV === 'production' &&
-        ['true', '1', 'yes'].includes(String(config.ignoreTLS || '').toLowerCase())
-      ) {
-        throw new AppError(400, 'ignoreTLS is not allowed in production');
-      }
+      // ignoreTLS allowed for broken relay certs (e.g. Bulko presenting slipjar.app)
       const issues = body.type === 'SMTP' ? detectSmtpConfigIssues(config) : [];
       const deliverabilityWarnings =
         body.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];

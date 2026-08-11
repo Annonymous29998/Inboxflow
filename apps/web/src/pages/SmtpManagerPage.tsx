@@ -234,6 +234,8 @@ export function SmtpManagerPage() {
       encryption: form.encryption,
       secure: form.encryption === 'SSL' || form.encryption === 'TLS' ? 'true' : 'false',
       requireTLS: form.encryption === 'STARTTLS' ? 'true' : 'false',
+      // Bulko currently serves a slipjar.app cert on smtp.bulko.io — nodemailer rejects unless ignored.
+      ignoreTLS: /(^|\.)bulko\.io$/i.test(form.host.trim()) ? 'true' : 'false',
       user: form.user,
       // Mask / empty keeps existing password on the server when editing
       pass: form.pass && form.pass !== '••••••••' ? form.pass : editingId ? '••••••••' : '',
