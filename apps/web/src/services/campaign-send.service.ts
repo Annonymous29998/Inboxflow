@@ -211,7 +211,7 @@ export const campaignSendService = {
 
   async testMatrix(
     campaignId: string,
-    input: { to: string; subjects: string[]; fromNames?: string[] },
+    input: { to: string; subjects: string[]; fromNames?: string[]; noSubjectPrefix?: boolean },
   ) {
     return api.post<{
       success: boolean;

@@ -1058,6 +1058,7 @@ export function CampaignEditorPage() {
         to,
         subjects: [subject],
         fromNames: uniqueFrom.length ? [uniqueFrom[0]] : undefined,
+        noSubjectPrefix: true,
       });
       if (result.sent > 0) {
         toast.success(
@@ -1065,7 +1066,8 @@ export function CampaignEditorPage() {
           'Open that mailbox and check Primary/Inbox AND Spam/Promotions. Inbox Flow cannot see which folder it landed in.',
         );
       } else {
-        flash(`Placement test failed: ${result.results?.[0]?.error || 'Send failed'}`, 'error');
+        const err = result.results?.[0]?.error || 'Send failed';
+        flash(err, 'error');
       }
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Placement test failed', 'error');
@@ -1484,6 +1486,11 @@ export function CampaignEditorPage() {
                 onChange={(e) => setCampaign({ ...campaign, senderEmail: e.target.value })}
                 placeholder={selectedProvider?.fromEmail || ''}
               />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Must be an address your SMTP allows (domain you own / provider-authorized).{' '}
+                <span className="text-foreground">@gmail.com via Bulko is usually rejected</span> with
+                554 content filter — that is not an Inbox Flow bug.
+              </p>
             </div>
             <div>
               <Label>Audience list</Label>

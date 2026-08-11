@@ -1129,6 +1129,8 @@ export async function campaignRoutes(app: FastifyInstance) {
           to: z.string().email(),
           subjects: z.array(z.string().min(1)).min(1).max(8),
           fromNames: z.array(z.string()).max(8).optional(),
+          /** Placement tests: omit [TEST] prefix for a more realistic message. */
+          noSubjectPrefix: z.boolean().optional(),
         })
         .parse(request.body);
 
@@ -1195,7 +1197,7 @@ export async function campaignRoutes(app: FastifyInstance) {
               from: fromEmail,
               fromName: fromName.trim() || undefined,
               replyTo: campaign.replyTo || cfg.replyTo || undefined,
-              subject: `[TEST] ${subject}`,
+              subject: body.noSubjectPrefix ? subject : `[TEST] ${subject}`,
               html: campaign.htmlContent || '<p>Test matrix message</p>',
               text: campaign.plainTextContent || 'Test matrix message',
               dkim,

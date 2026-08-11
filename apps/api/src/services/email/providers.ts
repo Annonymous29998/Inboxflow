@@ -2,7 +2,12 @@ import nodemailer from 'nodemailer';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { decrypt } from '../../utils/crypto.js';
 import type { ProviderType } from '@prisma/client';
-import { buildMessageId, formatFromHeader } from './mail-headers.js';
+import {
+  buildMessageId,
+  explainSmtpSendFailure,
+  formatFromHeader,
+  resolveSmtpFromEmail,
+} from './mail-headers.js';
 
 function htmlToPlainText(html: string) {
   return html
@@ -348,7 +353,11 @@ async function sendSmtp(
   options: SmtpSendOptions = {},
 ): Promise<SendResult> {
   const host = config.host || 'localhost';
-  const fromEmail = payload.from || config.fromEmail || config.user || 'noreply@localhost';
+  const resolved = resolveSmtpFromEmail(payload.from, config);
+  if (resolved.blockReason) {
+    return { success: false, error: resolved.blockReason, provider: 'SMTP' };
+  }
+  const fromEmail = resolved.from || 'noreply@localhost';
   const from = formatFromHeader(fromEmail, payload.fromName || config.fromName);
   const text = (payload.text && payload.text.trim()) || htmlToPlainText(payload.html || '');
   const messageId = payload.messageId || buildMessageId(fromEmail);
@@ -411,7 +420,9 @@ async function sendSmtp(
       const info = await transport.sendMail(mail);
       return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
     } catch (error) {
-      lastError = error instanceof Error ? error.message : 'SMTP send failed';
+      lastError = explainSmtpSendFailure(
+        error instanceof Error ? error.message : 'SMTP send failed',
+      );
     }
   }
 
