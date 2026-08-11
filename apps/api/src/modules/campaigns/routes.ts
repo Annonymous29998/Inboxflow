@@ -128,19 +128,25 @@ export async function campaignRoutes(app: FastifyInstance) {
   app.post('/', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
+      const emptyToUndef = (v: unknown) => (v === '' || v === null || v === undefined ? undefined : v);
+      const optionalEmail = z.preprocess(
+        emptyToUndef,
+        z.string().email().optional(),
+      );
+
       const body = z
         .object({
           name: z.string().min(1),
           type: z.enum(['REGULAR', 'SCHEDULED', 'AUTOMATED', 'DRIP']).default('REGULAR'),
-          subject: z.string().optional(),
-          previewText: z.string().optional(),
-          senderName: z.string().optional(),
-          senderEmail: z.string().email().optional().or(z.literal('')),
-          replyTo: z.string().email().optional().or(z.literal('')),
-          listId: z.string().optional(),
-          segmentId: z.string().optional(),
-          templateId: z.string().optional(),
-          providerId: z.string().optional(),
+          subject: z.preprocess(emptyToUndef, z.string().optional()),
+          previewText: z.preprocess(emptyToUndef, z.string().optional()),
+          senderName: z.preprocess(emptyToUndef, z.string().optional()),
+          senderEmail: optionalEmail,
+          replyTo: optionalEmail,
+          listId: z.preprocess(emptyToUndef, z.string().optional()),
+          segmentId: z.preprocess(emptyToUndef, z.string().optional()),
+          templateId: z.preprocess(emptyToUndef, z.string().optional()),
+          providerId: z.preprocess(emptyToUndef, z.string().optional()),
           trackOpens: z.boolean().default(true),
           trackClicks: z.boolean().default(true),
           utmSource: z.string().optional(),
@@ -153,29 +159,57 @@ export async function campaignRoutes(app: FastifyInstance) {
         })
         .parse(request.body);
 
+      // Prefer loading HTML from the saved template so large imports don't need a huge request body
+      let htmlContent = body.htmlContent || null;
+      let plainTextContent = body.plainTextContent || null;
+      let editorJson = body.editorJson as object | undefined;
+      let resolvedName = body.name;
+      let templateId = body.templateId;
+
+      if (templateId) {
+        const template = await prisma.template.findFirst({
+          where: { id: templateId, OR: [{ organizationId: orgId }, { isPublic: true }] },
+        });
+        if (!template) throw new AppError(404, 'Template not found');
+        if (!htmlContent?.trim() && template.htmlContent?.trim()) {
+          htmlContent = template.htmlContent;
+          plainTextContent = plainTextContent || template.plainText || null;
+          if (!editorJson && template.editorJson) {
+            editorJson = template.editorJson as object;
+          } else if (!editorJson && htmlContent) {
+            editorJson = {
+              blocks: [{ id: `html-${Date.now()}`, type: 'html', content: htmlContent }],
+            };
+          }
+        }
+        if (resolvedName === 'Untitled campaign' && template.name) {
+          resolvedName = template.name;
+        }
+      }
+
       const scrubbed = scrubCampaignContent({
         subject: body.subject,
         previewText: body.previewText,
-        htmlContent: body.htmlContent || null,
-        plainTextContent: body.plainTextContent || null,
+        htmlContent,
+        plainTextContent,
       });
 
       const campaign = await prisma.campaign.create({
         data: {
           organizationId: orgId,
           createdById: request.user.id,
-          name: body.name,
+          name: resolvedName,
           type: body.type,
           status: body.status,
           subject: scrubbed.subject || null,
           previewText: scrubbed.previewText || null,
-          senderName: body.senderName,
+          senderName: body.senderName || null,
           senderEmail: body.senderEmail || null,
           replyTo: body.replyTo || null,
-          listId: body.listId,
-          segmentId: body.segmentId,
-          templateId: body.templateId,
-          providerId: body.providerId,
+          listId: body.listId || null,
+          segmentId: body.segmentId || null,
+          templateId: templateId || null,
+          providerId: body.providerId || null,
           trackOpens: body.trackOpens,
           trackClicks: body.trackClicks,
           utmSource: body.utmSource,
@@ -183,7 +217,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           utmCampaign: body.utmCampaign,
           htmlContent: scrubbed.htmlContent || null,
           plainTextContent: scrubbed.plainTextContent || null,
-          editorJson: body.editorJson as object | undefined,
+          editorJson: editorJson ?? undefined,
         },
       });
 

@@ -7,12 +7,14 @@ import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { env } from './config/env.js';
-import { AppError } from './utils/errors.js';
+import { sendError } from './utils/errors.js';
 
 export async function buildApp() {
   const app = Fastify({
     logger: env.NODE_ENV === 'development',
     trustProxy: true,
+    // HTML email templates + editorJson can exceed Fastify's default 1MB limit
+    bodyLimit: 15 * 1024 * 1024,
   });
 
   // /health registered BEFORE any middleware or heavy imports.
@@ -84,17 +86,7 @@ export async function buildApp() {
   }
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof AppError) {
-      return reply.status(error.statusCode).send({ error: error.message, code: error.code });
-    }
-    if (error && typeof error === 'object' && 'validation' in error) {
-      return reply.status(400).send({
-        error: 'Validation error',
-        details: (error as { validation: unknown }).validation,
-      });
-    }
-    app.log.error(error);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return sendError(reply, error);
   });
 
   // Register ALL business routes ASYNCHRONOUSLY IN BACKGROUND AFTER /health is online.

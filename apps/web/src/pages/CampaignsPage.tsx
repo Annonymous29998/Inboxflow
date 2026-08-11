@@ -481,6 +481,25 @@ export function CampaignEditorPage() {
 
     setTemplateLoading(true);
     try {
+      // New campaign from Templates → Use in campaign: create draft by templateId only.
+      // Server loads HTML from DB (avoids 500 when large HTML + editorJson exceeds body limit).
+      if (isNew) {
+        const created = await api.post<{ campaign: Campaign }>('/api/campaigns', {
+          name: (campaign.name && campaign.name !== 'Untitled campaign') ? campaign.name : 'Untitled campaign',
+          type: campaign.type || 'REGULAR',
+          templateId,
+          trackOpens: campaign.trackOpens ?? true,
+          trackClicks: campaign.trackClicks ?? true,
+          status: 'DRAFT',
+        });
+        const clearDraft = useDraftStore.getState().clearDraft;
+        clearDraft(`campaign:new:campaign`);
+        clearDraft(`campaign:new:blocks`);
+        flash(`Template applied & saved as new draft: ${created.campaign.name}`);
+        navigate(`/app/campaigns/${created.campaign.id}`, { replace: true });
+        return;
+      }
+
       const template = await templateService.get(templateId);
       const rawHtml = template.htmlContent?.trim() || '';
       if (!rawHtml) {
@@ -497,35 +516,6 @@ export function CampaignEditorPage() {
           ? template.editorJson.blocks
           : templateHtmlToBlocks(html);
 
-      const resolvedName = (campaign.name && campaign.name !== 'Untitled campaign') ? campaign.name : template.name;
-
-      if (isNew) {
-        const created = await api.post<{ campaign: Campaign }>('/api/campaigns', {
-          name: resolvedName,
-          type: campaign.type || 'REGULAR',
-          subject: campaign.subject,
-          previewText: campaign.previewText,
-          senderName: campaign.senderName,
-          senderEmail: campaign.senderEmail,
-          listId: campaign.listId,
-          segmentId: (campaign as unknown as { segmentId?: string | null }).segmentId ?? undefined,
-          templateId,
-          providerId: campaign.providerId,
-          trackOpens: campaign.trackOpens,
-          trackClicks: campaign.trackClicks,
-          htmlContent: html,
-          plainTextContent: plain || undefined,
-          editorJson: { blocks: nextBlocks },
-          status: 'DRAFT',
-        });
-        const clearDraft = useDraftStore.getState().clearDraft;
-        clearDraft(`campaign:new:campaign`);
-        clearDraft(`campaign:new:blocks`);
-        flash(`Template applied & saved as new draft: ${resolvedName}`);
-        navigate(`/app/campaigns/${created.campaign.id}`, { replace: true });
-        return;
-      }
-
       setBlocks(nextBlocks);
       setCampaign((c) => ({
         ...c,
@@ -536,7 +526,7 @@ export function CampaignEditorPage() {
       }));
       flash(`Loaded template: ${template.name}`);
 
-      if (!isNew && id) {
+      if (id) {
         await api.patch(`/api/campaigns/${id}`, {
           templateId,
           htmlContent: html,
