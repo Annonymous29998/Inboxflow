@@ -19,6 +19,8 @@ import {
   Trash2,
   Type,
   Video,
+  Eye,
+  X,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { campaignSendService } from '@/services/campaign-send.service';
@@ -385,6 +387,7 @@ export function CampaignEditorPage() {
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
   const [importStatus, setImportStatus] = useState('');
+  const [viewHtmlContent, setViewHtmlContent] = useState<string | null>(null);
   const sendStreamCancelRef = useRef<{ cancel: () => void } | null>(null);
 
   function stopSendStream() {
@@ -1078,6 +1081,52 @@ export function CampaignEditorPage() {
         onClose={() => setSendOpen(false)}
       />
 
+      {viewHtmlContent !== null ? (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 px-4 font-mono">
+          <button
+            type="button"
+            className="absolute inset-0"
+            onClick={() => setViewHtmlContent(null)}
+            aria-label="Close"
+          />
+          <div className="relative z-10 flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden border border-border bg-card text-foreground shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-accent">Full HTML</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Complete template source for this campaign block
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(viewHtmlContent);
+                    flash('HTML copied to clipboard', 'info');
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setViewHtmlContent(null)}
+                  className="border border-border p-2 text-muted-foreground hover:text-primary"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <pre className="flex-1 overflow-auto whitespace-pre-wrap break-all px-5 py-4 text-[11px] leading-relaxed text-foreground">
+              {viewHtmlContent}
+            </pre>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)_minmax(0,320px)]">
         {/* Settings + blocks */}
         <div className="space-y-4">
@@ -1485,14 +1534,28 @@ export function CampaignEditorPage() {
                   layout
                   className="group border border-dashed border-border p-3 hover:border-primary"
                 >
-                  <div className="flex justify-between text-[10px] uppercase text-ink-muted mb-1">
+                  <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase text-ink-muted">
                     <span>{block.type}</span>
-                    <button
-                      className="opacity-0 group-hover:opacity-100"
-                      onClick={() => setBlocks((bs) => bs.filter((_, i) => i !== idx))}
-                    >
-                      Remove
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {block.type === 'html' ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-primary opacity-100 hover:underline"
+                          onClick={() => setViewHtmlContent(block.content || html)}
+                          title="View full HTML"
+                        >
+                          <Eye className="h-3 w-3" />
+                          View
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="opacity-0 group-hover:opacity-100 hover:text-destructive"
+                        onClick={() => setBlocks((bs) => bs.filter((_, i) => i !== idx))}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
                   {block.type === 'html' || block.type === 'text' || block.type === 'products' || block.type === 'countdown' ? (
                     <Textarea
