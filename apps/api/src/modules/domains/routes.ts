@@ -332,7 +332,7 @@ function getSetupInstructions(domain: string, records: Array<{ type: string; hos
       {
         step: 1,
         title: 'Add SPF record',
-        description: 'Authorize Inbox Flow (and your ESP) to send email for your domain.',
+        description: 'Authorize your SMTP provider (and Inbox Flow) to send for this domain you own. Do not use bulko.io or other provider domains here.',
         record: records.find((r) => r.type === 'SPF'),
       },
       {
@@ -360,6 +360,6 @@ function getSetupInstructions(domain: string, records: Array<{ type: string; hos
         record: records.find((r) => r.type === 'RETURN_PATH'),
       },
     ],
-    tip: 'DNS changes can take up to 48 hours to propagate. Click Verify after publishing records.',
+    tip: 'You must own this domain’s DNS (not your SMTP provider’s domain like bulko.io). DNS changes can take up to 48 hours. Click Verify after publishing records. Set your campaign From address to an email on this domain.',
   };
 }

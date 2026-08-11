@@ -513,8 +513,10 @@ export function analyzeCampaign(input: AnalyzeInput): DeliverabilityReport {
       category: 'authentication',
       severity: 'critical',
       title: 'SPF not verified',
-      explanation: 'SPF tells mailbox providers which servers may send for your domain.',
-      suggestedFix: 'Complete the Domain Authentication Wizard and publish a valid SPF TXT record.',
+      explanation:
+        'SPF tells mailbox providers which servers may send for your domain. Using SMTP alone (e.g. Bulko) does not verify SPF for a domain you do not own.',
+      suggestedFix:
+        'Add a domain you own under Domains, publish its SPF TXT record (include your SMTP provider), then Verify. Do not try to verify bulko.io or other provider domains.',
       scoreImpact: 20,
     });
   }
@@ -524,8 +526,10 @@ export function analyzeCampaign(input: AnalyzeInput): DeliverabilityReport {
       category: 'authentication',
       severity: 'critical',
       title: 'DKIM not verified',
-      explanation: 'DKIM cryptographically signs messages so providers can verify authenticity.',
-      suggestedFix: 'Add the DKIM CNAME/TXT records shown in Domain settings and re-verify.',
+      explanation:
+        'DKIM cryptographically signs messages so providers can verify authenticity. This must be set on a domain you control.',
+      suggestedFix:
+        'In Domains, enable DKIM for your own domain, publish the CNAME/TXT records, and re-verify. Provider domains like bulko.io cannot be authenticated by you.',
       scoreImpact: 20,
     });
   }
@@ -535,8 +539,10 @@ export function analyzeCampaign(input: AnalyzeInput): DeliverabilityReport {
       category: 'authentication',
       severity: 'high',
       title: 'DMARC not verified',
-      explanation: 'DMARC aligns SPF/DKIM and tells providers how to handle failures.',
-      suggestedFix: 'Publish a DMARC record starting with p=none, then move to quarantine/reject.',
+      explanation:
+        'DMARC aligns SPF/DKIM and tells providers how to handle failures. Publish it on the same domain you own and send From.',
+      suggestedFix:
+        'On your own domain, publish a DMARC TXT record starting with p=none, then move to quarantine/reject after SPF and DKIM pass.',
       scoreImpact: 12,
     });
   }

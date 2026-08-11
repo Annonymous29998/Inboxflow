@@ -103,7 +103,18 @@ export function DomainsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="page-title">Domain authentication</h1>
-        <p className="text-ink-muted">Configure SPF, DKIM, DMARC, tracking domain, and return-path</p>
+        <p className="text-ink-muted">
+          Verify a domain you own, then publish SPF, DKIM, DMARC, tracking, and return-path records.
+        </p>
+        <div className="mt-3 max-w-3xl border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] leading-relaxed text-ink-muted">
+          <span className="text-primary">You must verify a domain you control.</span> SMTP providers
+          like Bulko (<code className="text-foreground">bulko.io</code>), SendGrid, or Mailgun let
+          you send mail — that does <strong className="text-foreground">not</strong> mean you own
+          their domain. Add your own domain here (e.g.{' '}
+          <code className="text-foreground">yourcompany.com</code>), use it as the From address, and
+          publish the DNS records below. Until SPF/DKIM/DMARC pass, deliverability will stay High
+          Risk.
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -111,9 +122,9 @@ export function DomainsPage() {
           <Card>
             <form onSubmit={addDomain} className="flex gap-2">
               <div className="flex-1">
-                <Label>Add sending domain</Label>
+                <Label>Add a domain you own</Label>
                 <Input
-                  placeholder="mail.yourcompany.com"
+                  placeholder="yourcompany.com"
                   value={domainInput}
                   onChange={(e) => setDomainInput(e.target.value)}
                   required
@@ -123,6 +134,11 @@ export function DomainsPage() {
                 Add
               </Button>
             </form>
+            <p className="mt-2 text-[11px] text-ink-muted">
+              Do not add <code className="text-foreground">bulko.io</code>,{' '}
+              <code className="text-foreground">gmail.com</code>, or other providers&apos; domains —
+              you cannot publish DNS for those.
+            </p>
           </Card>
 
           {domains.map((d) => (
@@ -144,7 +160,10 @@ export function DomainsPage() {
             </Card>
           ))}
           {!domains.length ? (
-            <p className="px-1 text-sm text-ink-muted">Add a domain above to start SPF / DKIM / DMARC setup.</p>
+            <p className="px-1 text-sm text-ink-muted">
+              Add a domain you own above, then verify SPF / DKIM / DMARC. Your SMTP login (e.g. Bulko)
+              alone is not enough for inbox placement.
+            </p>
           ) : null}
         </div>
 
@@ -198,8 +217,9 @@ export function DomainsPage() {
               </div>
             </div>
           ) : (
-            <div className="h-full flex items-center justify-center text-ink-muted text-sm">
-              Select or add a domain to open the authentication wizard
+            <div className="h-full flex items-center justify-center text-ink-muted text-sm px-6 text-center">
+              Select or add a domain you own to open the authentication wizard. Provider domains
+              (bulko.io, sendgrid.net, gmail.com, etc.) cannot be verified here.
             </div>
           )}
         </Card>
