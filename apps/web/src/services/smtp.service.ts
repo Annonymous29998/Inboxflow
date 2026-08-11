@@ -121,26 +121,8 @@ export const smtpService = {
     priority?: number;
     notes?: string | null;
   }): Promise<SmtpProfile> {
-    try {
-      if (edgeFunctionsEnabled) {
-        const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
-          action: 'create',
-          name: input.name,
-          label: input.label,
-          config: input.config,
-          isDefault: input.isDefault,
-          isActive: input.isActive,
-          dailyLimit: input.dailyLimit,
-          hourlyLimit: input.hourlyLimit,
-          priority: input.priority,
-          notes: input.notes,
-        });
-        return mapEdgeAccount(data.account);
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
+    // Prefer Railway for create — edge manage-smtp runs live SMTP verify and
+    // Supabase blocks outbound 25/587 (connection timeout → 400).
     const data = await api.post<{ provider: SmtpProfile }>('/api/providers', {
       ...input,
       type: 'SMTP',
@@ -163,19 +145,6 @@ export const smtpService = {
       notes: string | null;
     }>,
   ): Promise<SmtpProfile> {
-    try {
-      if (edgeFunctionsEnabled) {
-        const data = await invokeEdgeFunction<{ ok: boolean; account: EdgeAccount }>('manage-smtp', {
-          action: 'update',
-          id,
-          ...input,
-        });
-        return mapEdgeAccount(data.account);
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     const data = await api.patch<{ provider: SmtpProfile }>(`/api/providers/${id}`, input);
     return data.provider;
   },
@@ -207,37 +176,10 @@ export const smtpService = {
     issues?: string[];
     deliverabilityWarnings?: string[];
   }> {
-    try {
-      if (edgeFunctionsEnabled) {
-        const data = await invokeEdgeFunction<{
-          ok: boolean;
-          success: boolean;
-          message?: string;
-          error?: string;
-          messageId?: string;
-          issues?: string[];
-          deliverabilityWarnings?: string[];
-        }>('manage-smtp', {
-          action: 'test',
-          providerId: input.providerId,
-          config: input.config,
-          sendTestEmail: Boolean(input.sendTestEmail),
-          testEmailTo: input.testEmailTo,
-          notes: input.notes || undefined,
-          skipLiveVerify: Boolean(input.skipLiveVerify),
-        });
-        return {
-          success: Boolean(data.success) || Boolean(input.skipLiveVerify && (data.issues?.length ?? 0) === 0),
-          message: data.message || (Boolean(input.skipLiveVerify) ? 'Static checks passed' : (data.success ? 'SMTP connection verified' : 'Connection failed')),
-          error: data.error,
-          messageId: data.messageId,
-          issues: data.issues || [],
-          deliverabilityWarnings: data.deliverabilityWarnings || [],
-        };
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
+    // Always use the Railway/API path for live SMTP verify/send.
+    // Supabase Edge Functions block outbound ports 25 and 587
+    // (https://supabase.com/docs/guides/functions/limits), which surfaces as
+    // manage-smtp 400 + "Connection timeout".
 
     // Prefer id+config merge when editing so unsaved form fields are tested
     // and masked passwords can fall back to the stored secret.

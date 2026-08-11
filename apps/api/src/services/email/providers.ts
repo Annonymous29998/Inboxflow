@@ -114,7 +114,11 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
     host,
     port,
     secure,
-    requireTLS: toBool((config as SmtpTestInput).requireTLS, !secure && port === 587),
+    // 2525 is a common alternate submission port (e.g. Bulko) when 587 is blocked
+    requireTLS: toBool(
+      (config as SmtpTestInput).requireTLS,
+      !secure && (port === 587 || port === 2525),
+    ),
     ignoreTLS: toBool((config as SmtpTestInput).ignoreTLS, false),
     auth: user ? { user, pass } : undefined,
     connectionTimeout: 15000,
@@ -137,26 +141,68 @@ export async function testSmtpConnection(config: SmtpTestInput): Promise<Connect
   const port = Number(config.port || 587);
   const secure = toBool(config.secure, port === 465);
 
+  async function verifyOnce(cfg: SmtpTestInput): Promise<ConnectionTestResult> {
+    const p = Number(cfg.port || 587);
+    const s = toBool(cfg.secure, p === 465);
+    try {
+      const transport = createSmtpTransport(cfg);
+      await transport.verify();
+      return {
+        success: true,
+        message: `Connected to ${host}:${p} successfully`,
+        details: {
+          host,
+          port: p,
+          secure: s,
+          authenticated: Boolean(cfg.user),
+          responseTimeMs: Date.now() - started,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'SMTP connection failed';
+      return {
+        success: false,
+        message: 'SMTP connection failed',
+        error: message,
+        details: {
+          host,
+          port: p,
+          secure: s,
+          authenticated: Boolean(cfg.user),
+          responseTimeMs: Date.now() - started,
+        },
+      };
+    }
+  }
+
   try {
     if (!host) {
       return { success: false, message: 'SMTP host is required', error: 'Missing host' };
     }
 
-    const transport = createSmtpTransport(config);
-    await transport.verify();
-    const responseTimeMs = Date.now() - started;
+    const primary = await verifyOnce(config);
+    if (primary.success) return primary;
 
-    return {
-      success: true,
-      message: `Connected to ${host}:${port} successfully`,
-      details: {
-        host,
-        port,
-        secure,
-        authenticated: Boolean(config.user),
-        responseTimeMs,
-      },
-    };
+    // Cloud hosts often block 587; many relays (Bulko, Mailgun, etc.) expose 2525.
+    const err = (primary.error || '').toLowerCase();
+    const looksLikeTimeout =
+      err.includes('timeout') || err.includes('timed out') || err.includes('etimedout') || err.includes('econnrefused');
+    if (looksLikeTimeout && port === 587 && !secure) {
+      const fallback = await verifyOnce({
+        ...config,
+        port: 2525,
+        secure: false,
+        requireTLS: true,
+      });
+      if (fallback.success) {
+        return {
+          ...fallback,
+          message: `Connected to ${host}:2525 successfully (587 was blocked; use port 2525)`,
+        };
+      }
+    }
+
+    return primary;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'SMTP connection failed';
     return {

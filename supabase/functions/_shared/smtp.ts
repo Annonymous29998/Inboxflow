@@ -119,6 +119,7 @@ export async function sendViaSmtp(
         host: smtp.host,
         port: attempt.port,
         secure: attempt.secure,
+        requireTLS: !attempt.secure && (attempt.port === 587 || attempt.port === 2525),
         auth: { user: smtp.user, pass: smtp.pass },
         connectionTimeout: 15000,
         greetingTimeout: 15000,
@@ -160,10 +161,15 @@ export async function sendViaSmtp(
 
 export async function verifySmtpConnection(smtp: SmtpConfig): Promise<void> {
   const nodemailer = await import('npm:nodemailer@6.9.16');
+  const port = smtp.port || 587;
+  // STARTTLS ports must use secure:false. Edge runtimes often block 25/587 —
+  // prefer the caller's port (e.g. 2525) and only treat 465 as implicit TLS.
+  const secure = smtp.secure === true || port === 465;
   const transport = nodemailer.default.createTransport({
     host: smtp.host,
-    port: smtp.port || 465,
-    secure: smtp.secure !== false,
+    port,
+    secure,
+    requireTLS: !secure && (port === 587 || port === 2525),
     auth: { user: smtp.user, pass: smtp.pass },
     connectionTimeout: 15000,
     greetingTimeout: 15000,
