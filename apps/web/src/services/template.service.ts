@@ -25,6 +25,19 @@ export const templateService = {
     return data.template;
   },
 
+  async update(
+    id: string,
+    input: {
+      name?: string;
+      description?: string | null;
+      htmlContent?: string | null;
+      plainText?: string | null;
+      editorJson?: EmailTemplate['editorJson'];
+    },
+  ) {
+    return api.patch<{ template: EmailTemplate }>(`/api/templates/${id}`, input);
+  },
+
   async importHtml(input: {
     filename?: string;
     content: string;

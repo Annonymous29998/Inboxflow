@@ -387,7 +387,10 @@ export function CampaignEditorPage() {
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
   const [importStatus, setImportStatus] = useState('');
-  const [viewHtmlContent, setViewHtmlContent] = useState<string | null>(null);
+  const [viewHtmlOpen, setViewHtmlOpen] = useState(false);
+  const [viewHtmlDraft, setViewHtmlDraft] = useState('');
+  const [viewHtmlBlockId, setViewHtmlBlockId] = useState<string | null>(null);
+  const [savingHtml, setSavingHtml] = useState(false);
   const sendStreamCancelRef = useRef<{ cancel: () => void } | null>(null);
 
   function stopSendStream() {
@@ -639,6 +642,63 @@ export function CampaignEditorPage() {
       flash(err instanceof Error ? err.message : 'Save failed', 'error');
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openHtmlViewer(blockId: string, content: string) {
+    setViewHtmlBlockId(blockId);
+    setViewHtmlDraft(content || html);
+    setViewHtmlOpen(true);
+  }
+
+  async function saveHtmlFromModal() {
+    if (!viewHtmlOpen) return;
+    setSavingHtml(true);
+    try {
+      const scrubbed = scrubImportedHtml(viewHtmlDraft);
+      const nextHtml = scrubbed.htmlContent;
+      const nextPlain = scrubbed.plainTextContent || '';
+      const nextBlocks = viewHtmlBlockId
+        ? blocks.map((b) => (b.id === viewHtmlBlockId ? { ...b, content: nextHtml } : b))
+        : templateHtmlToBlocks(nextHtml);
+
+      setBlocks(nextBlocks);
+      setCampaign((c) => ({
+        ...c,
+        htmlContent: nextHtml,
+        plainTextContent: nextPlain || c.plainTextContent,
+      }));
+      setViewHtmlDraft(nextHtml);
+
+      const editorJson = { blocks: nextBlocks };
+
+      if (!isNew && id) {
+        await api.patch(`/api/campaigns/${id}`, {
+          htmlContent: nextHtml,
+          plainTextContent: nextPlain || undefined,
+          editorJson,
+        });
+      }
+
+      if (campaign.templateId) {
+        await templateService.update(campaign.templateId, {
+          htmlContent: nextHtml,
+          plainText: nextPlain || null,
+          editorJson,
+        });
+      }
+
+      flash(
+        campaign.templateId
+          ? 'HTML saved to this campaign and the linked template'
+          : 'HTML saved to this campaign (no linked template)',
+      );
+      setViewHtmlOpen(false);
+      setViewHtmlBlockId(null);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Could not save HTML', 'error');
+    } finally {
+      setSavingHtml(false);
     }
   }
 
@@ -1081,48 +1141,71 @@ export function CampaignEditorPage() {
         onClose={() => setSendOpen(false)}
       />
 
-      {viewHtmlContent !== null ? (
+      {viewHtmlOpen ? (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 px-4 font-mono">
           <button
             type="button"
             className="absolute inset-0"
-            onClick={() => setViewHtmlContent(null)}
+            onClick={() => {
+              if (savingHtml) return;
+              setViewHtmlOpen(false);
+              setViewHtmlBlockId(null);
+            }}
             aria-label="Close"
           />
           <div className="relative z-10 flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden border border-border bg-card text-foreground shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
               <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-accent">Full HTML</h2>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-accent">Edit HTML</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Complete template source for this campaign block
+                  {campaign.templateId
+                    ? 'Changes save to this campaign and the linked template'
+                    : 'Changes save to this campaign. Link a template to update Templates too.'}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  disabled={savingHtml}
                   onClick={() => {
-                    void navigator.clipboard.writeText(viewHtmlContent);
+                    void navigator.clipboard.writeText(viewHtmlDraft);
                     flash('HTML copied to clipboard', 'info');
                   }}
                 >
                   <Copy className="h-3.5 w-3.5" />
                   Copy
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={savingHtml || !viewHtmlDraft.trim()}
+                  onClick={() => void saveHtmlFromModal()}
+                >
+                  {savingHtml ? 'Saving…' : 'Save'}
+                </Button>
                 <button
                   type="button"
-                  onClick={() => setViewHtmlContent(null)}
-                  className="border border-border p-2 text-muted-foreground hover:text-primary"
+                  disabled={savingHtml}
+                  onClick={() => {
+                    setViewHtmlOpen(false);
+                    setViewHtmlBlockId(null);
+                  }}
+                  className="border border-border p-2 text-muted-foreground hover:text-primary disabled:opacity-50"
                   aria-label="Close"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
             </div>
-            <pre className="flex-1 overflow-auto whitespace-pre-wrap break-all px-5 py-4 text-[11px] leading-relaxed text-foreground">
-              {viewHtmlContent}
-            </pre>
+            <Textarea
+              value={viewHtmlDraft}
+              onChange={(e) => setViewHtmlDraft(e.target.value)}
+              spellCheck={false}
+              className="min-h-0 flex-1 resize-none rounded-none border-0 bg-background px-5 py-4 font-mono text-[11px] leading-relaxed focus-visible:ring-0"
+              style={{ minHeight: '55vh' }}
+            />
           </div>
         </div>
       ) : null}
@@ -1541,8 +1624,8 @@ export function CampaignEditorPage() {
                         <button
                           type="button"
                           className="inline-flex items-center gap-1 text-primary opacity-100 hover:underline"
-                          onClick={() => setViewHtmlContent(block.content || html)}
-                          title="View full HTML"
+                          onClick={() => openHtmlViewer(block.id, block.content || html)}
+                          title="View / edit full HTML"
                         >
                           <Eye className="h-3 w-3" />
                           View
