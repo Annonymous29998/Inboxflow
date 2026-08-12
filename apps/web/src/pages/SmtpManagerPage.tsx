@@ -294,7 +294,14 @@ export function SmtpManagerPage() {
 
       setLastTestOk(result.success);
       if (result.success) {
-        if (!opts?.silent) toast.success(sendEmail ? 'Test email sent' : 'SMTP connected', result.message);
+        if (!opts?.silent) {
+          toast.success(
+            sendEmail ? 'Test email handed to SMTP' : 'SMTP login OK — no email was sent',
+            sendEmail
+              ? `${result.message}. Check Inbox, Promotions, AND Spam for “SMTP connection test”. A login OK does not mean Gmail will show the message.`
+              : 'This only proves username/password/host work. Click Test & send and fill “Test email to” if you want a message in your inbox.',
+          );
+        }
         if (result.deliverabilityWarnings?.length && !opts?.silent) {
           toast.warning(
             'Inbox placement warnings',
@@ -921,8 +928,16 @@ export function SmtpManagerPage() {
 
             <div className="grid gap-2 md:grid-cols-2">
               <div>
-                <Label>Test email to</Label>
-                <Input value={testTo} onChange={(e) => setTestTo(e.target.value)} />
+                <Label>Test email to (required for Test & send only)</Label>
+                <Input
+                  value={testTo}
+                  onChange={(e) => setTestTo(e.target.value)}
+                  placeholder="you@gmail.com"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Test Connection never sends mail. Test & send uses this address. Sender Email must
+                  be a From your SMTP provider allows (not @gmail.com unless you are using Gmail SMTP).
+                </p>
               </div>
             </div>
 

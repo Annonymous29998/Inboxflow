@@ -10,6 +10,7 @@ import { sendCampaignEmailToRecipient } from '../../services/email/campaign-send
 import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
 import { upsertJobProgress } from '../jobs/progress.js';
+import { writeSystemLog } from '../../services/system-log.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -1252,10 +1253,32 @@ export async function campaignRoutes(app: FastifyInstance) {
         }
       }
 
+      const sent = results.filter((r) => r.success).length;
+      await writeSystemLog({
+        organizationId: orgId,
+        level: sent > 0 ? 'SUCCESS' : 'ERROR',
+        category: 'smtp',
+        message:
+          sent > 0
+            ? `Placement test sent via ${provider.name} (${cfg.host || provider.type}) From ${fromEmail} → ${body.to}`
+            : `Placement test failed via ${provider.name} (${cfg.host || provider.type}) From ${fromEmail} → ${body.to}: ${results[0]?.error || 'send failed'}`,
+        meta: {
+          campaignId: id,
+          providerId: provider.id,
+          host: cfg.host,
+          fromEmail,
+          to: body.to,
+          results,
+        },
+      });
+
       return reply.send({
         success: results.every((r) => r.success),
-        sent: results.filter((r) => r.success).length,
+        sent,
         total: results.length,
+        providerName: provider.name,
+        providerHost: cfg.host || null,
+        fromEmail,
         results,
       });
     } catch (error) {

@@ -1101,12 +1101,15 @@ export function CampaignEditorPage() {
       });
       if (result.sent > 0) {
         toast.success(
-          `Placement test sent to ${to}`,
-          'Open that mailbox and check Primary/Inbox AND Spam/Promotions. Inbox Flow cannot see which folder it landed in.',
+          `Placement test accepted by ${result.providerHost || result.providerName || 'SMTP'}`,
+          `From ${result.fromEmail || campaign.senderEmail || 'unknown'} → ${to}. Check Inbox, Promotions, AND Spam. Gmail silently drops mail that claims to be from @gmail.com unless it is sent through Gmail SMTP.`,
         );
       } else {
         const err = result.results?.[0]?.error || 'Send failed';
-        flash(err, 'error');
+        flash(
+          `${err}${result.providerHost ? ` (via ${result.providerHost})` : ''}`,
+          'error',
+        );
       }
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Placement test failed', 'error');

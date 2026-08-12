@@ -197,6 +197,9 @@ export const campaignSendService = {
       success: boolean;
       sent: number;
       total: number;
+      providerName?: string;
+      providerHost?: string | null;
+      fromEmail?: string;
       results: Array<{
         subject: string;
         fromName: string;
