@@ -114,12 +114,13 @@ function QueueCampaignColumn({
       <button
         type="button"
         onClick={onTogglePanel}
+        aria-expanded={panelOpen}
         className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
       >
         {panelOpen ? (
-          <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+          <ChevronDown className="h-4 w-4 flex-none text-primary" />
         ) : (
-          <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+          <ChevronRight className="h-4 w-4 flex-none text-primary" />
         )}
         <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-accent">
           Live send · {row.name}
@@ -128,6 +129,9 @@ function QueueCampaignColumn({
         <Badge tone="neutral">
           {finished}/{total}
         </Badge>
+        <span className="hidden shrink-0 text-[10px] uppercase text-muted-foreground sm:inline">
+          {panelOpen ? 'Collapse' : 'Expand'}
+        </span>
       </button>
 
       {panelOpen ? (
@@ -357,8 +361,8 @@ export function QueueConsolePage() {
         const next = { ...prev };
         for (const c of data.campaigns) {
           if (next[c.id] === undefined) {
-            // New campaigns open by default when actively sending/paused
-            next[c.id] = c.status === 'SENDING' || c.status === 'PAUSED' || data.campaigns.length <= 2;
+            // Only auto-expand while actively sending; finished campaigns start collapsed
+            next[c.id] = c.status === 'SENDING' || c.status === 'PAUSED';
           }
         }
         return next;
