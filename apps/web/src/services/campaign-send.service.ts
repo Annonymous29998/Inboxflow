@@ -9,9 +9,19 @@ export type SendRecipient = {
   displayName: string;
 };
 
+export type SendActivity = {
+  email: string;
+  status: 'SENT' | 'FAILED' | 'QUEUED';
+  error?: string | null;
+  at: string;
+};
+
 export type SendStatus = {
   success: boolean;
   status: string;
+  name?: string;
+  subject?: string | null;
+  senderEmail?: string | null;
   totalRecipients: number;
   sentCount: number;
   failedCount: number;
@@ -21,6 +31,7 @@ export type SendStatus = {
   lastEmail?: string | null;
   recentSent?: Array<{ email: string; at?: string | null }>;
   recentFailures?: Array<{ email: string; error: string }>;
+  activity?: SendActivity[];
 };
 
 export type JobProgressEvent = {

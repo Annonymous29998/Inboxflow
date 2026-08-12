@@ -308,6 +308,8 @@ async function dispatchCampaign(campaignId: string) {
     return Math.max(250, Math.round(baseMs * factor));
   };
 
+  // Enqueue every recipient immediately. Throttle only when sending (see processEmailJob).
+  // Sleeping here made the UI sit at 0/N for minutes and cancel/restart emptied the queue.
   for (let i = 0; i < contacts.length; i += batchSize) {
     const live = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -315,10 +317,6 @@ async function dispatchCampaign(campaignId: string) {
     });
     if (!live || ['PAUSED', 'CANCELLED'].includes(live.status)) {
       return;
-    }
-
-    if (i > 0 && batchPauseMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, humanDelay(batchPauseMs)));
     }
 
     const batch = contacts.slice(i, i + batchSize);
@@ -341,9 +339,6 @@ async function dispatchCampaign(campaignId: string) {
     for (let idx = 0; idx < recipients.length; idx += 1) {
       const r = recipients[idx]!;
       const contact = batch[idx]!;
-      if (idx > 0 && betweenEmailMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, humanDelay(betweenEmailMs)));
-      }
       await pgmqSend<EmailJobData>('email-send', {
         campaignId,
         recipientId: r.id,
@@ -360,10 +355,26 @@ async function processEmailJob(data: EmailJobData) {
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { status: true, organizationId: true, totalRecipients: true },
+    select: { status: true, organizationId: true, totalRecipients: true, queueSettings: true, sentCount: true },
   });
   if (!campaign || ['PAUSED', 'CANCELLED'].includes(campaign.status)) {
     return;
+  }
+
+  const qs = (campaign.queueSettings || {}) as {
+    betweenEmailMs?: number;
+    batchPauseMs?: number;
+    batchSize?: number;
+  };
+  const betweenEmailMs = Math.max(0, Number(qs.betweenEmailMs ?? 4_000));
+  const batchPauseMs = Math.max(0, Number(qs.batchPauseMs ?? 30_000));
+  const batchSize = Math.max(1, Number(qs.batchSize || 5));
+  const jitter = (baseMs: number) => Math.max(250, Math.round(baseMs * (0.6 + Math.random() * 0.8)));
+  if (betweenEmailMs > 0) {
+    await new Promise((r) => setTimeout(r, jitter(betweenEmailMs)));
+  }
+  if (batchPauseMs > 0 && campaign.sentCount > 0 && campaign.sentCount % batchSize === 0) {
+    await new Promise((r) => setTimeout(r, jitter(batchPauseMs)));
   }
 
   const result = await sendCampaignEmailToRecipient({

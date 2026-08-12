@@ -398,34 +398,55 @@ export async function campaignRoutes(app: FastifyInstance) {
         prisma.campaignRecipient.findMany({
           where: { campaignId: id, status: 'FAILED' },
           include: { contact: { select: { email: true } } },
-          orderBy: { createdAt: 'desc' },
-          take: 40,
+          orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+          take: 50,
         }),
         prisma.campaignRecipient.findMany({
           where: { campaignId: id, status: 'SENT' },
           include: { contact: { select: { email: true } } },
           orderBy: { sentAt: 'desc' },
-          take: 12,
+          take: 50,
         }),
       ]);
+
+      const activity = [
+        ...recentSent.map((r) => ({
+          email: r.contact.email,
+          status: 'SENT' as const,
+          error: null as string | null,
+          at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
+        })),
+        ...recentFailures.map((r) => ({
+          email: r.contact.email,
+          status: 'FAILED' as const,
+          error: r.error || 'Send failed',
+          at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
+        })),
+      ]
+        .sort((a, b) => (a.at < b.at ? 1 : -1))
+        .slice(0, 80);
 
       return reply.send({
         success: true,
         status: campaign.status,
+        name: campaign.name,
+        subject: campaign.subject,
+        senderEmail: campaign.senderEmail,
         totalRecipients: campaign.totalRecipients,
         sentCount,
         failedCount,
         pendingCount,
         completedAt: campaign.completedAt,
-        lastEmail: recentSent[0]?.contact.email || recentFailures[0]?.contact.email || null,
-        recentSent: recentSent.map((r) => ({
+        lastEmail: activity[0]?.email || null,
+        recentSent: recentSent.slice(0, 12).map((r) => ({
           email: r.contact.email,
           at: r.sentAt,
         })),
-        recentFailures: recentFailures.map((r) => ({
+        recentFailures: recentFailures.slice(0, 40).map((r) => ({
           email: r.contact.email,
           error: r.error || 'Send failed',
         })),
+        activity,
       });
     } catch (error) {
       return sendError(reply, error);

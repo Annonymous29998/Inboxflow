@@ -937,6 +937,11 @@ export function CampaignEditorPage() {
     setSendPaused(false);
     setSendError('');
     stopSendStream();
+    try {
+      sessionStorage.setItem('inboxflow:watchingCampaignId', id);
+    } catch {
+      /* ignore */
+    }
 
     try {
       const result = await campaignSendService.startBackgroundSend(id, {
