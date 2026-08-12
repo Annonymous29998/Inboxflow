@@ -18,6 +18,8 @@ export type SendStatus = {
   pendingCount: number;
   completedAt?: string | null;
   jobId?: string | null;
+  lastEmail?: string | null;
+  recentSent?: Array<{ email: string; at?: string | null }>;
   recentFailures?: Array<{ email: string; error: string }>;
 };
 

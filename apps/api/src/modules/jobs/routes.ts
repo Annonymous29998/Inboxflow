@@ -95,6 +95,16 @@ export async function jobRoutes(app: FastifyInstance) {
       reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
       reply.raw.setHeader('Connection', 'keep-alive');
       reply.raw.setHeader('X-Accel-Buffering', 'no');
+      // reply.raw bypasses @fastify/cors — set CORS manually so browser progress streams work.
+      const origin = String(request.headers.origin || '');
+      const allowed = (await import('../../config/env.js')).env.CORS_ORIGIN.split(',').map((s) =>
+        s.trim(),
+      );
+      if (origin && allowed.includes(origin)) {
+        reply.raw.setHeader('Access-Control-Allow-Origin', origin);
+        reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+        reply.raw.setHeader('Vary', 'Origin');
+      }
       if (reply.raw.socket) {
         reply.raw.socket.setNoDelay(true);
         reply.raw.socket.setKeepAlive(true, SSE_KEEPALIVE_MS);

@@ -374,6 +374,8 @@ export function CampaignEditorPage() {
   const [sentCount, setSentCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
   const [recentFailures, setRecentFailures] = useState<Array<{ email: string; error: string }>>([]);
+  const [recentSent, setRecentSent] = useState<Array<{ email: string; at?: string | null }>>([]);
+  const [lastEmail, setLastEmail] = useState<string | null>(null);
   const [sendCancelled, setSendCancelled] = useState(false);
   const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -947,16 +949,25 @@ export function CampaignEditorPage() {
       setSentCount(0);
       setFailedCount(0);
       setRecentFailures([]);
+      setRecentSent([]);
+      setLastEmail(null);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
 
       if (result.jobId) {
         sendStreamCancelRef.current = campaignSendService.streamProgress(result.jobId, {
           onUpdate: (u) => {
-            const meta = (u.meta as any) ?? {};
+            const meta = (u.meta as Record<string, unknown>) ?? {};
             const sent = Number(meta.sent ?? u.processed ?? 0);
             const failed = Number(meta.failed ?? 0);
             setSentCount((prev) => Math.max(prev, sent));
             setFailedCount((prev) => Math.max(prev, failed));
+            if (typeof meta.lastEmail === 'string' && meta.lastEmail) {
+              setLastEmail(meta.lastEmail);
+              setRecentSent((prev) => {
+                const next = [{ email: meta.lastEmail as string }, ...prev.filter((x) => x.email !== meta.lastEmail)];
+                return next.slice(0, 12);
+              });
+            }
             if (u.total && Number(u.total) > 0) {
               setSendCount((prev) => Math.max(prev, Number(u.total)));
             }
@@ -971,7 +982,7 @@ export function CampaignEditorPage() {
               }
             }
           },
-          onError: (err) => {
+          onError: () => {
             stopSendStream();
           },
         });
@@ -1168,6 +1179,8 @@ export function CampaignEditorPage() {
         setSentCount(status.sentCount);
         setFailedCount(status.failedCount);
         if (status.recentFailures) setRecentFailures(status.recentFailures);
+        if (status.recentSent) setRecentSent(status.recentSent);
+        if (status.lastEmail) setLastEmail(status.lastEmail);
         if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
 
         if (status.status === 'PAUSED') {
@@ -1207,7 +1220,7 @@ export function CampaignEditorPage() {
     }
 
     void poll();
-    const interval = window.setInterval(poll, 2500);
+    const interval = window.setInterval(poll, 1000);
     return () => {
       stopped = true;
       window.clearInterval(interval);
@@ -1315,6 +1328,8 @@ export function CampaignEditorPage() {
         sentCount={sentCount}
         failedCount={failedCount}
         recentFailures={recentFailures}
+        recentSent={recentSent}
+        lastEmail={lastEmail}
         errorMessage={sendError}
         fromLabel={fromLabel}
         batchSize={queueSettings.batchSize}

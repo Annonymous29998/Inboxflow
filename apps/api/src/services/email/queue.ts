@@ -360,7 +360,7 @@ async function processEmailJob(data: EmailJobData) {
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { status: true },
+    select: { status: true, organizationId: true, totalRecipients: true },
   });
   if (!campaign || ['PAUSED', 'CANCELLED'].includes(campaign.status)) {
     return;
@@ -373,6 +373,52 @@ async function processEmailJob(data: EmailJobData) {
     to,
     providerId,
   });
+
+  const [sentCount, failedCount, pendingCount] = await Promise.all([
+    prisma.campaignRecipient.count({ where: { campaignId, status: 'SENT' } }),
+    prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } }),
+    prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } }),
+  ]);
+
+  // Keep Job row + SSE subscribers in sync so the web UI can show live progress.
+  try {
+    const { upsertJobProgress } = await import('../../modules/jobs/progress.js');
+    const job = await prisma.job.findFirst({
+      where: {
+        campaignId,
+        type: 'CAMPAIGN_SEND',
+        status: { in: ['RUNNING', 'PENDING', 'PAUSED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, organizationId: true, total: true },
+    });
+    if (job) {
+      const processed = sentCount + failedCount;
+      const total = Math.max(job.total || 0, campaign.totalRecipients || 0, processed);
+      const done = pendingCount === 0 && processed >= total && total > 0;
+      await upsertJobProgress({
+        id: job.id,
+        type: 'CAMPAIGN_SEND',
+        organizationId: job.organizationId,
+        campaignId,
+        status: done ? 'COMPLETED' : result.success ? 'RUNNING' : 'RUNNING',
+        total,
+        processed,
+        finishedAt: done ? new Date() : null,
+        meta: {
+          stage: done ? 'finalized' : 'sending',
+          sent: sentCount,
+          failed: failedCount,
+          pending: pendingCount,
+          lastEmail: to,
+          lastResult: result.success ? 'sent' : 'failed',
+          lastError: result.success ? null : result.error || 'Send failed',
+        },
+      });
+    }
+  } catch {
+    /* progress updates must not fail the send */
+  }
 
   if (!result.success) {
     throw new Error(result.error || 'Send failed');
