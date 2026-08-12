@@ -7,6 +7,7 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { parseContactImport } from './import-parser.js';
 import { upsertJobProgress } from '../jobs/progress.js';
+import { audienceContactWhere, removeContactsFromAudience } from './audience-cleanup.js';
 
 export async function contactRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -24,7 +25,7 @@ export async function contactRoutes(app: FastifyInstance) {
       };
       const page = Number(q.page || 1);
       const limit = Math.min(Number(q.limit || 50), 200);
-      const where: Prisma.ContactWhereInput = { organizationId: orgId };
+      const where: Prisma.ContactWhereInput = audienceContactWhere(orgId, {}, { includeCleaned: q.status === 'CLEANED' });
       if (q.status) {
         where.status = q.status as 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'BOUNCED' | 'COMPLAINED' | 'CLEANED';
       }
@@ -186,8 +187,10 @@ export async function contactRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      await prisma.contact.deleteMany({ where: { id, organizationId: orgId } });
-      return reply.send({ success: true });
+      const existing = await prisma.contact.findFirst({ where: { id, organizationId: orgId }, select: { id: true } });
+      if (!existing) throw new AppError(404, 'Contact not found');
+      const result = await removeContactsFromAudience(orgId, [id]);
+      return reply.send({ success: true, ...result });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -423,28 +426,31 @@ export async function contactRoutes(app: FastifyInstance) {
       }
       if (query.status) {
         where.status = query.status as 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'BOUNCED' | 'COMPLAINED' | 'CLEANED';
+      } else {
+        // Clear All should not leave CLEANED ghosts counted as remaining audience
+        where.status = { not: 'CLEANED' };
       }
       const count = await prisma.contact.count({ where });
       if (!count) {
-        return reply.send({ deleted: 0 });
+        return reply.send({ deleted: 0, archived: 0 });
       }
       // Delete in chunks of 500 to avoid huge transactions / locks
       const CHUNK = 500;
       let deleted = 0;
-      while (deleted < count) {
+      let archived = 0;
+      while (deleted + archived < count) {
         const ids = await prisma.contact.findMany({ where, select: { id: true }, take: CHUNK });
         if (!ids.length) break;
-        await prisma.$transaction([
-          prisma.contactListMember.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
-          prisma.contactTag.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
-          prisma.trackingEvent.deleteMany({ where: { contactId: { in: ids.map((c) => c.id) } } }),
-          prisma.contact.deleteMany({ where: { id: { in: ids.map((c) => c.id) } } }),
-        ]);
-        deleted += ids.length;
+        const result = await removeContactsFromAudience(
+          orgId,
+          ids.map((c) => c.id),
+        );
+        deleted += result.deleted;
+        archived += result.archived;
         // Avoid tight loop starving other queries
         await new Promise((r) => setTimeout(r, 10));
       }
-      return reply.send({ deleted });
+      return reply.send({ deleted: deleted + archived, hardDeleted: deleted, archived });
     } catch (error) {
       return sendError(reply, error);
     }

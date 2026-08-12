@@ -5,6 +5,7 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { requireOrg } from '../../utils/org.js';
 import { authenticate } from '../../middleware/auth.js';
 import { scrubCampaignContent, scrubSpamFromHtml, scrubSpamFromText } from '../deliverability/spam-scrubber.js';
+import { removeContactsFromAudience } from '../contacts/audience-cleanup.js';
 
 export async function listRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -57,7 +58,7 @@ export async function listRoutes(app: FastifyInstance) {
         });
         const contactIds = members.map((m) => m.contactId);
         if (contactIds.length) {
-          // Only delete contacts that belong solely to this list (keep shared contacts)
+          // Only remove contacts that belong solely to this list (keep shared contacts)
           const stillElsewhere = await prisma.contactListMember.findMany({
             where: {
               contactId: { in: contactIds },
@@ -67,11 +68,10 @@ export async function listRoutes(app: FastifyInstance) {
           });
           const shared = new Set(stillElsewhere.map((m) => m.contactId));
           const onlyHere = contactIds.filter((cid) => !shared.has(cid));
+          // Shared contacts: just remove this list membership (cascade when list deletes)
           if (onlyHere.length) {
-            const res = await prisma.contact.deleteMany({
-              where: { organizationId: orgId, id: { in: onlyHere } },
-            });
-            contactsDeleted = res.count;
+            const result = await removeContactsFromAudience(orgId, onlyHere);
+            contactsDeleted = result.removed;
           }
         }
       }
@@ -82,6 +82,7 @@ export async function listRoutes(app: FastifyInstance) {
         listDeleted: true,
         contactsDeleted,
         memberCount: list._count.members,
+        note: 'Campaign opens/clicks are preserved for contacts that were sent in a campaign.',
       });
     } catch (error) {
       return sendError(reply, error);

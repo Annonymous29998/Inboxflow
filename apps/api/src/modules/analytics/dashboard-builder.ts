@@ -52,7 +52,7 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
     recentCampaignsRaw,
     liveTotals,
   ] = await Promise.all([
-    prisma.contact.count({ where: { organizationId } }),
+    prisma.contact.count({ where: { organizationId, status: { not: 'CLEANED' } } }),
     prisma.contact.count({ where: { organizationId, status: 'SUBSCRIBED' } }),
     prisma.contact.count({ where: { organizationId, status: 'UNSUBSCRIBED' } }),
     prisma.campaign.count({ where: { organizationId, status: { in: ['SENDING', 'READY'] } } }),
