@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
+import { deliveredRecipientFilter } from '../campaigns/recipient-stats.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
 // Eliminates repeated identical DB calls on fast page refreshes (10-second TTL).
@@ -233,6 +234,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
         select: {
           id: true,
           sentCount: true,
+          totalRecipients: true,
           deliveredCount: true,
           openedCount: true,
           clickedCount: true,
@@ -241,25 +243,31 @@ export async function analyticsRoutes(app: FastifyInstance) {
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
-      const statusFilter = q.filter && q.filter !== 'ALL' ? { status: q.filter as never } : {};
+      const statusFilter =
+        q.filter && q.filter !== 'ALL'
+          ? q.filter === 'DELIVERED'
+            ? { status: { in: ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'] as never } }
+            : { status: q.filter as never }
+          : {};
       const searchFilter = q.search
         ? { contact: { email: { contains: q.search, mode: 'insensitive' as const } } }
         : {};
 
       const where = { campaignId: id, ...statusFilter, ...searchFilter };
 
-      const [recipients, total, failedLive] = await Promise.all([
+      const [recipients, total, failedLive, deliveredLive] = await Promise.all([
         prisma.campaignRecipient.findMany({
           where,
           include: {
             contact: { select: { email: true, firstName: true, lastName: true } },
           },
-          orderBy: { createdAt: 'asc' },
+          orderBy: [{ openedAt: 'desc' }, { clickedAt: 'desc' }, { sentAt: 'desc' }],
           skip,
           take: limit,
         }),
         prisma.campaignRecipient.count({ where }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
       ]);
 
       // Get per-contact open/click counts from tracking events
@@ -282,8 +290,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       return reply.send({
         summary: {
-          sent: campaign.sentCount,
-          delivered: campaign.deliveredCount || campaign.sentCount,
+          sent: campaign.totalRecipients || campaign.sentCount,
+          delivered: deliveredLive || campaign.deliveredCount || campaign.sentCount,
           opened: campaign.openedCount,
           clicked: campaign.clickedCount,
           failed: failedLive || campaign.failedCount || 0,

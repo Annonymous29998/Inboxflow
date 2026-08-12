@@ -1182,12 +1182,8 @@ export function CampaignEditorPage() {
   useEffect(() => {
     if (!sendOpen || sendPhase !== 'background' || !id || isNew) return;
 
-    let stopped = false;
-
-    async function poll() {
-      try {
-        const status = await campaignSendService.getSendStatus(id!);
-        if (stopped) return;
+    const sub = campaignSendService.streamSendStatus(id, {
+      onUpdate: (status) => {
         setSentCount(status.sentCount);
         setFailedCount(status.failedCount);
         if (status.recentFailures) setRecentFailures(status.recentFailures);
@@ -1229,17 +1225,10 @@ export function CampaignEditorPage() {
             status.failedCount > 0 || status.status === 'CANCELLED' ? 'warning' : 'success',
           );
         }
-      } catch {
-        /* ignore transient poll errors */
-      }
-    }
+      },
+    });
 
-    void poll();
-    const interval = window.setInterval(poll, 1000);
-    return () => {
-      stopped = true;
-      window.clearInterval(interval);
-    };
+    return () => sub.cancel();
   }, [sendOpen, sendPhase, id, isNew]);
 
   async function generateSubjects() {
@@ -2124,6 +2113,7 @@ export function CampaignEditorPage() {
           campaignId={id}
           campaignName={campaign.subject || campaign.name}
           sentAt={campaign.sentAt}
+          campaignStatus={campaign.status}
         />
       ) : null}
     </div>

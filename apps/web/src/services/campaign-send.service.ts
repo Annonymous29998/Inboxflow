@@ -11,9 +11,10 @@ export type SendRecipient = {
 
 export type SendActivity = {
   email: string;
-  status: 'SENT' | 'FAILED' | 'QUEUED';
+  status: 'SENT' | 'FAILED' | 'QUEUED' | 'OPENED' | 'CLICKED';
   error?: string | null;
   at: string;
+  url?: string | null;
 };
 
 export type SendStatus = {
@@ -26,11 +27,15 @@ export type SendStatus = {
   sentCount: number;
   failedCount: number;
   pendingCount: number;
+  openedCount?: number;
+  clickedCount?: number;
   completedAt?: string | null;
   jobId?: string | null;
   lastEmail?: string | null;
   recentSent?: Array<{ email: string; at?: string | null }>;
   recentFailures?: Array<{ email: string; error: string }>;
+  recentOpens?: Array<{ email: string; at: string }>;
+  recentClicks?: Array<{ email: string; at: string; url?: string | null }>;
   activity?: SendActivity[];
 };
 
@@ -242,6 +247,24 @@ export const campaignSendService = {
       onEvent: (evt, d) => {
         if (evt !== 'job' || !d || typeof d !== 'object') return;
         callbacks.onUpdate?.(d as JobProgressEvent);
+      },
+      onError: callbacks.onError,
+      onDone: callbacks.onDone,
+    });
+  },
+
+  streamSendStatus(
+    campaignId: string,
+    callbacks: {
+      onUpdate?: (u: SendStatus) => void;
+      onError?: (e: Error) => void;
+      onDone?: () => void;
+    } = {},
+  ): { cancel: () => void } {
+    return api.events(`/api/campaigns/${campaignId}/send-status/stream`, {
+      onEvent: (evt, d) => {
+        if (evt !== 'status' || !d || typeof d !== 'object') return;
+        callbacks.onUpdate?.(d as SendStatus);
       },
       onError: callbacks.onError,
       onDone: callbacks.onDone,

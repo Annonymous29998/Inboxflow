@@ -3,6 +3,8 @@ import { ChevronLeft, ChevronRight, Eye, Mail, MousePointerClick } from 'lucide-
 import { api } from '@/lib/api';
 import { Button, Card, Input, Select } from '@/components/ui';
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+
 type Recipient = {
   id: string;
   email: string;
@@ -32,16 +34,36 @@ type Props = {
   campaignId: string;
   campaignName?: string;
   sentAt?: string | null;
+  /** When SENDING/SENT/PAUSED, recipients auto-refresh from live tracking data */
+  campaignStatus?: string;
   /** Compact mode hides the outer title (useful when already inside a page section) */
-  compact?: boolean;
+  /** Use contacts-style pagination (First / Prev / numbered pages / Next / Last) */
+  contactsPagination?: boolean;
 };
 
-export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, compact }: Props) {
+function formatTs(iso: string | null) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return '';
+  }
+}
+
+export function CampaignRecipientsPanel({
+  campaignId,
+  campaignName,
+  sentAt,
+  campaignStatus,
+  compact,
+  contactsPagination = false,
+}: Props) {
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
+  const [pageLimit, setPageLimit] = useState<number>(50);
   const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
@@ -51,7 +73,7 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
     setLoading(true);
     const params = new URLSearchParams({
       page: String(page),
-      limit: '50',
+      limit: String(pageLimit),
       filter,
     });
     if (search.trim()) params.set('search', search.trim());
@@ -67,11 +89,32 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [campaignId, page, filter, search]);
+  }, [campaignId, page, pageLimit, filter, search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageLimit, filter, search, campaignId]);
+
+  useEffect(() => {
+    if (page > pages) setPage(Math.max(1, pages));
+  }, [page, pages]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const liveRefresh =
+    campaignStatus === 'SENDING' ||
+    campaignStatus === 'PAUSED' ||
+    campaignStatus === 'SENT' ||
+    campaignStatus === 'CANCELLED' ||
+    campaignStatus === 'FAILED';
+
+  useEffect(() => {
+    if (!liveRefresh) return;
+    const id = window.setInterval(() => load(), 3000);
+    return () => window.clearInterval(id);
+  }, [liveRefresh, load]);
 
   const openPct =
     summary && summary.sent > 0 ? Math.round((summary.opened / summary.sent) * 100) : 0;
@@ -163,8 +206,18 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
               <option value="BOUNCED">Bounced</option>
               <option value="FAILED">Failed</option>
             </Select>
+            <Select
+              value={String(pageLimit)}
+              onChange={(e) => setPageLimit(Number(e.target.value))}
+              className="h-8 text-xs"
+              aria-label="Rows per page"
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>{n} / page</option>
+              ))}
+            </Select>
             <Button variant="outline" size="sm" onClick={load}>
-              Refresh
+              {liveRefresh ? 'Live' : 'Refresh'}
             </Button>
           </div>
         </div>
@@ -222,9 +275,14 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
                     </td>
                     <td className="px-4 py-2.5">
                       {r.openCount > 0 || r.opened ? (
-                        <span className="inline-flex items-center gap-1.5 text-primary">
-                          <Eye className="h-3.5 w-3.5" />
-                          {r.openCount || 1}×
+                        <span className="inline-flex flex-col gap-0.5 text-primary">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Eye className="h-3.5 w-3.5" />
+                            {r.openCount || 1}×
+                          </span>
+                          {r.openedAt ? (
+                            <span className="text-[10px] text-ink-muted">{formatTs(r.openedAt)}</span>
+                          ) : null}
                         </span>
                       ) : (
                         <span className="text-ink-muted">—</span>
@@ -232,9 +290,14 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
                     </td>
                     <td className="px-4 py-2.5">
                       {r.clickCount > 0 || r.clicked ? (
-                        <span className="inline-flex items-center gap-1.5 text-primary">
-                          <MousePointerClick className="h-3.5 w-3.5" />
-                          {r.clickCount || 1}×
+                        <span className="inline-flex flex-col gap-0.5 text-primary">
+                          <span className="inline-flex items-center gap-1.5">
+                            <MousePointerClick className="h-3.5 w-3.5" />
+                            {r.clickCount || 1}×
+                          </span>
+                          {r.clickedAt ? (
+                            <span className="text-[10px] text-ink-muted">{formatTs(r.clickedAt)}</span>
+                          ) : null}
                         </span>
                       ) : (
                         <span className="text-ink-muted">—</span>
@@ -262,29 +325,99 @@ export function CampaignRecipientsPanel({ campaignId, campaignName, sentAt, comp
           </table>
         </div>
 
-        {pages > 1 ? (
-          <div className="flex items-center justify-between border-t border-border px-4 py-3">
-            <span className="text-xs text-ink-muted">
-              {total} total · Page {page} of {pages}
-            </span>
-            <div className="flex gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={page >= pages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
+        {total > 0 ? (
+          <div className="border-t border-border px-4 py-3">
+            {contactsPagination ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-ink-muted">
+                  Showing <span className="font-medium text-foreground">{recipients.length}</span> of{' '}
+                  <span className="font-medium text-foreground">{total.toLocaleString()}</span> recipient
+                  {total === 1 ? '' : 's'} · Page{' '}
+                  <span className="font-medium text-foreground">{Math.min(page, pages)}</span> of{' '}
+                  <span className="font-medium text-foreground">{pages}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setPage(1)} disabled={page <= 1}>
+                    « First
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    ‹ Prev
+                  </Button>
+                  <div className="hidden items-center gap-1 md:flex">
+                    {((): number[] => {
+                      if (pages <= 7) {
+                        return Array.from({ length: pages }, (_, i) => i + 1);
+                      }
+                      const start = page <= 4 ? 1 : page >= pages - 3 ? pages - 6 : page - 3;
+                      const out: number[] = [];
+                      for (let i = 0; i < 7; i++) {
+                        const t = start + i;
+                        if (t >= 1 && t <= pages) out.push(t);
+                      }
+                      return out;
+                    })().map((target) => (
+                      <Button
+                        key={target}
+                        size="sm"
+                        variant={target === page ? 'primary' : 'outline'}
+                        onClick={() => setPage(target)}
+                      >
+                        {target}
+                      </Button>
+                    ))}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.min(pages, p + 1))}
+                    disabled={page >= pages}
+                  >
+                    Next ›
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(pages)}
+                    disabled={page >= pages}
+                  >
+                    Last »
+                  </Button>
+                </div>
+              </div>
+            ) : pages > 1 ? (
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-ink-muted">
+                  {total} total · Page {page} of {pages}
+                </span>
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => p - 1)}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={page >= pages}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <span className="text-xs text-ink-muted">
+                {total.toLocaleString()} recipient{total === 1 ? '' : 's'}
+              </span>
+            )}
           </div>
         ) : null}
       </Card>

@@ -11,7 +11,11 @@ import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
 import { upsertJobProgress } from '../jobs/progress.js';
 import { writeSystemLog } from '../../services/system-log.js';
-import { deliveredRecipientFilter } from '../campaigns/recipient-stats.js';
+import {
+  deliveredRecipientFilter,
+  sumDeliveredFromCounts,
+} from './recipient-stats.js';
+import { buildCampaignSendStatus } from './send-status-builder.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -245,6 +249,8 @@ export async function campaignRoutes(app: FastifyInstance) {
           status: true,
           subject: true,
           sentCount: true,
+          openedCount: true,
+          clickedCount: true,
           totalRecipients: true,
           sentAt: true,
           completedAt: true,
@@ -271,13 +277,15 @@ export async function campaignRoutes(app: FastifyInstance) {
 
       const rows = campaigns.map((c) => {
         const pending = counts.get(`${c.id}:QUEUED` as K) ?? 0;
-        const sent = counts.get(`${c.id}:SENT` as K) ?? 0;
+        const sent = sumDeliveredFromCounts(counts, c.id);
         const failed = counts.get(`${c.id}:FAILED` as K) ?? 0;
         return {
           ...c,
           pending,
           sent,
           failed,
+          opened: c.openedCount ?? 0,
+          clicked: c.clickedCount ?? 0,
           total: c.totalRecipients || pending + sent + failed,
         };
       });
@@ -385,70 +393,124 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get('/:id/send-status/stream', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+
+      const initial = await buildCampaignSendStatus(orgId, id);
+      if (!initial) throw new AppError(404, 'Campaign not found');
+
+      const SSE_KEEPALIVE_MS = 15_000;
+      const SSE_POLL_MS = 500;
+
+      reply.raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Accel-Buffering', 'no');
+      const origin = String(request.headers.origin || '');
+      const allowed = (await import('../../config/env.js')).env.CORS_ORIGIN.split(',').map((s) =>
+        s.trim(),
+      );
+      if (origin && allowed.includes(origin)) {
+        reply.raw.setHeader('Access-Control-Allow-Origin', origin);
+        reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+        reply.raw.setHeader('Vary', 'Origin');
+      }
+      if (reply.raw.socket) {
+        reply.raw.socket.setNoDelay(true);
+        reply.raw.socket.setKeepAlive(true, SSE_KEEPALIVE_MS);
+      }
+      reply.raw.flushHeaders?.();
+
+      let stopped = false;
+      let lastKey = '';
+      const send = (evt: string, data: Record<string, unknown>) => {
+        if (stopped) return;
+        const chunk =
+          (evt ? `event: ${evt}\n` : '') + `data: ${JSON.stringify(data)}\n\n`;
+        try {
+          reply.raw.write(chunk);
+        } catch {
+          /* client gone */
+        }
+      };
+
+      const fingerprint = (p: Awaited<ReturnType<typeof buildCampaignSendStatus>>) =>
+        p
+          ? [
+              p.status,
+              p.sentCount,
+              p.failedCount,
+              p.pendingCount,
+              p.openedCount,
+              p.clickedCount,
+              p.activity?.[0]?.at,
+              p.activity?.length,
+            ].join('|')
+          : '';
+
+      lastKey = fingerprint(initial);
+      send('status', initial);
+
+      const poll = setInterval(async () => {
+        if (stopped) return;
+        try {
+          const fresh = await buildCampaignSendStatus(orgId, id);
+          if (!fresh) {
+            send('error', { message: 'Campaign not found' });
+            stop();
+            return;
+          }
+          const key = fingerprint(fresh);
+          if (key !== lastKey) {
+            lastKey = key;
+            send('status', fresh);
+          }
+          send('ping', { t: Date.now() });
+        } catch {
+          /* ignore transient poll errors */
+        }
+      }, SSE_POLL_MS);
+
+      const keepalive = setInterval(() => send('ping', { t: Date.now() }), SSE_KEEPALIVE_MS);
+
+      function stop() {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(poll);
+        clearInterval(keepalive);
+        try {
+          reply.raw.end();
+        } catch {
+          /* already closed */
+        }
+      }
+
+      reply.raw.on('close', stop);
+      reply.raw.on('error', stop);
+
+      if (
+        initial.status === 'SENT' ||
+        initial.status === 'FAILED' ||
+        initial.status === 'CANCELLED'
+      ) {
+        setTimeout(() => stop(), 60_000);
+      }
+
+      return reply;
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/:id/send-status', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
-      if (!campaign) throw new AppError(404, 'Campaign not found');
-
-      const [sentCount, failedCount, pendingCount, recentFailures, recentSent] = await Promise.all([
-        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
-        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
-        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'QUEUED' } }),
-        prisma.campaignRecipient.findMany({
-          where: { campaignId: id, status: 'FAILED' },
-          include: { contact: { select: { email: true } } },
-          orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
-          take: 50,
-        }),
-        prisma.campaignRecipient.findMany({
-          where: deliveredRecipientFilter(id),
-          include: { contact: { select: { email: true } } },
-          orderBy: { sentAt: 'desc' },
-          take: 50,
-        }),
-      ]);
-
-      const activity = [
-        ...recentSent.map((r) => ({
-          email: r.contact.email,
-          status: 'SENT' as const,
-          error: null as string | null,
-          at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
-        })),
-        ...recentFailures.map((r) => ({
-          email: r.contact.email,
-          status: 'FAILED' as const,
-          error: r.error || 'Send failed',
-          at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
-        })),
-      ]
-        .sort((a, b) => (a.at < b.at ? 1 : -1))
-        .slice(0, 80);
-
-      return reply.send({
-        success: true,
-        status: campaign.status,
-        name: campaign.name,
-        subject: campaign.subject,
-        senderEmail: campaign.senderEmail,
-        totalRecipients: campaign.totalRecipients,
-        sentCount,
-        failedCount,
-        pendingCount,
-        completedAt: campaign.completedAt,
-        lastEmail: activity[0]?.email || null,
-        recentSent: recentSent.slice(0, 12).map((r) => ({
-          email: r.contact.email,
-          at: r.sentAt,
-        })),
-        recentFailures: recentFailures.slice(0, 40).map((r) => ({
-          email: r.contact.email,
-          error: r.error || 'Send failed',
-        })),
-        activity,
-      });
+      const payload = await buildCampaignSendStatus(orgId, id);
+      if (!payload) throw new AppError(404, 'Campaign not found');
+      return reply.send(payload);
     } catch (error) {
       return sendError(reply, error);
     }

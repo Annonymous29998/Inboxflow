@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, Pause, Play, RefreshCw, RotateCcw } from 'lucide-react';
+import { Loader2, Pause, Play, RefreshCw, RotateCcw, Eye, MousePointerClick, List, ChevronUp } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Badge, Button } from '@/components/ui';
 import { toast } from '@/stores/toast';
 import { cn } from '@/lib/utils';
 import { campaignSendService, type SendStatus } from '@/services/campaign-send.service';
+import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 
 type QueueRow = {
   id: string;
@@ -15,8 +16,11 @@ type QueueRow = {
   pending: number;
   sent: number;
   failed: number;
+  opened?: number;
+  clicked?: number;
   total: number;
   updatedAt: string;
+  sentAt?: string | null;
 };
 
 function statusTone(status: string) {
@@ -48,6 +52,7 @@ export function QueueConsolePage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [live, setLive] = useState<SendStatus | null>(null);
+  const [recipientsOpen, setRecipientsOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -77,7 +82,7 @@ export function QueueConsolePage() {
 
   useEffect(() => {
     void load();
-    const id = window.setInterval(() => void load(), 4000);
+    const id = window.setInterval(() => void load(), 8000);
     return () => window.clearInterval(id);
   }, [load]);
 
@@ -87,20 +92,43 @@ export function QueueConsolePage() {
       return;
     }
     let cancelled = false;
-    async function tick() {
-      try {
-        const status = await campaignSendService.getSendStatus(selectedId!);
-        if (!cancelled) setLive(status);
-      } catch {
-        /* keep last snapshot */
-      }
-    }
-    void tick();
-    const id = window.setInterval(() => void tick(), 1500);
+    const sub = campaignSendService.streamSendStatus(selectedId, {
+      onUpdate: (status) => {
+        if (cancelled) return;
+        setLive(status);
+        // Keep campaigns table in sync with live stream (not stale queue-console poll)
+        setRows((prev) =>
+          prev.map((r) =>
+            r.id === selectedId
+              ? {
+                  ...r,
+                  status: status.status,
+                  sent: status.sentCount,
+                  failed: status.failedCount,
+                  pending: status.pendingCount,
+                  opened: status.openedCount ?? r.opened ?? 0,
+                  clicked: status.clickedCount ?? r.clicked ?? 0,
+                  total: Math.max(r.total, status.totalRecipients, status.sentCount + status.failedCount + status.pendingCount),
+                }
+              : r,
+          ),
+        );
+      },
+      onError: () => {
+        if (cancelled) return;
+        void campaignSendService.getSendStatus(selectedId).then((status) => {
+          if (!cancelled) setLive(status);
+        });
+      },
+    });
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      sub.cancel();
     };
+  }, [selectedId]);
+
+  useEffect(() => {
+    setRecipientsOpen(false);
   }, [selectedId]);
 
   const selectedRow = rows.find((r) => r.id === selectedId) || null;
@@ -132,6 +160,12 @@ export function QueueConsolePage() {
               : selectedRow
                 ? `Status: ${selectedRow.status}`
                 : 'Select a campaign';
+
+  const selectedStatus = live?.status || selectedRow?.status || '';
+  const canShowRecipientList =
+    selectedRow &&
+    (progress.total > 0 ||
+      ['SENDING', 'SENT', 'PAUSED', 'CANCELLED', 'FAILED', 'READY'].includes(selectedStatus));
 
   async function pause(id: string) {
     setBusyId(id);
@@ -228,7 +262,7 @@ export function QueueConsolePage() {
             </p>
             <p className="text-xs text-accent">{heartbeat}</p>
 
-            <div className="grid grid-cols-3 gap-2 text-center text-xs">
+            <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-5">
               <div className="border border-border bg-muted/40 px-2 py-2">
                 <div className="text-[10px] uppercase text-muted-foreground">Sent</div>
                 <div className="mt-1 text-lg tabular-nums text-primary">{progress.sent}</div>
@@ -241,9 +275,31 @@ export function QueueConsolePage() {
                 <div className="text-[10px] uppercase text-muted-foreground">Pending</div>
                 <div className="mt-1 text-lg tabular-nums text-warning">{progress.pending}</div>
               </div>
+              <div className="border border-border bg-muted/40 px-2 py-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Opened</div>
+                <div className="mt-1 text-lg tabular-nums text-primary">{live?.openedCount ?? 0}</div>
+              </div>
+              <div className="border border-border bg-muted/40 px-2 py-2">
+                <div className="text-[10px] uppercase text-muted-foreground">Clicked</div>
+                <div className="mt-1 text-lg tabular-nums text-primary">{live?.clickedCount ?? 0}</div>
+              </div>
             </div>
 
             <div className="flex flex-wrap gap-1">
+              {canShowRecipientList ? (
+                <Button
+                  size="sm"
+                  variant={recipientsOpen ? 'primary' : 'outline'}
+                  onClick={() => setRecipientsOpen((v) => !v)}
+                >
+                  {recipientsOpen ? (
+                    <ChevronUp className="h-3 w-3" />
+                  ) : (
+                    <List className="h-3 w-3" />
+                  )}
+                  {recipientsOpen ? 'Hide all recipients' : 'Show all recipients'}
+                </Button>
+              ) : null}
               {(live?.status || selectedRow.status) === 'SENDING' ? (
                 <Button size="sm" variant="outline" disabled={busyId === selectedRow.id} onClick={() => void pause(selectedRow.id)}>
                   <Pause className="h-3 w-3" /> Pause
@@ -268,7 +324,7 @@ export function QueueConsolePage() {
 
             <div className="max-h-72 overflow-auto border border-border bg-muted/20">
               <div className="sticky top-0 border-b border-border bg-card px-3 py-1.5 text-[10px] uppercase tracking-wide text-accent">
-                Per-email log (newest first)
+                Live log — sends, opens, clicks (newest first)
               </div>
               {live?.activity?.length ? (
                 <ul className="divide-y divide-border/50 text-[11px]">
@@ -280,14 +336,25 @@ export function QueueConsolePage() {
                           'shrink-0 font-semibold',
                           item.status === 'SENT' && 'text-primary',
                           item.status === 'FAILED' && 'text-destructive',
+                          item.status === 'OPENED' && 'text-accent',
+                          item.status === 'CLICKED' && 'text-primary',
                         )}
                       >
                         [{item.status}]
                       </span>
                       <span className="min-w-0 break-all">
+                        {item.status === 'OPENED' ? (
+                          <Eye className="mr-1 inline h-3 w-3" aria-hidden />
+                        ) : null}
+                        {item.status === 'CLICKED' ? (
+                          <MousePointerClick className="mr-1 inline h-3 w-3" aria-hidden />
+                        ) : null}
                         {item.email}
                         {item.error ? (
                           <span className="text-muted-foreground"> — {item.error}</span>
+                        ) : null}
+                        {item.url ? (
+                          <span className="text-muted-foreground"> → {item.url}</span>
                         ) : null}
                       </span>
                     </li>
@@ -305,6 +372,26 @@ export function QueueConsolePage() {
         </div>
       ) : null}
 
+      {recipientsOpen && canShowRecipientList ? (
+        <div className="tui-box">
+          <div className="tui-box-title">Email results · all recipients</div>
+          <div className="p-4">
+            <p className="mb-4 text-[11px] text-muted-foreground">
+              Every address in this campaign — delivered, opened, and clicked. Paginate through the
+              full list while sending or after the queue finishes.
+            </p>
+            <CampaignRecipientsPanel
+              campaignId={selectedRow!.id}
+              campaignName={live?.subject || selectedRow!.subject || selectedRow!.name}
+              sentAt={selectedRow!.sentAt}
+              campaignStatus={selectedStatus}
+              compact
+              contactsPagination
+            />
+          </div>
+        </div>
+      ) : null}
+
       <div className="tui-box overflow-x-auto">
         <div className="tui-box-title">Campaigns</div>
         <table className="w-full min-w-180 text-left text-xs">
@@ -314,6 +401,8 @@ export function QueueConsolePage() {
               <th className="px-3 py-2 font-medium">Status</th>
               <th className="px-3 py-2 font-medium tabular-nums">Pending</th>
               <th className="px-3 py-2 font-medium tabular-nums">Sent</th>
+              <th className="px-3 py-2 font-medium tabular-nums">Opened</th>
+              <th className="px-3 py-2 font-medium tabular-nums">Clicked</th>
               <th className="px-3 py-2 font-medium tabular-nums">Failed</th>
               <th className="px-3 py-2 font-medium">Actions</th>
             </tr>
@@ -352,6 +441,8 @@ export function QueueConsolePage() {
                 </td>
                 <td className="px-3 py-2 tabular-nums text-warning">{row.pending}</td>
                 <td className="px-3 py-2 tabular-nums text-primary">{row.sent}</td>
+                <td className="px-3 py-2 tabular-nums text-primary">{row.opened ?? 0}</td>
+                <td className="px-3 py-2 tabular-nums text-primary">{row.clicked ?? 0}</td>
                 <td className="px-3 py-2 tabular-nums text-destructive">{row.failed}</td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
@@ -392,7 +483,7 @@ export function QueueConsolePage() {
             ))}
             {!rows.length && !loading ? (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
                   No active or recent queue campaigns.
                 </td>
               </tr>

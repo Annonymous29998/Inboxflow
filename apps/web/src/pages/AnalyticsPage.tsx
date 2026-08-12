@@ -130,6 +130,7 @@ export function AnalyticsPage() {
           campaignId={selectedId}
           campaignName={detail.campaign.name}
           sentAt={detail.campaign.sentAt}
+          campaignStatus={detail.campaign.status}
           compact
         />
       ) : null}
