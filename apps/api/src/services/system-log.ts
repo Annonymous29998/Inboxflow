@@ -152,7 +152,7 @@ export function detectSmtpDeliverabilityWarnings(config: {
 
   if (fromDomain && FREE_EMAIL_HOSTS.has(fromDomain)) {
     warnings.push(
-      `From address uses free provider @${fromDomain}. Free mailboxes (Gmail / Outlook / Yahoo / iCloud) run strict DMARC reject on sends through 3rd-party SMTP. Marketing using FROM = from = marketing SMTP will go to Spam, almost all campaigns sent from free emails sent from them will not reach Primary inbox. Use a From email on your OWN verified domain that has SPF + DKIM + DMARC properly configured.`,
+      `From is @${fromDomain}. Inbox Flow will still send it. Some SMTP providers or mailbox filters may reject free-mail From addresses or send them to Spam — a verified domain From usually places better.`,
     );
   }
 

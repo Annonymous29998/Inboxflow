@@ -552,12 +552,11 @@ export function SmtpManagerPage() {
             Add your SMTP host, username, and password. Test the connection, then activate to send.
           </p>
           <div className="mt-3 max-w-2xl border border-accent/30 bg-accent/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-            <span className="text-accent">Inbox placement:</span> SMTP (Bulko, SES, etc.) only moves
-            mail. You still need a <strong className="text-foreground">domain you own</strong> under{' '}
-            <strong className="text-foreground">Domains</strong> with SPF/DKIM/DMARC verified — you
-            cannot authenticate <code className="text-foreground">bulko.io</code> or{' '}
-            <code className="text-foreground">gmail.com</code>. Use a From address on that owned
-            domain, warm up slowly, and keep content clean.
+            <span className="text-accent">Sending:</span> Once an SMTP profile is saved and active,
+            Inbox Flow will send using that profile with whatever{' '}
+            <strong className="text-foreground">Sender Email</strong> you set (including Gmail) for
+            Test Connection, Test &amp; send, and campaigns. Your provider may still reject some
+            From addresses — that is their policy, not an Inbox Flow block.
           </div>
         </div>
         <Button className="w-full sm:w-auto" variant="outline" onClick={() => void exportSmtp()} disabled={busyExport}>

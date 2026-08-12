@@ -358,9 +358,6 @@ async function sendSmtp(
 ): Promise<SendResult> {
   const host = config.host || 'localhost';
   const resolved = resolveSmtpFromEmail(payload.from, config);
-  if (resolved.blockReason) {
-    return { success: false, error: resolved.blockReason, provider: 'SMTP' };
-  }
   const fromEmail = resolved.from || 'noreply@localhost';
   const from = formatFromHeader(fromEmail, payload.fromName || config.fromName);
   const text = (payload.text && payload.text.trim()) || htmlToPlainText(payload.html || '');
