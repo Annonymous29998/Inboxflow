@@ -8,6 +8,7 @@ import {
   verifyClickRedirect,
   verifyUnsubscribe,
 } from '../../utils/signed-urls.js';
+import { classifyAutomatedTracking, humanTrackingEventFilter } from '../../utils/tracking-bot-filter.js';
 
 const TRANSPARENT_GIF = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
@@ -69,27 +70,41 @@ export async function trackingRoutes(app: FastifyInstance) {
   // Open pixel
   app.get('/o/:campaignId/:contactId.gif', async (request, reply) => {
     const { campaignId, contactId } = request.params as { campaignId: string; contactId: string };
-    const ua = parseUa(request.headers['user-agent']);
+    const rawUa = String(request.headers['user-agent'] || '');
+    const ua = parseUa(rawUa);
+    const auto = classifyAutomatedTracking(rawUa);
 
     const contactIdClean = contactId.replace(/\.gif$/, '');
 
     try {
-      const existing = await prisma.trackingEvent.findFirst({
-        where: { campaignId, contactId: contactIdClean, type: 'OPENED' },
-      });
+      const metadata = auto.automated
+        ? { source: 'automated', reason: auto.reason ?? 'bot_user_agent' }
+        : undefined;
+
+      const existingHumanOpen = auto.automated
+        ? null
+        : await prisma.trackingEvent.findFirst({
+            where: {
+              campaignId,
+              contactId: contactIdClean,
+              type: 'OPENED',
+              ...humanTrackingEventFilter(),
+            },
+          });
 
       await prisma.trackingEvent.create({
         data: {
           type: 'OPENED',
           campaignId,
           contactId: contactIdClean,
-          userAgent: request.headers['user-agent'],
+          userAgent: rawUa,
           ipAddress: request.ip,
+          metadata,
           ...ua,
         },
       });
 
-      if (!existing) {
+      if (!auto.automated && !existingHumanOpen) {
         await prisma.campaign.update({
           where: { id: campaignId },
           data: { openedCount: { increment: 1 } },
@@ -118,12 +133,25 @@ export async function trackingRoutes(app: FastifyInstance) {
       return reply.status(400).type('text/plain').send('Invalid or unsigned tracking link');
     }
 
-    const ua = parseUa(request.headers['user-agent']);
+    const rawUa = String(request.headers['user-agent'] || '');
+    const ua = parseUa(rawUa);
+    const auto = classifyAutomatedTracking(rawUa);
 
     try {
-      const existingClick = await prisma.trackingEvent.findFirst({
-        where: { campaignId, contactId, type: 'CLICKED' },
-      });
+      const metadata = auto.automated
+        ? { source: 'automated', reason: auto.reason ?? 'bot_user_agent' }
+        : undefined;
+
+      const existingHumanClick = auto.automated
+        ? null
+        : await prisma.trackingEvent.findFirst({
+            where: {
+              campaignId,
+              contactId,
+              type: 'CLICKED',
+              ...humanTrackingEventFilter(),
+            },
+          });
 
       await prisma.trackingEvent.create({
         data: {
@@ -131,23 +159,26 @@ export async function trackingRoutes(app: FastifyInstance) {
           campaignId,
           contactId,
           url,
-          userAgent: request.headers['user-agent'],
+          userAgent: rawUa,
           ipAddress: request.ip,
+          metadata,
           ...ua,
         },
       });
 
-      if (!existingClick) {
+      if (!auto.automated && !existingHumanClick) {
         await prisma.campaign.update({
           where: { id: campaignId },
           data: { clickedCount: { increment: 1 } },
         });
       }
 
-      await prisma.campaignRecipient.updateMany({
-        where: { campaignId, contactId },
-        data: { clickedAt: new Date(), status: 'CLICKED' },
-      });
+      if (!auto.automated) {
+        await prisma.campaignRecipient.updateMany({
+          where: { campaignId, contactId },
+          data: { clickedAt: new Date(), status: 'CLICKED' },
+        });
+      }
     } catch (e) {
       console.error('Click tracking error', e);
     }

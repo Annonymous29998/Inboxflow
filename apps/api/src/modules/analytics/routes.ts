@@ -3,6 +3,12 @@ import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { deliveredRecipientFilter } from '../campaigns/recipient-stats.js';
+import {
+  countHumanClicks,
+  countHumanOpens,
+  humanClickCountByContact,
+  humanOpenCountByContact,
+} from '../../services/tracking/recount.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
 // Eliminates repeated identical DB calls on fast page refreshes (10-second TTL).
@@ -255,7 +261,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       const where = { campaignId: id, ...statusFilter, ...searchFilter };
 
-      const [recipients, total, failedLive, deliveredLive] = await Promise.all([
+      const [recipients, total, failedLive, deliveredLive, humanOpened, humanClicked] = await Promise.all([
         prisma.campaignRecipient.findMany({
           where,
           include: {
@@ -268,32 +274,23 @@ export async function analyticsRoutes(app: FastifyInstance) {
         prisma.campaignRecipient.count({ where }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
+        countHumanOpens(id),
+        countHumanClicks(id),
       ]);
 
-      // Get per-contact open/click counts from tracking events
       const contactIds = recipients.map((r) => r.contactId).filter(Boolean);
-      const [openCounts, clickCounts] = await Promise.all([
-        prisma.trackingEvent.groupBy({
-          by: ['contactId'],
-          where: { campaignId: id, type: 'OPENED', contactId: { in: contactIds } },
-          _count: { _all: true },
-        }),
-        prisma.trackingEvent.groupBy({
-          by: ['contactId'],
-          where: { campaignId: id, type: 'CLICKED', contactId: { in: contactIds } },
-          _count: { _all: true },
-        }),
+      const [openMap, clickMap] = await Promise.all([
+        humanOpenCountByContact(id, contactIds),
+        humanClickCountByContact(id, contactIds),
       ]);
-
-      const openMap = Object.fromEntries(openCounts.map((e) => [e.contactId, e._count._all]));
-      const clickMap = Object.fromEntries(clickCounts.map((e) => [e.contactId, e._count._all]));
 
       return reply.send({
         summary: {
           sent: campaign.totalRecipients || campaign.sentCount,
           delivered: deliveredLive || campaign.deliveredCount || campaign.sentCount,
-          opened: campaign.openedCount,
-          clicked: campaign.clickedCount,
+          opened: humanOpened,
+          clicked: humanClicked,
           failed: failedLive || campaign.failedCount || 0,
         },
         recipients: recipients.map((r) => ({
@@ -302,11 +299,11 @@ export async function analyticsRoutes(app: FastifyInstance) {
           name: [r.contact.firstName, r.contact.lastName].filter(Boolean).join(' ') || null,
           status: r.status,
           delivered: !!r.deliveredAt,
-          opened: !!r.openedAt,
-          clicked: !!r.clickedAt,
+          opened: (openMap[r.contactId] ?? 0) > 0,
+          clicked: (clickMap[r.contactId] ?? 0) > 0,
           bounced: !!r.bouncedAt,
-          openCount: openMap[r.contactId] ?? (r.openedAt ? 1 : 0),
-          clickCount: clickMap[r.contactId] ?? (r.clickedAt ? 1 : 0),
+          openCount: openMap[r.contactId] ?? 0,
+          clickCount: clickMap[r.contactId] ?? 0,
           sentAt: r.sentAt,
           openedAt: r.openedAt,
           clickedAt: r.clickedAt,

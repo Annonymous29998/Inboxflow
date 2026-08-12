@@ -16,6 +16,7 @@ import {
   sumDeliveredFromCounts,
 } from './recipient-stats.js';
 import { buildCampaignSendStatus } from './send-status-builder.js';
+import { recountCampaignEngagement } from '../../services/tracking/recount.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -1138,6 +1139,19 @@ export async function campaignRoutes(app: FastifyInstance) {
         pendingCount: queued,
         queueSettings: campaign.queueSettings,
       });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/:id/recount-engagement', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+      const result = await recountCampaignEngagement(id);
+      return reply.send({ success: true, ...result });
     } catch (error) {
       return sendError(reply, error);
     }

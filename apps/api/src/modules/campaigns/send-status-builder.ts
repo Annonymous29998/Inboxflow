@@ -1,5 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import { deliveredRecipientFilter } from './recipient-stats.js';
+import { isHumanTrackingEvent } from '../../utils/tracking-bot-filter.js';
+import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
 
 export type SendActivityRow = {
   email: string;
@@ -23,6 +25,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     recentDelivered,
     openEvents,
     clickEvents,
+    humanOpened,
+    humanClicked,
   ] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } }),
@@ -43,14 +47,16 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       where: { campaignId, type: 'OPENED' },
       include: { contact: { select: { email: true } } },
       orderBy: { createdAt: 'desc' },
-      take: 40,
+      take: 80,
     }),
     prisma.trackingEvent.findMany({
       where: { campaignId, type: 'CLICKED' },
       include: { contact: { select: { email: true } } },
       orderBy: { createdAt: 'desc' },
-      take: 40,
+      take: 80,
     }),
+    countHumanOpens(campaignId),
+    countHumanClicks(campaignId),
   ]);
 
   const activity: SendActivityRow[] = [
@@ -66,13 +72,19 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       error: r.error || 'Send failed',
       at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
     })),
-    ...openEvents.map((e) => ({
+    ...openEvents
+      .filter((e) => isHumanTrackingEvent(e.userAgent, e.metadata))
+      .slice(0, 40)
+      .map((e) => ({
       email: e.contact?.email || 'unknown',
       status: 'OPENED' as const,
       error: null,
       at: e.createdAt.toISOString(),
     })),
-    ...clickEvents.map((e) => ({
+    ...clickEvents
+      .filter((e) => isHumanTrackingEvent(e.userAgent, e.metadata))
+      .slice(0, 40)
+      .map((e) => ({
       email: e.contact?.email || 'unknown',
       status: 'CLICKED' as const,
       error: null,
@@ -98,8 +110,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     sentCount,
     failedCount,
     pendingCount,
-    openedCount: campaign.openedCount,
-    clickedCount: campaign.clickedCount,
+    openedCount: humanOpened,
+    clickedCount: humanClicked,
     completedAt: campaign.completedAt,
     lastEmail: activity[0]?.email || null,
     recentSent,
