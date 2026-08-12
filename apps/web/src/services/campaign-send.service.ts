@@ -162,7 +162,7 @@ export const campaignSendService = {
     );
   },
 
-  async function cancel(campaignId: string) {
+  async cancel(campaignId: string) {
     await api.post(`/api/campaigns/${campaignId}/cancel`);
   },
 
