@@ -503,31 +503,35 @@ export async function campaignRoutes(app: FastifyInstance) {
       }
 
       const { subjectPool, fromNamePool, ...rest } = body;
+      const data: Prisma.CampaignUpdateInput = {
+        ...rest,
+        editorJson: body.editorJson as object | undefined,
+        queueSettings: body.queueSettings === undefined ? undefined : (body.queueSettings as object),
+        subjectPool:
+          subjectPool === undefined
+            ? undefined
+            : subjectPool === null
+              ? Prisma.DbNull
+              : (subjectPool as Prisma.InputJsonValue),
+        fromNamePool:
+          fromNamePool === undefined
+            ? undefined
+            : fromNamePool === null
+              ? Prisma.DbNull
+              : (fromNamePool as Prisma.InputJsonValue),
+        scheduledAt: body.scheduledAt
+          ? new Date(body.scheduledAt)
+          : body.scheduledAt === null
+            ? null
+            : undefined,
+      };
+      // Edits reset draft campaigns; never downgrade an active send to DRAFT.
+      if (!['SENDING', 'SENT', 'PAUSED', 'CANCELLED'].includes(existing.status)) {
+        data.status = 'DRAFT';
+      }
       const campaign = await prisma.campaign.update({
         where: { id },
-        data: {
-          ...rest,
-          editorJson: body.editorJson as object | undefined,
-          queueSettings: body.queueSettings === undefined ? undefined : (body.queueSettings as object),
-          subjectPool:
-            subjectPool === undefined
-              ? undefined
-              : subjectPool === null
-                ? Prisma.DbNull
-                : (subjectPool as Prisma.InputJsonValue),
-          fromNamePool:
-            fromNamePool === undefined
-              ? undefined
-              : fromNamePool === null
-                ? Prisma.DbNull
-                : (fromNamePool as Prisma.InputJsonValue),
-          scheduledAt: body.scheduledAt
-            ? new Date(body.scheduledAt)
-            : body.scheduledAt === null
-              ? null
-              : undefined,
-          status: 'DRAFT',
-        },
+        data,
       });
       return reply.send({ campaign });
     } catch (error) {
@@ -999,7 +1003,8 @@ export async function campaignRoutes(app: FastifyInstance) {
       await prisma.campaign.update({
         where: { id },
         data: {
-          status: 'READY',
+          status: 'SENDING',
+          sentAt: campaign.sentAt ?? new Date(),
           deliverabilityScore: report.score,
           analysisReport: report as object,
         },
