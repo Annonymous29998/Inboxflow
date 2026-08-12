@@ -64,8 +64,9 @@ export function smtpHostAllowsConsumerFrom(host: string, fromDomain: string): bo
 }
 
 /**
- * Resolve From for SMTP. Prefer the requested campaign/profile From.
- * Do not hard-block free-mail From — let the SMTP provider accept or reject.
+ * Kestrel-style From: the SMTP profile Sender Email is what we send as.
+ * Campaign sender name can still change the display name. Campaign sender email
+ * is only used when it is on the same domain as the profile From.
  */
 export function resolveSmtpFromEmail(
   requestedFrom: string | undefined,
@@ -73,8 +74,28 @@ export function resolveSmtpFromEmail(
 ): { from: string; adjusted: boolean; blockReason?: string } {
   const cfgFrom = String(config.fromEmail || config.user || '').trim();
   const requested = String(requestedFrom || '').trim();
+  const host = String(config.host || '');
+
+  if (cfgFrom.includes('@')) {
+    if (!requested || requested.toLowerCase() === cfgFrom.toLowerCase()) {
+      return { from: cfgFrom, adjusted: false };
+    }
+    const reqDom = emailDomain(requested);
+    const cfgDom = emailDomain(cfgFrom);
+    const sameDomain = Boolean(reqDom && cfgDom && reqDom === cfgDom);
+    const gmailViaGmail =
+      isConsumerMailDomain(reqDom) && smtpHostAllowsConsumerFrom(host, reqDom);
+    if (sameDomain || gmailViaGmail) {
+      return { from: requested, adjusted: false };
+    }
+    return {
+      from: cfgFrom,
+      adjusted: true,
+      blockReason: `Using SMTP profile From ${cfgFrom} (campaign had ${requested})`,
+    };
+  }
+
   if (requested) return { from: requested, adjusted: false };
-  if (cfgFrom.includes('@')) return { from: cfgFrom, adjusted: true };
   return { from: cfgFrom || 'noreply@localhost', adjusted: false };
 }
 
@@ -99,6 +120,11 @@ export function explainSmtpSendFailure(raw: string): string {
   if (/550|sender.*reject|not owned|not allowed/i.test(msg)) {
     return (
       `${msg} — Sender address not allowed by SMTP. Use the From email your provider authorized.`
+    );
+  }
+  if (/write unknown|econnreset|epipe|socket hang up|econnaborted|etimedout/i.test(msg)) {
+    return (
+      `${msg} — SMTP closed the connection while the message was uploading (often STARTTLS forced on a plain relay, or the provider dropped the socket). Inbox Flow will retry. If it keeps failing, set Encryption to None for this host (akoneseo) or STARTTLS only if they require it.`
     );
   }
   return msg;

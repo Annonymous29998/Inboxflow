@@ -100,7 +100,60 @@ function toBool(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
-export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
+/**
+ * Kestrel-style: honor the SMTP profile Encryption field exactly.
+ * SSL/TLS = implicit TLS on connect (SMTP_SSL). STARTTLS = upgrade after EHLO.
+ * None = plain TCP, no STARTTLS. "Allow insecure TLS" only skips cert checks.
+ */
+export function smtpOptionsFromProfile(config: SmtpTestInput | ProviderConfig) {
+  const host = String(config.host || '').trim();
+  const encryption = String((config as SmtpTestInput).encryption || '').toUpperCase();
+  const port = Number(
+    config.port || (encryption === 'SSL' || encryption === 'TLS' ? 465 : 587),
+  );
+  const allowInsecureCert = toBool((config as SmtpTestInput).ignoreTLS, false);
+  const user = config.user ? String(config.user) : '';
+  const pass = config.pass ? String(config.pass) : '';
+
+  let secure = false;
+  let requireTLS = false;
+  let disableStartTls = false;
+
+  if (encryption === 'SSL' || encryption === 'TLS') {
+    secure = true;
+    requireTLS = false;
+    disableStartTls = false;
+  } else if (encryption === 'NONE') {
+    secure = false;
+    requireTLS = false;
+    disableStartTls = true;
+  } else if (encryption === 'STARTTLS') {
+    secure = false;
+    requireTLS = true;
+    disableStartTls = false;
+  } else {
+    secure = toBool((config as SmtpTestInput).secure, port === 465);
+    requireTLS = toBool((config as SmtpTestInput).requireTLS, !secure);
+    disableStartTls = !secure && !requireTLS;
+  }
+
+  return {
+    host,
+    port,
+    secure,
+    requireTLS: disableStartTls ? false : requireTLS,
+    ignoreTLS: disableStartTls,
+    allowInsecureCert,
+    user,
+    pass,
+    encryption: encryption || (secure ? 'SSL' : requireTLS ? 'STARTTLS' : 'NONE'),
+  };
+}
+
+export function createSmtpTransport(
+  config: SmtpTestInput | ProviderConfig,
+  timeouts?: { connectionTimeout?: number; greetingTimeout?: number; socketTimeout?: number },
+) {
   const host = String(config.host || '').trim();
   if (!host) {
     throw new Error('SMTP host is required');
@@ -110,37 +163,22 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
     return nodemailer.createTransport({ jsonTransport: true });
   }
 
-  const port = Number(config.port || 587);
-  const secure = toBool(config.secure, port === 465);
-  const user = config.user ? String(config.user) : '';
-  const pass = config.pass ? String(config.pass) : '';
-  // Form flag "ignoreTLS" / Allow insecure TLS means: accept mismatched/self-signed certs.
-  // It must NOT set nodemailer's ignoreTLS (that disables STARTTLS → 530 Authentication required on Bulko).
-  const allowInsecureCert = toBool((config as SmtpTestInput).ignoreTLS, false);
-  const encryption = String((config as SmtpTestInput).encryption || '').toUpperCase();
-  const requireTLS = toBool(
-    (config as SmtpTestInput).requireTLS,
-    !secure && encryption !== 'NONE',
-  );
-  // Encryption=None: do not upgrade to STARTTLS (needed for providers like akoneseo.com).
-  const disableStartTls = encryption === 'NONE' || (!secure && !requireTLS);
+  const opts = smtpOptionsFromProfile(config);
 
   return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    requireTLS: disableStartTls ? false : requireTLS,
-    ignoreTLS: disableStartTls,
-    auth: user ? { user, pass } : undefined,
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
+    host: opts.host,
+    port: opts.port,
+    secure: opts.secure,
+    requireTLS: opts.requireTLS,
+    ignoreTLS: opts.ignoreTLS,
+    auth: opts.user ? { user: opts.user, pass: opts.pass } : undefined,
+    connectionTimeout: timeouts?.connectionTimeout ?? 20000,
+    greetingTimeout: timeouts?.greetingTimeout ?? 20000,
+    socketTimeout: timeouts?.socketTimeout ?? 120000,
     tls: {
-      // Skip hostname/CA checks when provider cert doesn't match (e.g. Bulko → slipjar.app)
-      rejectUnauthorized: !allowInsecureCert,
-      servername: host,
-      // Some ESP relays use weak DH; allow when insecure TLS is enabled or TLS is off.
-      ...(allowInsecureCert || disableStartTls
+      rejectUnauthorized: !opts.allowInsecureCert,
+      servername: opts.host,
+      ...(opts.allowInsecureCert || opts.ignoreTLS
         ? { minVersion: 'TLSv1' as const, ciphers: 'DEFAULT:@SECLEVEL=0' }
         : {}),
     },
@@ -402,39 +440,50 @@ async function sendSmtp(
     return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
   }
 
-  const basePort = Number(config.port || 465);
-  const baseSecure = toBool(config.secure, basePort === 465);
-  const attempts = options.portFailover
-    ? [
-        { port: basePort, secure: baseSecure },
-        { port: 465, secure: true },
-        { port: 587, secure: false },
-      ]
-    : [{ port: basePort, secure: baseSecure }];
+  const profile = smtpOptionsFromProfile(config);
+  const attempts: Array<SmtpTestInput | ProviderConfig> = [{ ...config }];
 
-  const seen = new Set<string>();
-  const uniqueAttempts = attempts.filter((attempt) => {
-    const key = `${attempt.port}:${attempt.secure}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Default Hostinger-style only: try the other common port after a connection failure.
+  // Never rewrite Encryption=None (Kestrel sends plain if the profile says None).
+  if (options.portFailover && profile.encryption !== 'NONE') {
+    if (profile.port !== 465) {
+      attempts.push({ ...config, port: '465', encryption: 'SSL', secure: 'true', requireTLS: 'false' });
+    }
+    if (profile.port !== 587) {
+      attempts.push({
+        ...config,
+        port: '587',
+        encryption: 'STARTTLS',
+        secure: 'false',
+        requireTLS: 'true',
+      });
+    }
+  }
+
+  const isTransient = (msg: string) =>
+    /write unknown|econnreset|epipe|socket hang up|econnaborted|etimedout|greeting never received/i.test(
+      msg,
+    );
 
   let lastError = 'SMTP send failed';
-  for (const attempt of uniqueAttempts) {
-    try {
-      const transport = createSmtpTransport({
-        ...config,
-        port: attempt.port,
-        secure: attempt.secure,
-        requireTLS: !attempt.secure && attempt.port === 587,
-      });
-      const info = await transport.sendMail(mail);
-      return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
-    } catch (error) {
-      lastError = explainSmtpSendFailure(
-        error instanceof Error ? error.message : 'SMTP send failed',
-      );
+  for (let i = 0; i < attempts.length; i += 1) {
+    const attemptCfg = attempts[i]!;
+    for (let tryN = 0; tryN < 2; tryN += 1) {
+      const transport = createSmtpTransport(attemptCfg, { socketTimeout: 120000 });
+      try {
+        const info = await transport.sendMail(mail);
+        transport.close?.();
+        return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
+      } catch (error) {
+        transport.close?.();
+        const raw = error instanceof Error ? error.message : 'SMTP send failed';
+        lastError = explainSmtpSendFailure(raw);
+        if (tryN === 0 && isTransient(raw)) {
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
+        break;
+      }
     }
   }
 

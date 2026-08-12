@@ -294,22 +294,11 @@ async function dispatchCampaign(campaignId: string) {
 
   const queueSettings = (campaign.queueSettings || {}) as {
     batchSize?: number;
-    batchPauseMs?: number;
-    betweenEmailMs?: number;
   };
   const batchSize = Math.max(1, Number(queueSettings.batchSize || 5));
-  const batchPauseMs = Math.max(0, Number(queueSettings.batchPauseMs ?? 30_000));
-  const betweenEmailMs = Math.max(0, Number(queueSettings.betweenEmailMs ?? 4_000));
 
-  /** ±40% jitter so gaps aren't a fixed bot rhythm. */
-  const humanDelay = (baseMs: number) => {
-    if (baseMs <= 0) return 0;
-    const factor = 0.6 + Math.random() * 0.8;
-    return Math.max(250, Math.round(baseMs * factor));
-  };
-
-  // Enqueue every recipient immediately. Throttle only when sending (see processEmailJob).
-  // Sleeping here made the UI sit at 0/N for minutes and cancel/restart emptied the queue.
+  // Enqueue only recipients that still need sending. Never reset SENT back to QUEUED
+  // (Retry failed / Resume used to re-dispatch the whole list and could duplicate sends).
   for (let i = 0; i < contacts.length; i += batchSize) {
     const live = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -320,28 +309,41 @@ async function dispatchCampaign(campaignId: string) {
     }
 
     const batch = contacts.slice(i, i + batchSize);
-    const recipients = await Promise.all(
-      batch.map((contact) =>
-        prisma.campaignRecipient.upsert({
-          where: {
-            campaignId_contactId: { campaignId, contactId: contact.id },
-          },
-          create: {
-            campaignId,
-            contactId: contact.id,
-            status: 'QUEUED',
-          },
-          update: { status: 'QUEUED', error: null },
-        }),
-      ),
-    );
-
-    for (let idx = 0; idx < recipients.length; idx += 1) {
-      const r = recipients[idx]!;
+    for (let idx = 0; idx < batch.length; idx += 1) {
       const contact = batch[idx]!;
+      const existing = await prisma.campaignRecipient.findUnique({
+        where: {
+          campaignId_contactId: { campaignId, contactId: contact.id },
+        },
+      });
+
+      if (
+        existing &&
+        ['SENT', 'DELIVERED', 'OPENED', 'CLICKED', 'FAILED', 'BOUNCED', 'COMPLAINED', 'UNSUBSCRIBED'].includes(
+          existing.status,
+        )
+      ) {
+        continue;
+      }
+
+      const recipient =
+        existing?.status === 'QUEUED'
+          ? existing
+          : await prisma.campaignRecipient.upsert({
+              where: {
+                campaignId_contactId: { campaignId, contactId: contact.id },
+              },
+              create: {
+                campaignId,
+                contactId: contact.id,
+                status: 'QUEUED',
+              },
+              update: { status: 'QUEUED', error: null },
+            });
+
       await pgmqSend<EmailJobData>('email-send', {
         campaignId,
-        recipientId: r.id,
+        recipientId: recipient.id,
         contactId: contact.id,
         to: contact.email,
         providerId: campaign.providerId,
@@ -358,6 +360,15 @@ async function processEmailJob(data: EmailJobData) {
     select: { status: true, organizationId: true, totalRecipients: true, queueSettings: true, sentCount: true },
   });
   if (!campaign || ['PAUSED', 'CANCELLED'].includes(campaign.status)) {
+    return;
+  }
+
+  const recipient = await prisma.campaignRecipient.findUnique({
+    where: { id: recipientId },
+    select: { status: true },
+  });
+  // Skip already-finished rows (duplicate queue messages after pause/resume/retry).
+  if (!recipient || recipient.status !== 'QUEUED') {
     return;
   }
 

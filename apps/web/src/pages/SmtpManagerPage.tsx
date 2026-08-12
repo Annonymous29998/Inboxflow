@@ -503,7 +503,7 @@ export function SmtpManagerPage() {
       setForm((f) => ({
         ...f,
         port: String(detected.port),
-        encryption: detected.encryption === 'NONE' ? 'STARTTLS' : detected.encryption,
+        encryption: detected.encryption,
       }));
       setLastTestOk(false);
       toast.success('TLS auto-detected', detected.hint);
@@ -747,9 +747,6 @@ export function SmtpManagerPage() {
                       setForm({ ...form, port: e.target.value });
                       setLastTestOk(false);
                     }}
-                    onBlur={() => {
-                      if (form.port) void autoDetectTls();
-                    }}
                     placeholder="Any port — 587, 465, 2525…"
                   />
                   <Button type="button" variant="outline" size="sm" onClick={() => void autoDetectTls()} disabled={busyDetect}>
@@ -769,6 +766,9 @@ export function SmtpManagerPage() {
                   <option value="TLS">TLS</option>
                   <option value="NONE">None (plain — when provider says Tls/Ssl = no)</option>
                 </Select>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Campaigns use this exact encryption, host, port, and From — same as Test &amp; send.
+                </p>
               </div>
               <div>
                 <Label>Label (optional)</Label>

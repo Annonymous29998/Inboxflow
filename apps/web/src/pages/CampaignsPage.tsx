@@ -355,6 +355,7 @@ export function CampaignEditorPage() {
     previewText: '',
     senderName: '',
     senderEmail: '',
+    providerId: null,
     trackOpens: true,
     trackClicks: true,
   };
@@ -428,17 +429,24 @@ export function CampaignEditorPage() {
   );
 
   const selectedProvider = useMemo(
-    () => providers.find((p) => p.id === campaign.providerId) || providers.find((p) => p.isDefault) || providers[0],
+    () =>
+      campaign.providerId
+        ? providers.find((p) => p.id === campaign.providerId)
+        : undefined,
     [providers, campaign.providerId],
   );
 
   const fromName = campaign.senderName || selectedProvider?.fromName || '';
-  const fromEmail = campaign.senderEmail || selectedProvider?.fromEmail || '';
-  const fromLabel = fromEmail
-    ? fromName
-      ? `${fromName} <${fromEmail}>`
-      : fromEmail
-    : fromName || 'Set sender email';
+  const fromEmail = campaign.providerId
+    ? campaign.senderEmail || selectedProvider?.fromEmail || ''
+    : '';
+  const fromLabel = !campaign.providerId
+    ? `Auto-rotate · ${providers.map((p) => p.fromEmail || p.name).filter(Boolean).join(' ↔ ') || 'all active SMTPs'}`
+    : fromEmail
+      ? fromName
+        ? `${fromName} <${fromEmail}>`
+        : fromEmail
+      : fromName || 'Set sender email';
 
   const deliverability = useCampaignDeliverability(
     campaign.subject || '',
@@ -456,11 +464,7 @@ export function CampaignEditorPage() {
     templateService.list().then(setTemplates).catch(console.error);
     smtpService.list().then((active) => {
       setProviders(active.filter((p) => p.isActive));
-      setCampaign((c) => {
-        if (c.providerId) return c;
-        const def = active.find((p) => p.isDefault) || active[0];
-        return def ? { ...c, providerId: def.id } : c;
-      });
+      // Never auto-pin an SMTP — null means Auto-rotate for every campaign.
     }).catch(console.error);
     if (!isNew && id) {
       setHydrated(false);
@@ -623,7 +627,7 @@ export function CampaignEditorPage() {
         plainTextContent,
         editorJson: { blocks },
         queueSettings,
-        providerId: campaign.providerId,
+        providerId: campaign.providerId ?? null,
         listId: campaign.listId || null,
         templateId: campaign.templateId || null,
         subjectPool: parsePool(subjectPoolText),
@@ -640,7 +644,7 @@ export function CampaignEditorPage() {
           senderName: campaign.senderName,
           senderEmail: campaign.senderEmail,
           listId: campaign.listId,
-          providerId: campaign.providerId,
+          providerId: campaign.providerId ?? null,
           trackOpens: campaign.trackOpens,
           trackClicks: campaign.trackClicks,
         });
@@ -1508,12 +1512,16 @@ export function CampaignEditorPage() {
                   setCampaign({
                     ...campaign,
                     providerId: nextId,
-                    senderName: campaign.senderName || p?.fromName || '',
-                    senderEmail: campaign.senderEmail || p?.fromEmail || '',
+                    // Auto-rotate: each SMTP uses its own profile From (Kestrel-style).
+                    // Pinned SMTP: fill From from that profile.
+                    senderName: nextId
+                      ? campaign.senderName || p?.fromName || ''
+                      : campaign.senderName || '',
+                    senderEmail: nextId ? p?.fromEmail || '' : '',
                   });
                 }}
               >
-                <option value="rotate">Auto-rotate (all active SMTPs)</option>
+                <option value="rotate">Auto-rotate (all active SMTPs) — default</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -1521,6 +1529,17 @@ export function CampaignEditorPage() {
                   </option>
                 ))}
               </Select>
+              {!campaign.providerId ? (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Default for every campaign. Round-robins {providers.length || 0} active SMTPs; each
+                  email uses that profile&apos;s host, encryption, and From. Pick one SMTP below only
+                  to pin.
+                </p>
+              ) : (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Pinned to one SMTP (others only as failover). Choose Auto-rotate to use all again.
+                </p>
+              )}
             </div>
             <div className="border border-border bg-background px-3 py-2 text-xs">
               <div className="uppercase tracking-wider text-accent">From preview</div>
@@ -1545,8 +1564,8 @@ export function CampaignEditorPage() {
                 placeholder={selectedProvider?.fromEmail || ''}
               />
               <p className="mt-1 text-[10px] text-muted-foreground">
-                Uses your active SMTP profile. Prefer a From on a domain your provider verified for
-                better inbox placement — some providers reject free mailboxes (@gmail.com, etc.).
+                Must match a From your SMTP authorized. Switching SMTP fills this from that profile.
+                @gmail.com through Brevo / SMTP Provider is dropped before they accept (no credits).
               </p>
             </div>
             <div>

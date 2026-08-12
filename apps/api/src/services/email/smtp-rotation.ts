@@ -204,7 +204,9 @@ export async function resolveRotatedProviders(input: {
 
   if (!eligible.length) return [];
 
-  if (!rotation.enabled && input.preferredProviderId) {
+  // Campaign pinned to one SMTP → that profile first, others only as failover.
+  // Auto-rotate (preferredProviderId null) → full pool with round_robin / weighted / etc.
+  if (input.preferredProviderId) {
     const preferred = eligible.find((p) => p.id === input.preferredProviderId);
     if (preferred) {
       return [preferred, ...eligible.filter((p) => p.id !== preferred.id)];
@@ -217,14 +219,7 @@ export async function resolveRotatedProviders(input: {
     );
   }
 
-  let working = eligible;
-  if (input.preferredProviderId && rotation.mode === 'failover') {
-    const preferred = eligible.find((p) => p.id === input.preferredProviderId);
-    if (preferred) {
-      working = [preferred, ...eligible.filter((p) => p.id !== preferred.id)];
-      return working;
-    }
-  }
+  const working = eligible;
 
   if (rotation.mode === 'weighted') {
     return weightedOrder(working);
@@ -232,6 +227,12 @@ export async function resolveRotatedProviders(input: {
 
   if (rotation.mode === 'performance') {
     return performanceOrder(working);
+  }
+
+  if (rotation.mode === 'failover') {
+    return [...working].sort(
+      (a, b) => Number(b.isDefault) - Number(a.isDefault) || b.priority - a.priority,
+    );
   }
 
   if (rotation.mode === 'round_robin') {
@@ -267,6 +268,6 @@ export function detectTlsFromPort(port: number | string): {
   const p = Number(port) || 587;
   if (p === 465) return { port: 465, encryption: 'SSL', secure: true };
   if (p === 587 || p === 2525) return { port: p, encryption: 'STARTTLS', secure: false };
-  if (p === 25) return { port: 25, encryption: 'STARTTLS', secure: false };
+  if (p === 25) return { port: 25, encryption: 'NONE', secure: false };
   return { port: p, encryption: p === 465 ? 'SSL' : 'STARTTLS', secure: p === 465 };
 }

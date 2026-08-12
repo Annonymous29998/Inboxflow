@@ -1189,6 +1189,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
       const { parseProviderConfig, sendViaProvider } = await import('../../services/email/providers.js');
+      const { resolveSmtpFromEmail } = await import('../../services/email/mail-headers.js');
       const { resolveRotatedProviders, parseRotationSettings } = await import(
         '../../services/email/smtp-rotation.js'
       );
@@ -1204,7 +1205,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (!provider) throw new AppError(400, 'No active SMTP provider');
 
       const cfg = parseProviderConfig(provider.config);
-      const fromEmail = campaign.senderEmail || cfg.fromEmail || cfg.user || '';
+      const fromEmail = resolveSmtpFromEmail(campaign.senderEmail || undefined, cfg).from;
       if (!fromEmail) throw new AppError(400, 'Sender email is required');
 
       const fromNames =

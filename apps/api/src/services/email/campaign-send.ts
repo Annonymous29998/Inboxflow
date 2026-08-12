@@ -2,6 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
 import { decrypt } from '../../utils/crypto.js';
 import { parseProviderConfig, sendViaProvider } from './providers.js';
+import { resolveSmtpFromEmail } from './mail-headers.js';
 import {
   incrementHourlySent,
   incrementMinuteSent,
@@ -192,14 +193,11 @@ export async function sendCampaignEmailToRecipient(input: {
   let lastError = 'Unknown error';
   for (const p of providers) {
     const cfg = parseProviderConfig(p.config);
-    const fromName = String(fromNameBase || cfg.fromName || '').trim();
-    const fromEmail =
-      campaign.senderEmail ||
-      cfg.fromEmail ||
-      cfg.user ||
-      '';
+    const fromName = String(fromNameBase || cfg.fromName || campaign.senderName || '').trim();
+    const resolvedFrom = resolveSmtpFromEmail(campaign.senderEmail || undefined, cfg);
+    const fromEmail = resolvedFrom.from;
     if (!fromEmail) {
-      lastError = 'Sender email is required';
+      lastError = 'Sender email is required on the SMTP profile';
       continue;
     }
 

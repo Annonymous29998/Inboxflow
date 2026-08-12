@@ -47,6 +47,9 @@ function normalizeConfig(config: Record<string, string>): Record<string, string>
     } else if (enc === 'STARTTLS') {
       out.secure = 'false';
       out.requireTLS = 'true';
+    } else if (enc === 'NONE') {
+      out.secure = 'false';
+      out.requireTLS = 'false';
     }
   }
   return out;
@@ -137,9 +140,11 @@ export async function providerRoutes(app: FastifyInstance) {
         hint:
           detected.encryption === 'SSL'
             ? 'Port 465 typically uses implicit SSL/TLS'
-            : detected.port === 587 || detected.port === 2525
-              ? 'Port 587/2525 typically uses STARTTLS'
-              : 'Suggested defaults — verify with your provider',
+            : detected.encryption === 'NONE'
+              ? 'Port 25 is often plain (None). Override if your provider requires STARTTLS.'
+              : detected.port === 587 || detected.port === 2525
+                ? 'Port 587/2525 typically uses STARTTLS — keep None if your provider says Tls/Ssl = no'
+                : 'Suggested default only — keep the encryption your provider gave you',
       });
     } catch (error) {
       return sendError(reply, error);
