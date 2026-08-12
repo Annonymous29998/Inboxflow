@@ -9,6 +9,7 @@ import {
   humanClickCountByContact,
   humanOpenCountByContact,
 } from '../../services/tracking/recount.js';
+import { getCampaignLiveStats, getOrgLiveEngagement } from '../../services/campaigns/live-stats.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
 // Eliminates repeated identical DB calls on fast page refreshes (10-second TTL).
@@ -51,24 +52,13 @@ export async function analyticsRoutes(app: FastifyInstance) {
         totalContacts,
         activeCampaigns,
         scheduledCampaigns,
-        campaigns,
         domains,
-        recentCampaigns,
+        recentCampaignsRaw,
+        liveTotals,
       ] = await Promise.all([
         prisma.contact.count({ where: { organizationId: orgId, status: 'SUBSCRIBED' } }),
         prisma.campaign.count({ where: { organizationId: orgId, status: { in: ['SENDING', 'READY'] } } }),
         prisma.campaign.count({ where: { organizationId: orgId, status: 'SCHEDULED' } }),
-        prisma.campaign.findMany({
-          where: { organizationId: orgId, status: { in: ['SENT', 'SENDING'] } },
-          select: {
-            sentCount: true,
-            deliveredCount: true,
-            openedCount: true,
-            clickedCount: true,
-            bouncedCount: true,
-            complainedCount: true,
-          },
-        }),
         prisma.domain.findMany({ where: { organizationId: orgId } }),
         prisma.campaign.findMany({
           where: { organizationId: orgId },
@@ -79,29 +69,40 @@ export async function analyticsRoutes(app: FastifyInstance) {
             name: true,
             status: true,
             subject: true,
-            sentCount: true,
-            openedCount: true,
-            clickedCount: true,
+            totalRecipients: true,
             bouncedCount: true,
             deliverabilityScore: true,
             sentAt: true,
             updatedAt: true,
           },
         }),
+        getOrgLiveEngagement(orgId),
       ]);
 
-      const totals = campaigns.reduce(
-        (acc, c) => {
-          acc.sent += c.sentCount;
-          acc.delivered += c.deliveredCount || c.sentCount;
-          acc.opened += c.openedCount;
-          acc.clicked += c.clickedCount;
-          acc.bounced += c.bouncedCount;
-          acc.complained += c.complainedCount;
-          return acc;
-        },
-        { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, complained: 0 },
+      const recentCampaigns = await Promise.all(
+        recentCampaignsRaw.map(async (c) => {
+          const live = await getCampaignLiveStats(c.id, c.totalRecipients);
+          return {
+            ...c,
+            sentCount: live.sentCount,
+            deliveredCount: live.deliveredCount,
+            failedCount: live.failedCount,
+            pendingCount: live.pendingCount,
+            openedCount: live.openedCount,
+            clickedCount: live.clickedCount,
+            bouncedCount: live.bouncedCount || c.bouncedCount,
+          };
+        }),
       );
+
+      const totals = {
+        sent: liveTotals.sent,
+        delivered: liveTotals.delivered,
+        opened: liveTotals.opened,
+        clicked: liveTotals.clicked,
+        bounced: liveTotals.bounced,
+        complained: liveTotals.complained,
+      };
 
       const rate = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 10000) / 100 : 0);
 

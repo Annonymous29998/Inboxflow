@@ -39,6 +39,8 @@ type DashboardData = {
     status: string;
     subject: string | null;
     sentCount: number;
+    pendingCount?: number;
+    totalRecipients?: number;
     openedCount: number;
     clickedCount: number;
     deliverabilityScore: number | null;
@@ -51,13 +53,27 @@ export function DashboardPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = () =>
     api
       .get<DashboardData>('/api/analytics/dashboard')
       .then(setData)
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard'))
       .finally(() => setLoading(false));
+
+  useEffect(() => {
+    void load();
   }, []);
+
+  useEffect(() => {
+    const live =
+      (data?.stats?.activeCampaigns ?? 0) > 0 ||
+      data?.recentCampaigns?.some((c) => c.status === 'SENDING' || c.status === 'PAUSED');
+    if (!live) return;
+    const id = window.setInterval(() => {
+      api.get<DashboardData>('/api/analytics/dashboard').then(setData).catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [data?.stats?.activeCampaigns, data?.recentCampaigns]);
 
   const stats = data?.stats;
 
@@ -88,7 +104,7 @@ export function DashboardPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <h1 className="page-title">Dashboard</h1>
-          <p className="page-sub">Performance overview and deliverability health</p>
+          <p className="page-sub">Live sent/delivered from queue · opens/clicks verified (no bot noise)</p>
         </div>
         <Link
           to="/app/campaigns/new"
@@ -158,11 +174,26 @@ export function DashboardPage() {
                     <div className="text-xs text-ink-muted truncate max-w-xs">{c.subject}</div>
                   </td>
                   <td>
-                    <Badge tone={c.status === 'SENT' ? 'success' : c.status === 'DRAFT' ? 'neutral' : 'info'}>
+                    <Badge
+                      tone={
+                        c.status === 'SENT'
+                          ? 'success'
+                          : c.status === 'SENDING'
+                            ? 'info'
+                            : c.status === 'DRAFT'
+                              ? 'neutral'
+                              : 'info'
+                      }
+                    >
                       {c.status}
                     </Badge>
                   </td>
-                  <td>{c.sentCount}</td>
+                  <td>
+                    {c.sentCount}
+                    {c.status === 'SENDING' && c.pendingCount != null && c.totalRecipients
+                      ? ` / ${c.totalRecipients}`
+                      : null}
+                  </td>
                   <td>{c.openedCount}</td>
                   <td>{c.clickedCount}</td>
                   <td>
