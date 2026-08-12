@@ -982,8 +982,19 @@ export async function campaignRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      await prisma.campaign.updateMany({
-        where: { id, organizationId: orgId, status: 'SENDING' },
+      const existing = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        select: { status: true },
+      });
+      if (!existing) throw new AppError(404, 'Campaign not found');
+      if (existing.status === 'PAUSED') {
+        return reply.send({ success: true, status: 'PAUSED' });
+      }
+      if (existing.status !== 'SENDING') {
+        throw new AppError(400, `Cannot pause campaign in status ${existing.status}`);
+      }
+      await prisma.campaign.update({
+        where: { id },
         data: { status: 'PAUSED' },
       });
       await drainCampaignJobs(id);
@@ -1109,11 +1120,15 @@ export async function campaignRoutes(app: FastifyInstance) {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
       await prisma.campaign.updateMany({
-        where: { id, organizationId: orgId, status: { in: ['SENDING', 'PAUSED', 'READY', 'SCHEDULED'] } },
+        where: {
+          id,
+          organizationId: orgId,
+          status: { in: ['SENDING', 'PAUSED', 'READY', 'SCHEDULED', 'FAILED', 'DRAFT'] },
+        },
         data: { status: 'CANCELLED', completedAt: new Date() },
       });
       await drainCampaignJobs(id);
-      return reply.send({ success: true });
+      return reply.send({ success: true, status: 'CANCELLED' });
     } catch (error) {
       return sendError(reply, error);
     }

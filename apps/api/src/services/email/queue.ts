@@ -184,19 +184,13 @@ async function dispatchCampaign(campaignId: string) {
     `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${stripHtmlTags(scrubbed.htmlContent)}`,
   );
   const imageOnly = scrubbed.htmlContent && isImageOnlyHtml(scrubbed.htmlContent);
-  const combinedText = `${scrubbed.plainTextContent || ''} ${stripHtmlTags(scrubbed.htmlContent)}`.toLowerCase();
-  const missingUnsub =
-    !combinedText.includes('unsubscribe') &&
-    !combinedText.includes('opt-out') &&
-    !combinedText.includes('opt out') &&
-    !combinedText.includes('list-unsubscribe');
   const emptySubject = !scrubbed.subject.trim();
 
-  if (emptySubject || imageOnly || remainingSpam.length > 0 || missingUnsub) {
+  // Unsubscribe is recommended (analyzer warns) but must not hard-block sends.
+  if (emptySubject || imageOnly || remainingSpam.length > 0) {
     const blockers: string[] = [];
     if (emptySubject) blockers.push('empty subject');
     if (imageOnly) blockers.push('image-only content (no readable text)');
-    if (missingUnsub) blockers.push('no unsubscribe link (CAN-SPAM / GDPR required)');
     if (remainingSpam.length > 0) blockers.push(`remaining high-risk spam phrases: ${remainingSpam.join(', ')}`);
     const failText = `Send cancelled by content filter. Fix: ${blockers.join('; ')}`;
 

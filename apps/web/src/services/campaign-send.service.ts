@@ -118,14 +118,6 @@ export const campaignSendService = {
   },
 
   async getSendStatus(campaignId: string): Promise<SendStatus> {
-    try {
-      if (edgeFunctionsEnabled) {
-        return await invokeEdgeFunction('send-campaign-email', { action: 'status', campaignId });
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     return api.get(`/api/campaigns/${campaignId}/send-status`);
   },
 
@@ -168,29 +160,15 @@ export const campaignSendService = {
     );
   },
 
-  async cancel(campaignId: string) {
+  async function cancel(campaignId: string) {
     await api.post(`/api/campaigns/${campaignId}/cancel`);
   },
 
   async pause(campaignId: string): Promise<{ success: boolean; status: string }> {
-    if (edgeFunctionsEnabled) {
-      try {
-        return await invokeEdgeFunction<{ success: boolean; status: string }>('send-campaign-email', { action: 'pause', campaignId });
-      } catch {
-        // fall through to API
-      }
-    }
     return api.post<{ success: boolean; status: string }>(`/api/campaigns/${campaignId}/pause`);
   },
 
   async resume(campaignId: string): Promise<{ success: boolean; status: string; pendingCount?: number }> {
-    if (edgeFunctionsEnabled) {
-      try {
-        return await invokeEdgeFunction<{ success: boolean; status: string; pendingCount?: number }>('send-campaign-email', { action: 'resume', campaignId });
-      } catch {
-        // fall through to API
-      }
-    }
     return api.post<{ success: boolean; status: string; pendingCount?: number }>(
       `/api/campaigns/${campaignId}/resume`,
     );

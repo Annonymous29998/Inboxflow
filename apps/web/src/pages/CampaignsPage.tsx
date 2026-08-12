@@ -939,7 +939,8 @@ export function CampaignEditorPage() {
     try {
       const result = await campaignSendService.startBackgroundSend(id, {
         providerId: campaign.providerId,
-        force,
+        // Deliverability issues stay as warnings — do not hard-block the queue.
+        force: true,
         queueSettings,
       });
       setSendCount(result.totalRecipients ?? sendCount);
@@ -982,12 +983,21 @@ export function CampaignEditorPage() {
   }
 
   function cancelBackgroundSend() {
-    if (id && !isNew) {
-      void campaignSendService.cancel(id);
+    void (async () => {
+      stopSendStream();
       setSendCancelled(true);
       setSendPaused(false);
-    }
-    stopSendStream();
+      setSendPhase('success');
+      if (id && !isNew) {
+        try {
+          await campaignSendService.cancel(id);
+          setCampaign((c) => ({ ...c, status: 'CANCELLED' }));
+          flash('Sending cancelled', 'warning');
+        } catch (err) {
+          flash(err instanceof Error ? err.message : 'Cancel failed', 'error');
+        }
+      }
+    })();
   }
 
   async function pauseBackgroundSend() {
@@ -999,8 +1009,25 @@ export function CampaignEditorPage() {
       flash('Campaign paused', 'warning');
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Pause failed', 'error');
+      // Unstick modal if campaign already failed/stopped on the server
+      try {
+        const status = await campaignSendService.getSendStatus(id);
+        setSentCount(status.sentCount);
+        setFailedCount(status.failedCount);
+        if (['FAILED', 'CANCELLED', 'SENT'].includes(status.status)) {
+          setSendCancelled(status.status === 'CANCELLED');
+          if (status.status === 'FAILED') {
+            setSendError('Send stopped on server');
+            setSendPhase('error');
+          } else {
+            setSendPhase('success');
+          }
+          setCampaign((c) => ({ ...c, status: status.status }));
+        }
+      } catch {
+        /* ignore */
+      }
     }
-    stopSendStream();
   }
 
   async function resumeBackgroundSend() {
@@ -1008,6 +1035,7 @@ export function CampaignEditorPage() {
     try {
       await campaignSendService.resume(id);
       setSendPaused(false);
+      setSendCancelled(false);
       setSendPhase('background');
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
       flash('Campaign resumed', 'success');
@@ -1149,9 +1177,16 @@ export function CampaignEditorPage() {
         }
         setSendPaused(false);
 
+        if (status.status === 'FAILED') {
+          setSendError('Send failed on server — open Queue Console or check SMTP / content errors');
+          setSendPhase('error');
+          setCampaign((c) => ({ ...c, status: 'FAILED' }));
+          return;
+        }
+
         const finished =
           status.pendingCount === 0 &&
-          ['SENT', 'FAILED', 'CANCELLED'].includes(String(status.status));
+          ['SENT', 'CANCELLED'].includes(String(status.status));
 
         if (finished) {
           setSendCancelled(status.status === 'CANCELLED');

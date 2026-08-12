@@ -285,17 +285,17 @@ export function SendProgressModal({
 
             <div className="mt-5 flex flex-wrap justify-center gap-3">
               {phase === 'background' && !paused && onPauseSend ? (
-                <Button type="button" variant="outline" onClick={onPauseSend}>
+                <Button type="button" variant="outline" onClick={() => onPauseSend()}>
                   Pause
                 </Button>
               ) : null}
               {phase === 'background' && paused && onResumeSend ? (
-                <Button type="button" variant="outline" onClick={onResumeSend}>
+                <Button type="button" variant="outline" onClick={() => onResumeSend()}>
                   Resume
                 </Button>
               ) : null}
               {phase === 'background' && onCancelSend ? (
-                <Button type="button" variant="outline" onClick={onCancelSend}>
+                <Button type="button" variant="outline" onClick={() => onCancelSend()}>
                   Cancel sending
                 </Button>
               ) : null}
