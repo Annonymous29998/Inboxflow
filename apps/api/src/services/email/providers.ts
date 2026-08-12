@@ -117,13 +117,20 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
   // Form flag "ignoreTLS" / Allow insecure TLS means: accept mismatched/self-signed certs.
   // It must NOT set nodemailer's ignoreTLS (that disables STARTTLS → 530 Authentication required on Bulko).
   const allowInsecureCert = toBool((config as SmtpTestInput).ignoreTLS, false);
+  const encryption = String((config as SmtpTestInput).encryption || '').toUpperCase();
+  const requireTLS = toBool(
+    (config as SmtpTestInput).requireTLS,
+    !secure && encryption !== 'NONE',
+  );
+  // Encryption=None: do not upgrade to STARTTLS (needed for providers like akoneseo.com).
+  const disableStartTls = encryption === 'NONE' || (!secure && !requireTLS);
 
   return nodemailer.createTransport({
     host,
     port,
     secure,
-    // Prefer explicit requireTLS from the form (STARTTLS on any port: 587, 2525, custom, …)
-    requireTLS: toBool((config as SmtpTestInput).requireTLS, !secure),
+    requireTLS: disableStartTls ? false : requireTLS,
+    ignoreTLS: disableStartTls,
     auth: user ? { user, pass } : undefined,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
@@ -132,6 +139,10 @@ export function createSmtpTransport(config: SmtpTestInput | ProviderConfig) {
       // Skip hostname/CA checks when provider cert doesn't match (e.g. Bulko → slipjar.app)
       rejectUnauthorized: !allowInsecureCert,
       servername: host,
+      // Some ESP relays use weak DH; allow when insecure TLS is enabled or TLS is off.
+      ...(allowInsecureCert || disableStartTls
+        ? { minVersion: 'TLSv1' as const, ciphers: 'DEFAULT:@SECLEVEL=0' }
+        : {}),
     },
   });
 }

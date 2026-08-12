@@ -10,7 +10,7 @@ import {
   resolveRotatedProviders,
 } from './smtp-rotation.js';
 import { writeSystemLog } from '../system-log.js';
-import { signClickRedirect } from '../../utils/signed-urls.js';
+import { signClickRedirect, signUnsubscribe } from '../../utils/signed-urls.js';
 
 function personalize(
   template: string,
@@ -99,8 +99,37 @@ export async function sendCampaignEmailToRecipient(input: {
 
   let html = personalize(campaign.htmlContent || '', contact);
   let text = personalize(campaign.plainTextContent || '', contact);
-  html = html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, '');
-  text = text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, '');
+
+  const unsubSig = signUnsubscribe(contactId, campaignId);
+  const unsubscribeUrl = `${env.API_URL}/api/t/unsubscribe?c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`;
+  html = html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
+  text = text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
+
+  const hasUnsub =
+    /unsubscribe|opt[\s-]?out|list-unsubscribe/i.test(`${html}\n${text}`);
+  const physical = String(campaign.organization.physicalAddress || '').trim();
+  if (!hasUnsub || physical) {
+    const footerBits: string[] = [];
+    if (!hasUnsub) {
+      footerBits.push(
+        `<p style="font-size:12px;color:#666;margin-top:24px"><a href="${unsubscribeUrl}">Unsubscribe from these emails</a></p>`,
+      );
+    }
+    if (physical && !html.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
+      footerBits.push(`<p style="font-size:12px;color:#666">${physical.replace(/</g, '&lt;')}</p>`);
+    }
+    if (footerBits.length) {
+      const footer = `<div data-inboxflow-footer>${footerBits.join('')}</div>`;
+      if (/<\/body>/i.test(html)) html = html.replace(/<\/body>/i, `${footer}</body>`);
+      else html += footer;
+    }
+    if (!hasUnsub) {
+      text = `${text}\n\nUnsubscribe: ${unsubscribeUrl}`.trim();
+    }
+    if (physical && !text.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
+      text = `${text}\n${physical}`.trim();
+    }
+  }
 
   if (campaign.trackOpens) {
     const pixel = `<img src="${env.API_URL}/api/t/o/${campaignId}/${contactId}.gif" width="1" height="1" alt="" style="display:none" />`;
@@ -116,7 +145,10 @@ export async function sendCampaignEmailToRecipient(input: {
     });
   }
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'List-Unsubscribe': `<${unsubscribeUrl}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
   const replyTo = campaign.replyTo || undefined;
   if (replyTo) headers['Reply-To'] = replyTo;
 

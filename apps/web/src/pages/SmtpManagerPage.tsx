@@ -755,7 +755,7 @@ export function SmtpManagerPage() {
                   <option value="STARTTLS">STARTTLS (common on 587 / 2525)</option>
                   <option value="SSL">SSL/TLS on connect (common on 465)</option>
                   <option value="TLS">TLS</option>
-                  <option value="NONE">None (not recommended)</option>
+                  <option value="NONE">None (plain — when provider says Tls/Ssl = no)</option>
                 </Select>
               </div>
               <div>
