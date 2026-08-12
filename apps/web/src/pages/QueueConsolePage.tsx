@@ -458,6 +458,7 @@ export function QueueConsolePage() {
                         campaignStatus={selectedStatus}
                         compact
                         contactsPagination
+                        livePoll={selectedStatus === 'SENDING' || selectedStatus === 'PAUSED'}
                       />
                     </div>
                   ) : null}

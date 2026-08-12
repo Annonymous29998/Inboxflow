@@ -275,7 +275,6 @@ export async function analyticsRoutes(app: FastifyInstance) {
         prisma.campaignRecipient.count({ where }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
-        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
         countHumanOpens(id),
         countHumanClicks(id),
       ]);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Eye, Mail, MousePointerClick } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Card, Input, Select } from '@/components/ui';
@@ -37,8 +37,11 @@ type Props = {
   /** When SENDING/SENT/PAUSED, recipients auto-refresh from live tracking data */
   campaignStatus?: string;
   /** Compact mode hides the outer title (useful when already inside a page section) */
+  compact?: boolean;
   /** Use contacts-style pagination (First / Prev / numbered pages / Next / Last) */
   contactsPagination?: boolean;
+  /** Poll while campaign is actively sending (queue console passes false when finished) */
+  livePoll?: boolean;
 };
 
 function formatTs(iso: string | null) {
@@ -57,6 +60,7 @@ export function CampaignRecipientsPanel({
   campaignStatus,
   compact,
   contactsPagination = false,
+  livePoll,
 }: Props) {
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -67,10 +71,17 @@ export function CampaignRecipientsPanel({
   const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const inFlightRef = useRef(false);
 
-  const load = useCallback(() => {
+  const load = useCallback((opts?: { silent?: boolean }) => {
     if (!campaignId) return;
-    setLoading(true);
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    const silent = opts?.silent ?? false;
+    if (silent) setRefreshing(true);
+    else setLoading(true);
+
     const params = new URLSearchParams({
       page: String(page),
       limit: String(pageLimit),
@@ -88,7 +99,11 @@ export function CampaignRecipientsPanel({
         setPages(d.pages);
       })
       .catch(console.error)
-      .finally(() => setLoading(false));
+      .finally(() => {
+        inFlightRef.current = false;
+        if (silent) setRefreshing(false);
+        else setLoading(false);
+      });
   }, [campaignId, page, pageLimit, filter, search]);
 
   useEffect(() => {
@@ -103,18 +118,15 @@ export function CampaignRecipientsPanel({
     load();
   }, [load]);
 
-  const liveRefresh =
-    campaignStatus === 'SENDING' ||
-    campaignStatus === 'PAUSED' ||
-    campaignStatus === 'SENT' ||
-    campaignStatus === 'CANCELLED' ||
-    campaignStatus === 'FAILED';
+  const shouldLivePoll =
+    livePoll ??
+    (campaignStatus === 'SENDING' || campaignStatus === 'PAUSED');
 
   useEffect(() => {
-    if (!liveRefresh) return;
-    const id = window.setInterval(() => load(), 3000);
+    if (!shouldLivePoll) return;
+    const id = window.setInterval(() => load({ silent: true }), 8000);
     return () => window.clearInterval(id);
-  }, [liveRefresh, load]);
+  }, [shouldLivePoll, load]);
 
   const openPct =
     summary && summary.sent > 0 ? Math.round((summary.opened / summary.sent) * 100) : 0;
@@ -216,8 +228,9 @@ export function CampaignRecipientsPanel({
                 <option key={n} value={n}>{n} / page</option>
               ))}
             </Select>
-            <Button variant="outline" size="sm" onClick={load}>
-              {liveRefresh ? 'Live' : 'Refresh'}
+            <Button variant="outline" size="sm" onClick={() => load()} disabled={loading || refreshing}>
+              {shouldLivePoll ? 'Live' : 'Refresh'}
+              {refreshing ? '…' : ''}
             </Button>
           </div>
         </div>
@@ -234,7 +247,7 @@ export function CampaignRecipientsPanel({
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {loading && recipients.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="py-10 text-center text-ink-muted">
                     Loading recipients…
