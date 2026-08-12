@@ -1,5 +1,5 @@
 import { prisma } from '../../config/prisma.js';
-import { isHumanTrackingEvent } from '../../utils/tracking-bot-filter.js';
+import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 type TrackingRow = {
   contactId: string | null;
@@ -8,26 +8,40 @@ type TrackingRow = {
   metadata: unknown;
 };
 
-async function loadHumanEvents(campaignId: string, type: 'OPENED' | 'CLICKED') {
+async function loadOpenEvents(campaignId: string) {
   const rows = await prisma.trackingEvent.findMany({
-    where: { campaignId, type, contactId: { not: null } },
+    where: { campaignId, type: 'OPENED', contactId: { not: null } },
     select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.filter((e) => isHumanTrackingEvent(e.userAgent, e.metadata)) as TrackingRow[];
+  return rows.filter((e) => isCountableOpen(e.userAgent, e.metadata)) as TrackingRow[];
 }
 
-/** Recompute campaign + recipient open/click stats from human-only tracking events. */
+async function loadClickEvents(campaignId: string, verifiedOpenContacts: Set<string>) {
+  const rows = await prisma.trackingEvent.findMany({
+    where: { campaignId, type: 'CLICKED', contactId: { not: null } },
+    select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  return rows.filter(
+    (e) =>
+      e.contactId &&
+      verifiedOpenContacts.has(e.contactId) &&
+      isCountableClick(e.userAgent, e.metadata, true),
+  ) as TrackingRow[];
+}
+
+/** Recompute campaign + recipient stats from verified human tracking only. */
 export async function recountCampaignEngagement(campaignId: string) {
-  const [openEvents, clickEvents] = await Promise.all([
-    loadHumanEvents(campaignId, 'OPENED'),
-    loadHumanEvents(campaignId, 'CLICKED'),
-  ]);
+  const openEvents = await loadOpenEvents(campaignId);
 
   const firstOpen = new Map<string, Date>();
   for (const e of openEvents) {
     if (e.contactId && !firstOpen.has(e.contactId)) firstOpen.set(e.contactId, e.createdAt);
   }
+
+  const verifiedOpenContacts = new Set(firstOpen.keys());
+  const clickEvents = await loadClickEvents(campaignId, verifiedOpenContacts);
 
   const firstClick = new Map<string, Date>();
   for (const e of clickEvents) {
@@ -73,13 +87,15 @@ export async function recountCampaignEngagement(campaignId: string) {
 }
 
 export async function countHumanOpens(campaignId: string): Promise<number> {
-  const events = await loadHumanEvents(campaignId, 'OPENED');
+  const events = await loadOpenEvents(campaignId);
   return new Set(events.map((e) => e.contactId).filter(Boolean)).size;
 }
 
 export async function countHumanClicks(campaignId: string): Promise<number> {
-  const events = await loadHumanEvents(campaignId, 'CLICKED');
-  return new Set(events.map((e) => e.contactId).filter(Boolean)).size;
+  const openEvents = await loadOpenEvents(campaignId);
+  const verified = new Set(openEvents.map((e) => e.contactId).filter(Boolean) as string[]);
+  const clickEvents = await loadClickEvents(campaignId, verified);
+  return new Set(clickEvents.map((e) => e.contactId).filter(Boolean)).size;
 }
 
 export async function humanOpenCountByContact(
@@ -87,7 +103,7 @@ export async function humanOpenCountByContact(
   contactIds: string[],
 ): Promise<Record<string, number>> {
   if (!contactIds.length) return {};
-  const events = await loadHumanEvents(campaignId, 'OPENED');
+  const events = await loadOpenEvents(campaignId);
   const out: Record<string, number> = {};
   for (const e of events) {
     if (e.contactId && contactIds.includes(e.contactId)) {
@@ -102,7 +118,9 @@ export async function humanClickCountByContact(
   contactIds: string[],
 ): Promise<Record<string, number>> {
   if (!contactIds.length) return {};
-  const events = await loadHumanEvents(campaignId, 'CLICKED');
+  const openEvents = await loadOpenEvents(campaignId);
+  const verified = new Set(openEvents.map((e) => e.contactId).filter(Boolean) as string[]);
+  const events = await loadClickEvents(campaignId, verified);
   const out: Record<string, number> = {};
   for (const e of events) {
     if (e.contactId && contactIds.includes(e.contactId)) {

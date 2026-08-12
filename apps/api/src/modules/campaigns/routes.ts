@@ -942,6 +942,10 @@ export async function campaignRoutes(app: FastifyInstance) {
         },
       });
 
+      if (status === 'SENT' || status === 'CANCELLED') {
+        await recountCampaignEngagement(id);
+      }
+
       let jobId: string | null = body.jobId?.trim() || null;
       try {
         const jobTotal = Math.max(1, Number(updated.totalRecipients) || sentCount + failedCount + pendingCount);

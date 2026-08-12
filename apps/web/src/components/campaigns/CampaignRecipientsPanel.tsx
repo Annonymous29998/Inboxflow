@@ -131,7 +131,7 @@ export function CampaignRecipientsPanel({
         <div>
           <h2 className="font-medium">Recipients</h2>
           <p className="text-xs text-ink-muted">
-            Who received, opened, and clicked this campaign
+            Verified opens/clicks from real mail clients — spam scanners and bots are excluded
           </p>
         </div>
       ) : null}

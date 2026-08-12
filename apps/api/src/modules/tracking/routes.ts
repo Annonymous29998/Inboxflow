@@ -8,7 +8,7 @@ import {
   verifyClickRedirect,
   verifyUnsubscribe,
 } from '../../utils/signed-urls.js';
-import { classifyAutomatedTracking, humanTrackingEventFilter } from '../../utils/tracking-bot-filter.js';
+import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 const TRANSPARENT_GIF = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
@@ -77,20 +77,16 @@ export async function trackingRoutes(app: FastifyInstance) {
     const contactIdClean = contactId.replace(/\.gif$/, '');
 
     try {
-      const metadata = auto.automated
-        ? { source: 'automated', reason: auto.reason ?? 'bot_user_agent' }
-        : undefined;
+      const countable = isCountableOpen(rawUa, undefined);
+      const metadata = countable
+        ? undefined
+        : { source: 'automated', reason: auto.reason ?? 'non_mail_client' };
 
-      const existingHumanOpen = auto.automated
-        ? null
-        : await prisma.trackingEvent.findFirst({
-            where: {
-              campaignId,
-              contactId: contactIdClean,
-              type: 'OPENED',
-              ...humanTrackingEventFilter(),
-            },
-          });
+      const priorOpens = await prisma.trackingEvent.findMany({
+        where: { campaignId, contactId: contactIdClean, type: 'OPENED' },
+        select: { userAgent: true, metadata: true },
+      });
+      const existingCountable = priorOpens.some((e) => isCountableOpen(e.userAgent, e.metadata));
 
       await prisma.trackingEvent.create({
         data: {
@@ -104,7 +100,7 @@ export async function trackingRoutes(app: FastifyInstance) {
         },
       });
 
-      if (!auto.automated && !existingHumanOpen) {
+      if (countable && !existingCountable) {
         await prisma.campaign.update({
           where: { id: campaignId },
           data: { openedCount: { increment: 1 } },
@@ -138,20 +134,29 @@ export async function trackingRoutes(app: FastifyInstance) {
     const auto = classifyAutomatedTracking(rawUa);
 
     try {
-      const metadata = auto.automated
-        ? { source: 'automated', reason: auto.reason ?? 'bot_user_agent' }
-        : undefined;
+      const priorOpens = await prisma.trackingEvent.findMany({
+        where: { campaignId, contactId, type: 'OPENED' },
+        select: { userAgent: true, metadata: true },
+      });
+      const hasVerifiedOpen = priorOpens.some((e) => isCountableOpen(e.userAgent, e.metadata));
+      const countable = isCountableClick(rawUa, undefined, hasVerifiedOpen);
 
-      const existingHumanClick = auto.automated
-        ? null
-        : await prisma.trackingEvent.findFirst({
-            where: {
-              campaignId,
-              contactId,
-              type: 'CLICKED',
-              ...humanTrackingEventFilter(),
-            },
-          });
+      const metadata = countable
+        ? undefined
+        : {
+            source: 'automated',
+            reason: hasVerifiedOpen
+              ? (auto.reason ?? 'non_mail_client')
+              : 'no_verified_open',
+          };
+
+      const priorClicks = await prisma.trackingEvent.findMany({
+        where: { campaignId, contactId, type: 'CLICKED' },
+        select: { userAgent: true, metadata: true },
+      });
+      const existingCountable = priorClicks.some(
+        (e) => isCountableClick(e.userAgent, e.metadata, hasVerifiedOpen),
+      );
 
       await prisma.trackingEvent.create({
         data: {
@@ -166,14 +171,14 @@ export async function trackingRoutes(app: FastifyInstance) {
         },
       });
 
-      if (!auto.automated && !existingHumanClick) {
+      if (countable && !existingCountable) {
         await prisma.campaign.update({
           where: { id: campaignId },
           data: { clickedCount: { increment: 1 } },
         });
       }
 
-      if (!auto.automated) {
+      if (countable) {
         await prisma.campaignRecipient.updateMany({
           where: { campaignId, contactId },
           data: { clickedAt: new Date(), status: 'CLICKED' },

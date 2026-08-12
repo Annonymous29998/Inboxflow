@@ -46,19 +46,32 @@ function isLegitimateMailProxy(ua: string): boolean {
   return LEGITIMATE_MAIL_PROXY.some((re) => re.test(ua));
 }
 
+function isMobileMailClient(ua: string): boolean {
+  return (
+    (/\b(iPhone|iPad)\b/i.test(ua) && /AppleWebKit/i.test(ua)) ||
+    (/Android/i.test(ua) && /Mobile/i.test(ua))
+  );
+}
+
 function isScannerChrome(ua: string): boolean {
   const m = ua.match(/Chrome\/(\d+)/i);
   if (!m) return false;
   const version = parseInt(m[1], 10);
-  // Bulk scanners often mimic ancient Chrome (e.g. Chrome/42 on Windows NT 10).
   return version < 70;
+}
+
+/** Desktop Windows/Linux browsers are overwhelmingly spam-filter bots on bulk sends. */
+function isDesktopBotBrowser(ua: string): boolean {
+  return /Windows NT|X11; Linux/i.test(ua);
 }
 
 export type AutomatedTrackingReason =
   | 'esp_image_prefetch'
   | 'security_scanner'
   | 'bot_user_agent'
-  | 'scanner_chrome';
+  | 'scanner_chrome'
+  | 'no_verified_open'
+  | 'non_mail_client';
 
 export function classifyAutomatedTracking(userAgent: string | undefined | null): {
   automated: boolean;
@@ -85,7 +98,6 @@ export function classifyAutomatedTracking(userAgent: string | undefined | null):
     return { automated: true, reason: 'scanner_chrome' };
   }
 
-  // Headless link sandboxes (common when mail lands in spam / security queues).
   if (/X11; Linux x86_64/i.test(ua) && /Chrome/i.test(ua)) {
     return { automated: true, reason: 'security_scanner' };
   }
@@ -93,17 +105,54 @@ export function classifyAutomatedTracking(userAgent: string | undefined | null):
   return { automated: false };
 }
 
-export function isHumanTrackingEvent(
+/**
+ * Count an open only when the request looks like a real mail client loading images
+ * (Gmail/Outlook/Yahoo proxy, Apple/Android mobile mail) — not a spam sandbox.
+ */
+export function isCountableOpen(
   userAgent: string | null | undefined,
   metadata: unknown,
 ): boolean {
   if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
     return false;
   }
-  return !classifyAutomatedTracking(userAgent).automated;
+  const ua = (userAgent || '').trim();
+  if (!ua || classifyAutomatedTracking(ua).automated) return false;
+  if (isLegitimateMailProxy(ua)) return true;
+  if (isMobileMailClient(ua)) return true;
+  // Reject generic desktop browsers (spam filters mimic Chrome on Windows/Linux).
+  if (isDesktopBotBrowser(ua)) return false;
+  return false;
 }
 
-/** Prisma filter: excludes events already tagged as automated in metadata. */
+/**
+ * Count a click only when the contact has a verified open and the click is not from a bot UA.
+ */
+export function isCountableClick(
+  userAgent: string | null | undefined,
+  metadata: unknown,
+  contactHasVerifiedOpen: boolean,
+): boolean {
+  if (!contactHasVerifiedOpen) return false;
+  if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
+    return false;
+  }
+  const ua = (userAgent || '').trim();
+  if (!ua || classifyAutomatedTracking(ua).automated) return false;
+  if (isLegitimateMailProxy(ua)) return true;
+  if (isMobileMailClient(ua)) return true;
+  if (isDesktopBotBrowser(ua)) return false;
+  return false;
+}
+
+/** @deprecated use isCountableOpen */
+export function isHumanTrackingEvent(
+  userAgent: string | null | undefined,
+  metadata: unknown,
+): boolean {
+  return isCountableOpen(userAgent, metadata);
+}
+
 export function humanTrackingEventFilter(): Prisma.TrackingEventWhereInput {
   return {
     OR: [

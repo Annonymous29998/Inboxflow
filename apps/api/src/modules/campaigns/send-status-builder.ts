@@ -1,6 +1,6 @@
 import { prisma } from '../../config/prisma.js';
 import { deliveredRecipientFilter } from './recipient-stats.js';
-import { isHumanTrackingEvent } from '../../utils/tracking-bot-filter.js';
+import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
 
 export type SendActivityRow = {
@@ -59,6 +59,20 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     countHumanClicks(campaignId),
   ]);
 
+  const verifiedOpenIds = new Set(
+    openEvents
+      .filter((e) => isCountableOpen(e.userAgent, e.metadata))
+      .map((e) => e.contactId)
+      .filter(Boolean) as string[],
+  );
+
+  const countableClicks = clickEvents.filter(
+    (e) =>
+      e.contactId &&
+      verifiedOpenIds.has(e.contactId) &&
+      isCountableClick(e.userAgent, e.metadata, true),
+  );
+
   const activity: SendActivityRow[] = [
     ...recentDelivered.map((r) => ({
       email: r.contact.email,
@@ -73,7 +87,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
     })),
     ...openEvents
-      .filter((e) => isHumanTrackingEvent(e.userAgent, e.metadata))
+      .filter((e) => isCountableOpen(e.userAgent, e.metadata))
       .slice(0, 40)
       .map((e) => ({
       email: e.contact?.email || 'unknown',
@@ -81,10 +95,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       error: null,
       at: e.createdAt.toISOString(),
     })),
-    ...clickEvents
-      .filter((e) => isHumanTrackingEvent(e.userAgent, e.metadata))
-      .slice(0, 40)
-      .map((e) => ({
+    ...countableClicks.slice(0, 40).map((e) => ({
       email: e.contact?.email || 'unknown',
       status: 'CLICKED' as const,
       error: null,
@@ -119,11 +130,14 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       email: r.contact.email,
       error: r.error || 'Send failed',
     })),
-    recentOpens: openEvents.slice(0, 20).map((e) => ({
+    recentOpens: openEvents
+      .filter((e) => isCountableOpen(e.userAgent, e.metadata))
+      .slice(0, 20)
+      .map((e) => ({
       email: e.contact?.email || 'unknown',
       at: e.createdAt.toISOString(),
     })),
-    recentClicks: clickEvents.slice(0, 20).map((e) => ({
+    recentClicks: countableClicks.slice(0, 20).map((e) => ({
       email: e.contact?.email || 'unknown',
       at: e.createdAt.toISOString(),
       url: e.url,
