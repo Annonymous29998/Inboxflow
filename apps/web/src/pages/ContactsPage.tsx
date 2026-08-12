@@ -717,6 +717,11 @@ export function ContactsPage() {
         )}
         {visibleGroups.map((g) => {
           const isOpen = expanded[g.id] ?? grouped.length <= 6;
+          const listTotal =
+            g.id === '__unassigned__'
+              ? g.members.length
+              : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
+          const missingOnThisPage = !activeListId && listTotal > 0 && g.members.length === 0;
           return (
             <Card key={g.id} className="overflow-hidden">
               <button
@@ -734,23 +739,15 @@ export function ContactsPage() {
                   <div className="flex flex-wrap items-baseline gap-2">
                     <h3 className="truncate font-semibold tracking-tight">{g.name}</h3>
                     <Badge tone="neutral">
-                      {(() => {
-                        const total = g.id === '__unassigned__'
-                          ? g.members.length
-                          : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
-                        return `${total} ${total === 1 ? 'contact' : 'contacts'}`;
-                      })()}
+                      {`${listTotal} ${listTotal === 1 ? 'contact' : 'contacts'}`}
                     </Badge>
                   </div>
-                  {g.members[0]?.email && (
+                  {g.members[0]?.email ? (
                     <p className="truncate text-xs text-muted-foreground">
                       {g.members[0].email}
                       {(() => {
-                        const total = g.id === '__unassigned__'
-                          ? g.members.length
-                          : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
                         const visibleMinusOne = g.members.length - 1;
-                        const hiddenExtra = total - g.members.length;
+                        const hiddenExtra = listTotal - g.members.length;
                         if (hiddenExtra > 0 && visibleMinusOne > 0) {
                           return ` +${visibleMinusOne} more shown, +${hiddenExtra} on other pages`;
                         } else if (hiddenExtra > 0) {
@@ -761,8 +758,36 @@ export function ContactsPage() {
                         return '';
                       })()}
                     </p>
-                  )}
+                  ) : missingOnThisPage ? (
+                    <p className="truncate text-xs text-muted-foreground">
+                      {listTotal.toLocaleString()} contacts — open this list to view them (not on this page of All lists)
+                    </p>
+                  ) : null}
                 </div>
+                {g.id !== '__unassigned__' && missingOnThisPage ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="inline-flex shrink-0 items-center rounded bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveListId(g.id);
+                      setPage(1);
+                      setExpanded((s) => ({ ...s, [g.id]: true }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setActiveListId(g.id);
+                        setPage(1);
+                        setExpanded((s) => ({ ...s, [g.id]: true }));
+                      }
+                    }}
+                  >
+                    View list
+                  </span>
+                ) : null}
                 {g.id !== '__unassigned__' ? (
                   <span
                     role="button"
@@ -771,17 +796,13 @@ export function ContactsPage() {
                     className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                     onClick={(e) => {
                       e.stopPropagation();
-                      const count =
-                        lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length;
-                      void deleteList(g.id, g.name, count);
+                      void deleteList(g.id, g.name, listTotal);
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         e.stopPropagation();
-                        const count =
-                          lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length;
-                        void deleteList(g.id, g.name, count);
+                        void deleteList(g.id, g.name, listTotal);
                       }
                     }}
                   >
@@ -807,7 +828,28 @@ export function ContactsPage() {
                       {g.members.length === 0 && (
                         <tr>
                           <td colSpan={6} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                            No contacts in this list.
+                            {missingOnThisPage ? (
+                              <div className="space-y-3">
+                                <p>
+                                  This list has <span className="font-medium text-foreground">{listTotal.toLocaleString()}</span> contacts,
+                                  but none are on the current “All lists” page (page shows a mixed slice of your audience).
+                                </p>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setActiveListId(g.id);
+                                    setPage(1);
+                                  }}
+                                >
+                                  View all {listTotal.toLocaleString()} in this list
+                                </Button>
+                              </div>
+                            ) : listTotal === 0 ? (
+                              'No contacts in this list.'
+                            ) : (
+                              'No contacts match the current filters.'
+                            )}
                           </td>
                         </tr>
                       )}
