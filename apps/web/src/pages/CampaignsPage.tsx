@@ -1537,9 +1537,8 @@ export function CampaignEditorPage() {
                 placeholder={selectedProvider?.fromEmail || ''}
               />
               <p className="mt-1 text-[10px] text-muted-foreground">
-                Must be an address your SMTP allows (domain you own / provider-authorized).{' '}
-                <span className="text-foreground">@gmail.com via Bulko is usually rejected</span> with
-                554 content filter — that is not an Inbox Flow bug.
+                Uses your active SMTP profile. Prefer a From on a domain your provider verified for
+                better inbox placement — some providers reject free mailboxes (@gmail.com, etc.).
               </p>
             </div>
             <div>

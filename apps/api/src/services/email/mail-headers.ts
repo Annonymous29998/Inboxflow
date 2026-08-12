@@ -64,36 +64,18 @@ export function smtpHostAllowsConsumerFrom(host: string, fromDomain: string): bo
 }
 
 /**
- * Pick a From address SMTP providers will accept.
- * Free-mail From via Bulko/SES/etc. is a common cause of 554 content-filter rejects.
+ * Resolve From for SMTP. Prefer the requested campaign/profile From.
+ * Do not hard-block free-mail From — let the SMTP provider accept or reject.
  */
 export function resolveSmtpFromEmail(
   requestedFrom: string | undefined,
   config: { fromEmail?: string; user?: string; host?: string },
 ): { from: string; adjusted: boolean; blockReason?: string } {
   const cfgFrom = String(config.fromEmail || config.user || '').trim();
-  const requested = String(requestedFrom || '').trim() || cfgFrom;
-  const host = String(config.host || '');
-  const reqDom = emailDomain(requested);
-  const cfgDom = emailDomain(cfgFrom);
-
-  if (reqDom && isConsumerMailDomain(reqDom) && !smtpHostAllowsConsumerFrom(host, reqDom)) {
-    // Prefer SMTP profile From when it looks like a real mailbox on a non-consumer domain.
-    if (cfgFrom.includes('@') && cfgDom && !isConsumerMailDomain(cfgDom)) {
-      return { from: cfgFrom, adjusted: true };
-    }
-    return {
-      from: requested,
-      adjusted: false,
-      blockReason:
-        `Cannot send From ${requested} through ${host || 'this SMTP provider'}. ` +
-        `Providers like Bulko reject @gmail.com / @yahoo.com / @outlook.com as From (often as 554 content filter). ` +
-        `Set SMTP “Sender Email” and the campaign From to an address on a domain authorized with that provider ` +
-        `(a domain you own — not gmail.com, not bulko.io unless they explicitly assigned you one).`,
-    };
-  }
-
-  return { from: requested || cfgFrom, adjusted: false };
+  const requested = String(requestedFrom || '').trim();
+  if (requested) return { from: requested, adjusted: false };
+  if (cfgFrom.includes('@')) return { from: cfgFrom, adjusted: true };
+  return { from: cfgFrom || 'noreply@localhost', adjusted: false };
 }
 
 /** Turn raw nodemailer/SMTP errors into actionable copy. */
