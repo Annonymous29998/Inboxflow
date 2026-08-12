@@ -13,6 +13,7 @@ import { prisma } from '../../config/prisma.js';
 import { analyzeCampaign } from '../../modules/deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, stripHtmlTags, isImageOnlyHtml } from '../../modules/deliverability/spam-scrubber.js';
 import { sendCampaignEmailToRecipient } from './campaign-send.js';
+import { deliveredRecipientFilter } from '../../modules/campaigns/recipient-stats.js';
 
 export type EmailJobData = {
   campaignId: string;
@@ -397,7 +398,7 @@ async function processEmailJob(data: EmailJobData) {
   });
 
   const [sentCount, failedCount, pendingCount] = await Promise.all([
-    prisma.campaignRecipient.count({ where: { campaignId, status: 'SENT' } }),
+    prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } }),
   ]);
@@ -448,17 +449,21 @@ async function processEmailJob(data: EmailJobData) {
 
   const counts = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { sentCount: true, totalRecipients: true, status: true },
+    select: { totalRecipients: true, status: true },
   });
+  const delivered = await prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) });
+  const failed = await prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } });
+  const pending = await prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } });
   if (
     counts &&
     counts.status === 'SENDING' &&
     counts.totalRecipients > 0 &&
-    counts.sentCount >= counts.totalRecipients
+    pending === 0 &&
+    delivered + failed >= counts.totalRecipients
   ) {
     await prisma.campaign.update({
       where: { id: campaignId },
-      data: { status: 'SENT', completedAt: new Date() },
+      data: { status: failed > 0 && delivered === 0 ? 'FAILED' : 'SENT', completedAt: new Date() },
     });
   }
 }

@@ -1211,7 +1211,10 @@ export function CampaignEditorPage() {
 
         const finished =
           status.pendingCount === 0 &&
-          ['SENT', 'CANCELLED'].includes(String(status.status));
+          (['SENT', 'CANCELLED'].includes(String(status.status)) ||
+            (status.status === 'SENDING' &&
+              status.totalRecipients > 0 &&
+              status.sentCount + status.failedCount >= status.totalRecipients));
 
         if (finished) {
           setSendCancelled(status.status === 'CANCELLED');

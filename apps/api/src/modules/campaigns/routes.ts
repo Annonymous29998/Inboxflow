@@ -11,6 +11,7 @@ import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
 import { upsertJobProgress } from '../jobs/progress.js';
 import { writeSystemLog } from '../../services/system-log.js';
+import { deliveredRecipientFilter } from '../campaigns/recipient-stats.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -392,7 +393,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
       const [sentCount, failedCount, pendingCount, recentFailures, recentSent] = await Promise.all([
-        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'SENT' } }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'QUEUED' } }),
         prisma.campaignRecipient.findMany({
@@ -402,7 +403,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           take: 50,
         }),
         prisma.campaignRecipient.findMany({
-          where: { campaignId: id, status: 'SENT' },
+          where: deliveredRecipientFilter(id),
           include: { contact: { select: { email: true } } },
           orderBy: { sentAt: 'desc' },
           take: 50,
@@ -853,7 +854,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
       const [sentCount, failedCount, pendingCount] = await Promise.all([
-        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'SENT' } }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({
           where: { campaignId: id, status: 'QUEUED' },
@@ -1124,7 +1125,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
       const [sent, failed, queued] = await Promise.all([
-        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'SENT' } }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'QUEUED' } }),
       ]);
