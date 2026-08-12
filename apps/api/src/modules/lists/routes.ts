@@ -40,8 +40,49 @@ export async function listRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
+      const q = request.query as { deleteContacts?: string };
+      const deleteContacts = q.deleteContacts === '1' || q.deleteContacts === 'true' || q.deleteContacts === 'yes';
+
+      const list = await prisma.contactList.findFirst({
+        where: { id, organizationId: orgId },
+        include: { _count: { select: { members: true } } },
+      });
+      if (!list) throw new AppError(404, 'List not found');
+
+      let contactsDeleted = 0;
+      if (deleteContacts) {
+        const members = await prisma.contactListMember.findMany({
+          where: { listId: id },
+          select: { contactId: true },
+        });
+        const contactIds = members.map((m) => m.contactId);
+        if (contactIds.length) {
+          // Only delete contacts that belong solely to this list (keep shared contacts)
+          const stillElsewhere = await prisma.contactListMember.findMany({
+            where: {
+              contactId: { in: contactIds },
+              listId: { not: id },
+            },
+            select: { contactId: true },
+          });
+          const shared = new Set(stillElsewhere.map((m) => m.contactId));
+          const onlyHere = contactIds.filter((cid) => !shared.has(cid));
+          if (onlyHere.length) {
+            const res = await prisma.contact.deleteMany({
+              where: { organizationId: orgId, id: { in: onlyHere } },
+            });
+            contactsDeleted = res.count;
+          }
+        }
+      }
+
       await prisma.contactList.deleteMany({ where: { id, organizationId: orgId } });
-      return reply.send({ success: true });
+      return reply.send({
+        success: true,
+        listDeleted: true,
+        contactsDeleted,
+        memberCount: list._count.members,
+      });
     } catch (error) {
       return sendError(reply, error);
     }

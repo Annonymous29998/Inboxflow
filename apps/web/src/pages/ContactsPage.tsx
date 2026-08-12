@@ -180,6 +180,10 @@ export function ContactsPage() {
 
   const grouped = useMemo(() => {
     const byList = new Map<string, { id: string; name: string; members: Contact[] }>();
+    // Always show every saved list (including empty ones) so they can be deleted
+    for (const l of lists) {
+      byList.set(l.id, { id: l.id, name: l.name, members: [] });
+    }
     const unassigned: Contact[] = [];
     for (const c of contacts) {
       const memberships = c.listMemberships?.length ? c.listMemberships : [];
@@ -200,7 +204,7 @@ export function ContactsPage() {
       groups.push({ id: '__unassigned__', name: 'Unassigned', members: unassigned });
     }
     return groups;
-  }, [contacts]);
+  }, [contacts, lists]);
 
   const visibleGroups = useMemo(() => {
     if (!activeListId) return grouped;
@@ -352,6 +356,39 @@ export function ContactsPage() {
       await load();
     } catch (err) {
       toast.error('Could not delete contact', err instanceof Error ? err.message : undefined);
+    }
+  }
+
+  async function deleteList(listId: string, listName: string, memberCount: number) {
+    if (listId === '__unassigned__') {
+      toast.info('Unassigned is not a real list — delete contacts individually or use Clear All');
+      return;
+    }
+    if (!(await confirmDialog({
+      title: `Delete list “${listName}”`,
+      description:
+        memberCount > 0
+          ? `This removes the list and permanently deletes contacts that exist only in this list (${memberCount} member${memberCount === 1 ? '' : 's'}).\n\nContacts that also belong to other lists stay in your audience.\n\nThis cannot be undone.`
+          : `This removes the empty list “${listName}” from Contacts and campaigns.\n\nThis cannot be undone.`,
+      tone: 'danger',
+      destructive: true,
+      confirmText: memberCount > 0 ? 'Delete list + contacts' : 'Delete list',
+    }))) return;
+    try {
+      const res = await api.delete<{ success: boolean; contactsDeleted?: number }>(
+        `/api/lists/${listId}?deleteContacts=true`,
+      );
+      toast.success(
+        res.contactsDeleted
+          ? `Deleted list and ${res.contactsDeleted} contact${res.contactsDeleted === 1 ? '' : 's'}`
+          : 'List deleted',
+      );
+      if (activeListId === listId) setActiveListId('');
+      setPage(1);
+      await load();
+      await loadLists();
+    } catch (err) {
+      toast.error('Could not delete list', err instanceof Error ? err.message : undefined);
     }
   }
 
@@ -726,6 +763,32 @@ export function ContactsPage() {
                     </p>
                   )}
                 </div>
+                {g.id !== '__unassigned__' ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="Delete this list"
+                    className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const count =
+                        lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length;
+                      void deleteList(g.id, g.name, count);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const count =
+                          lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length;
+                        void deleteList(g.id, g.name, count);
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete list
+                  </span>
+                ) : null}
               </button>
               {isOpen && (
                 <div className="overflow-x-auto">
@@ -1096,9 +1159,11 @@ export function ContactsPage() {
             <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-300/30 bg-amber-500/5 p-3 text-xs text-amber-700/90 dark:text-amber-300/80">
               <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
               <div>
-                Tip: After import, your new list is automatically available in the Campaign editor under{' '}
-                <span className="font-medium">Recipients → Lists</span>. You can also delete entire lists from{' '}
-                <span className="font-medium">Settings → Lists</span>.
+                Tip: Each import creates a <span className="font-medium">new list row</span> (not a
+                column). Use it in Campaigns under{' '}
+                <span className="font-medium">Recipients → Lists</span>. Click{' '}
+                <span className="font-medium">Delete list</span> on any list header to remove a previous
+                import.
               </div>
             </div>
           </Card>
