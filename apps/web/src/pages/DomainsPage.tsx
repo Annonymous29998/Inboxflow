@@ -107,13 +107,13 @@ export function DomainsPage() {
           Verify a domain you own, then publish SPF, DKIM, DMARC, tracking, and return-path records.
         </p>
         <div className="mt-3 max-w-3xl border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] leading-relaxed text-ink-muted">
-          <span className="text-primary">You must verify a domain you control.</span> SMTP providers
-          like Bulko (<code className="text-foreground">bulko.io</code>), SendGrid, or Mailgun let
-          you send mail — that does <strong className="text-foreground">not</strong> mean you own
-          their domain. Add your own domain here (e.g.{' '}
-          <code className="text-foreground">yourcompany.com</code>), use it as the From address, and
-          publish the DNS records below. Until SPF/DKIM/DMARC pass, deliverability will stay High
-          Risk.
+          <span className="text-primary">You must verify a domain you control.</span> SPF must list
+          the SMTP you actually send with. <strong className="text-foreground">Brevo</strong> needs{' '}
+          <code className="text-foreground">include:spf.brevo.com</code> on the From domain (and on{' '}
+          <code className="text-foreground">client.yourdomain</code> if you From that host). The
+          SMTP Provider IP <code className="text-foreground">136.243.17.45</code> is only for
+          akoneseo — do not add it for Brevo. After DNS, wait 10–30 minutes, then Gmail → Show
+          original → SPF: PASS.
         </div>
       </div>
 

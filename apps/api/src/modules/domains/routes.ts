@@ -7,6 +7,28 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { encrypt, generateToken } from '../../utils/crypto.js';
 import { requireOrg } from '../../utils/org.js';
+import { parseProviderConfig } from '../../services/email/providers.js';
+import {
+  missingSpfMechanisms,
+  recommendedSpfForHosts,
+} from '../deliverability/smtp-auth-hints.js';
+
+async function orgSmtpHosts(organizationId: string): Promise<string[]> {
+  const providers = await prisma.emailProvider.findMany({
+    where: { organizationId, isActive: true },
+    select: { config: true, type: true },
+  });
+  const hosts: string[] = [];
+  for (const p of providers) {
+    try {
+      const cfg = parseProviderConfig(p.config);
+      if (cfg.host) hosts.push(cfg.host);
+    } catch {
+      /* skip bad config */
+    }
+  }
+  return hosts;
+}
 
 function pemToDkimPublicKey(privateKeyPem: string): string {
   const pub = createPublicKey(privateKeyPem);
@@ -64,6 +86,8 @@ export async function domainRoutes(app: FastifyInstance) {
         .replace(/\s+/g, '');
       const dkimValue = `v=DKIM1; k=rsa; p=${publicB64}`;
       const verificationToken = generateToken(16);
+      const smtpHosts = await orgSmtpHosts(orgId);
+      const spf = recommendedSpfForHosts(smtpHosts);
 
       const domain = await prisma.domain.create({
         data: {
@@ -78,7 +102,7 @@ export async function domainRoutes(app: FastifyInstance) {
               {
                 type: 'SPF',
                 host: '@',
-                value: `v=spf1 include:_spf.inboxflow.io ~all`,
+                value: spf.record,
               },
               {
                 type: 'DKIM',
@@ -117,7 +141,7 @@ export async function domainRoutes(app: FastifyInstance) {
           dkimPrivateKeyEnc: undefined,
           hasDkimPrivateKey: true,
         },
-        instructions: getSetupInstructions(domainName, domain.dnsRecords),
+        instructions: getSetupInstructions(domainName, domain.dnsRecords, smtpHosts),
       });
     } catch (error) {
       return sendError(reply, error);
@@ -229,6 +253,9 @@ export async function domainRoutes(app: FastifyInstance) {
       });
       if (!domain) throw new AppError(404, 'Domain not found');
 
+      const smtpHosts = await orgSmtpHosts(orgId);
+      const authHints = recommendedSpfForHosts(smtpHosts);
+      const requiredMechs = authHints.hints.flatMap((h) => h.spfMechanisms);
       const results: Array<{ type: string; status: string; detail?: string }> = [];
 
       for (const record of domain.dnsRecords) {
@@ -243,9 +270,25 @@ export async function domainRoutes(app: FastifyInstance) {
             const txts = await resolveTxt(host).catch(() => [] as string[][]);
             const flat = txts.map((t) => t.join(''));
             valid = flat.some((t) => t.includes(record.value.slice(0, 20)) || t.includes('v=spf1') || t.includes('v=DMARC1') || t.includes('v=DKIM1') || t.includes(record.value));
-            if (record.type === 'SPF') valid = flat.some((t) => t.includes('v=spf1'));
+            if (record.type === 'SPF') {
+              const live = flat.find((t) => t.includes('v=spf1')) || '';
+              const merged = recommendedSpfForHosts(smtpHosts, live || record.value);
+              const missing = live ? missingSpfMechanisms(live, requiredMechs) : requiredMechs;
+              valid = Boolean(live) && missing.length === 0;
+              detail = live
+                ? missing.length
+                  ? `Live SPF is missing ${missing.join(', ')} for your active SMTP. Recommended: ${merged.record}`
+                  : live
+                : `No SPF TXT found. Add: ${merged.record}`;
+              if (merged.record !== record.value) {
+                await prisma.dnsRecord.update({
+                  where: { id: record.id },
+                  data: { value: merged.record },
+                });
+              }
+            }
             if (record.type === 'DMARC') valid = flat.some((t) => t.includes('v=DMARC1'));
-            detail = flat.join(' | ') || 'No TXT records found';
+            if (record.type !== 'SPF') detail = detail || flat.join(' | ') || 'No TXT records found';
           } else if (record.type === 'TRACKING' || record.type === 'RETURN_PATH') {
             const host = `${record.host}.${domain.domain}`;
             const cnames = await resolveCname(host).catch(() => [] as string[]);
@@ -291,7 +334,7 @@ export async function domainRoutes(app: FastifyInstance) {
       return reply.send({
         domain: updated,
         results,
-        instructions: getSetupInstructions(domain.domain, updated.dnsRecords),
+        instructions: getSetupInstructions(domain.domain, updated.dnsRecords, smtpHosts),
       });
     } catch (error) {
       return sendError(reply, error);
@@ -307,7 +350,11 @@ export async function domainRoutes(app: FastifyInstance) {
         include: { dnsRecords: true },
       });
       if (!domain) throw new AppError(404, 'Domain not found');
-      return reply.send({ instructions: getSetupInstructions(domain.domain, domain.dnsRecords), domain });
+      const smtpHosts = await orgSmtpHosts(orgId);
+      return reply.send({
+        instructions: getSetupInstructions(domain.domain, domain.dnsRecords, smtpHosts),
+        domain,
+      });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -325,20 +372,38 @@ export async function domainRoutes(app: FastifyInstance) {
   });
 }
 
-function getSetupInstructions(domain: string, records: Array<{ type: string; host: string; value: string; status: string }>) {
+function getSetupInstructions(
+  domain: string,
+  records: Array<{ type: string; host: string; value: string; status: string }>,
+  smtpHosts: string[] = [],
+) {
+  const recommended = recommendedSpfForHosts(
+    smtpHosts,
+    records.find((r) => r.type === 'SPF')?.value,
+  );
+  const providerNames = recommended.hints.map((h) => h.label).join(', ') || 'your SMTP';
+  const spfRecord = records.find((r) => r.type === 'SPF');
+  const shownSpf = spfRecord
+    ? { ...spfRecord, value: recommended.record }
+    : { type: 'SPF', host: '@', value: recommended.record, status: 'PENDING' };
+  const dkimExtra = recommended.hints.map((h) => h.dkimHint).filter(Boolean).join(' ');
+
   return {
     title: `Authenticate ${domain}`,
     steps: [
       {
         step: 1,
         title: 'Add SPF record',
-        description: 'Authorize your SMTP provider (and Inbox Flow) to send for this domain you own. Do not use bulko.io or other provider domains here.',
-        record: records.find((r) => r.type === 'SPF'),
+        description:
+          `Authorize ${providerNames} to send for this domain. Merge into one SPF TXT (do not create a second v=spf1). For Brevo that means include:spf.brevo.com — not the SMTP Provider IP 136.243.17.45 unless that SMTP is also active.`,
+        record: shownSpf,
       },
       {
         step: 2,
         title: 'Add DKIM record',
-        description: 'Publish the DKIM public key so providers can verify message signatures.',
+        description:
+          dkimExtra ||
+          'Publish the DKIM public key so providers can verify message signatures.',
         record: records.find((r) => r.type === 'DKIM'),
       },
       {
@@ -360,6 +425,6 @@ function getSetupInstructions(domain: string, records: Array<{ type: string; hos
         record: records.find((r) => r.type === 'RETURN_PATH'),
       },
     ],
-    tip: 'You must own this domain’s DNS (not your SMTP provider’s domain like bulko.io). DNS changes can take up to 48 hours. Click Verify after publishing records. Set your campaign From address to an email on this domain.',
+    tip: `You must own this domain’s DNS. If you send with Brevo, Gmail checks SPF against include:spf.brevo.com on the From domain (and on client.${domain} if you From that host). The SMTP Provider IP 136.243.17.45 is only for akoneseo, not Brevo. Wait 10–30 minutes after DNS changes, then placement-test and open Gmail → Show original → SPF: PASS.`,
   };
 }

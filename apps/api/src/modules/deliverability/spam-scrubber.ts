@@ -1,6 +1,6 @@
 /**
- * Auto-scrub common spam / promo trigger phrases from marketing email content.
- * Improves inbox odds but cannot guarantee Primary vs Promotions placement.
+ * Auto-scrub spam / promo trigger phrases + risky HTML patterns from marketing email.
+ * Improves inbox / Promotions odds; cannot force Primary or guarantee inbox.
  */
 
 export interface SpamFilterResult {
@@ -11,73 +11,225 @@ export interface SpamFilterResult {
 
 /** Longer phrases first so partial matches do not win. */
 const SPAM_REPLACEMENTS: Array<{ phrase: string; replaceWith: string }> = [
+  // Money / get-rich
   { phrase: 'earn extra cash', replaceWith: 'grow your balance' },
-  { phrase: 'once in a lifetime', replaceWith: 'available' },
-  { phrase: 'what are you waiting for', replaceWith: '' },
-  { phrase: 'no credit check', replaceWith: '' },
-  { phrase: 'double your money', replaceWith: 'grow your balance' },
+  { phrase: 'earn money online', replaceWith: 'manage your account' },
+  { phrase: 'make money online', replaceWith: 'manage your account' },
   { phrase: 'make money fast', replaceWith: 'manage your account' },
+  { phrase: 'make money', replaceWith: 'manage your account' },
+  { phrase: 'get rich quick', replaceWith: 'plan ahead' },
+  { phrase: 'get rich', replaceWith: 'plan ahead' },
+  { phrase: 'double your income', replaceWith: 'grow your balance' },
+  { phrase: 'double your money', replaceWith: 'grow your balance' },
+  { phrase: 'double your', replaceWith: 'grow your' },
+  { phrase: 'extra income', replaceWith: 'account update' },
+  { phrase: 'passive income', replaceWith: 'account update' },
+  { phrase: 'cash bonus', replaceWith: 'account bonus' },
+  { phrase: 'cash prize', replaceWith: 'account update' },
+  { phrase: 'free money', replaceWith: 'account credit' },
+  { phrase: 'easy money', replaceWith: 'account update' },
+  { phrase: 'fast cash', replaceWith: 'account update' },
+  { phrase: 'wire transfer', replaceWith: 'bank transfer' },
+  { phrase: 'bitcoin giveaway', replaceWith: 'account update' },
+  { phrase: 'crypto giveaway', replaceWith: 'account update' },
+  { phrase: 'crypto airdrop', replaceWith: 'account update' },
+  { phrase: 'nft giveaway', replaceWith: 'account update' },
+
+  // Free / cost
   { phrase: '100% free', replaceWith: 'included' },
   { phrase: '100 percent free', replaceWith: 'included' },
-  { phrase: 'free money', replaceWith: 'account credit' },
-  { phrase: 'cash bonus', replaceWith: 'account bonus' },
-  { phrase: 'risk free', replaceWith: 'no pressure' },
-  { phrase: 'risk-free', replaceWith: 'no pressure' },
-  { phrase: 'no obligation', replaceWith: '' },
-  { phrase: 'limited time offer', replaceWith: 'available now' },
-  { phrase: 'limited time', replaceWith: 'available now' },
-  { phrase: 'act now', replaceWith: 'when you are ready' },
-  { phrase: 'buy now', replaceWith: 'view details' },
-  { phrase: 'order now', replaceWith: 'view options' },
-  { phrase: 'apply now', replaceWith: 'continue' },
-  { phrase: 'call now', replaceWith: 'reach out' },
-  { phrase: 'click here', replaceWith: 'open this link' },
-  { phrase: 'click below', replaceWith: 'use the link below' },
-  { phrase: 'exclusive deal', replaceWith: 'available option' },
-  { phrase: 'best price', replaceWith: 'current price' },
-  { phrase: 'lowest price', replaceWith: 'current price' },
-  { phrase: 'special promotion', replaceWith: 'update' },
-  { phrase: 'amazing deal', replaceWith: 'update' },
-  { phrase: 'huge discount', replaceWith: 'current pricing' },
+  { phrase: 'absolutely free', replaceWith: 'included' },
+  { phrase: 'totally free', replaceWith: 'included' },
+  { phrase: 'completely free', replaceWith: 'included' },
   { phrase: 'free!!!', replaceWith: 'included' },
-  { phrase: 'congratulations', replaceWith: 'hello' },
-  { phrase: 'you have won', replaceWith: 'you have an update' },
-  { phrase: "you're a winner", replaceWith: 'you have an update' },
-  { phrase: 'you are a winner', replaceWith: 'you have an update' },
-  { phrase: 'instant access', replaceWith: 'account access' },
-  { phrase: 'no cost', replaceWith: 'included' },
+  { phrase: 'free!!', replaceWith: 'included' },
+  { phrase: 'free!', replaceWith: 'included' },
   { phrase: 'for free', replaceWith: 'included' },
-  { phrase: 'winner', replaceWith: 'update' },
-  { phrase: 'urgent!!!', replaceWith: 'important' },
-  { phrase: 'urgent!', replaceWith: 'important' },
-  { phrase: 'urgent', replaceWith: 'important' },
-  { phrase: 'guaranteed', replaceWith: 'supported' },
-  { phrase: 'bargain', replaceWith: 'offer' },
-  { phrase: 'this is not spam', replaceWith: '' },
-  { phrase: 'dear friend', replaceWith: 'hello' },
-  { phrase: 'as seen on', replaceWith: 'featured in' },
-  { phrase: 'claim your prize', replaceWith: 'view your update' },
+  { phrase: 'free gift', replaceWith: 'included item' },
+  { phrase: 'free trial', replaceWith: 'trial access' },
+  { phrase: 'free access', replaceWith: 'account access' },
+  { phrase: 'no cost', replaceWith: 'included' },
+  { phrase: 'no fees', replaceWith: 'standard terms' },
+  { phrase: 'no charge', replaceWith: 'included' },
+  { phrase: 'without cost', replaceWith: 'included' },
+
+  // Urgency / pressure
+  { phrase: 'once in a lifetime', replaceWith: 'available' },
+  { phrase: 'what are you waiting for', replaceWith: '' },
+  { phrase: 'limited time offer', replaceWith: 'available now' },
+  { phrase: 'limited time only', replaceWith: 'available now' },
+  { phrase: 'limited time', replaceWith: 'available now' },
+  { phrase: 'limited offer', replaceWith: 'available now' },
+  { phrase: 'act now!!!', replaceWith: 'when you are ready' },
+  { phrase: 'act now!', replaceWith: 'when you are ready' },
+  { phrase: 'act now', replaceWith: 'when you are ready' },
+  { phrase: 'act immediately', replaceWith: 'when you are ready' },
+  { phrase: 'do it today', replaceWith: 'when convenient' },
+  { phrase: 'hurry up', replaceWith: 'take a look' },
+  { phrase: 'hurry!', replaceWith: 'take a look' },
+  { phrase: 'hurry', replaceWith: 'take a look' },
   { phrase: 'last chance', replaceWith: 'still available' },
+  { phrase: 'final notice', replaceWith: 'friendly reminder' },
+  { phrase: 'final warning', replaceWith: 'friendly reminder' },
   { phrase: 'expires today', replaceWith: 'available today' },
+  { phrase: 'expires tonight', replaceWith: 'available today' },
   { phrase: 'expires in 24 hours', replaceWith: 'available for a limited period' },
+  { phrase: 'expires soon', replaceWith: 'available now' },
   { phrase: 'only today', replaceWith: 'available now' },
+  { phrase: 'today only', replaceWith: 'available now' },
   { phrase: 'must act', replaceWith: 'you can continue' },
   { phrase: 'immediate action required', replaceWith: 'please review when convenient' },
   { phrase: 'immediate action', replaceWith: 'please review' },
-  { phrase: 'verify immediately', replaceWith: 'please review' },
-  { phrase: 'confirm your identity', replaceWith: 'review your account' },
-  { phrase: 'account suspended', replaceWith: 'account update' },
-  { phrase: 'your account has been locked', replaceWith: 'please review your account' },
-  { phrase: 'wire transfer', replaceWith: 'bank transfer' },
-  { phrase: 'crypto giveaway', replaceWith: 'account update' },
-  { phrase: 'free gift', replaceWith: 'included item' },
+  { phrase: 'time sensitive', replaceWith: 'please review' },
+  { phrase: 'urgent!!!', replaceWith: 'important' },
+  { phrase: 'urgent!!', replaceWith: 'important' },
+  { phrase: 'urgent!', replaceWith: 'important' },
+  { phrase: 'urgent', replaceWith: 'important' },
+  { phrase: 'asap', replaceWith: 'soon' },
+  { phrase: 'don\'t delete', replaceWith: 'please review' },
+  { phrase: 'do not delete', replaceWith: 'please review' },
+  { phrase: 'don\'t miss out', replaceWith: 'take a look' },
+  { phrase: 'do not miss out', replaceWith: 'take a look' },
+  { phrase: 'while supplies last', replaceWith: 'while available' },
+  { phrase: 'before it\'s too late', replaceWith: 'when you have a moment' },
+  { phrase: 'before its too late', replaceWith: 'when you have a moment' },
+
+  // CTAs
+  { phrase: 'buy now!!!', replaceWith: 'view details' },
+  { phrase: 'buy now!', replaceWith: 'view details' },
+  { phrase: 'buy now', replaceWith: 'view details' },
+  { phrase: 'order now', replaceWith: 'view options' },
+  { phrase: 'shop now', replaceWith: 'view collection' },
+  { phrase: 'apply now', replaceWith: 'continue' },
+  { phrase: 'call now', replaceWith: 'reach out' },
+  { phrase: 'sign up free', replaceWith: 'create an account' },
+  { phrase: 'sign up now', replaceWith: 'create an account' },
+  { phrase: 'subscribe now', replaceWith: 'stay updated' },
+  { phrase: 'click here now', replaceWith: 'open this link' },
+  { phrase: 'click here', replaceWith: 'open this link' },
+  { phrase: 'click below', replaceWith: 'use the link below' },
+  { phrase: 'click above', replaceWith: 'use the link above' },
+  { phrase: 'click the link', replaceWith: 'open the link' },
+  { phrase: 'tap here', replaceWith: 'open this link' },
+
+  // Deals / promo jargon
+  { phrase: 'exclusive deal', replaceWith: 'available option' },
+  { phrase: 'exclusive offer', replaceWith: 'available option' },
+  { phrase: 'special promotion', replaceWith: 'update' },
+  { phrase: 'special offer', replaceWith: 'update' },
+  { phrase: 'amazing deal', replaceWith: 'update' },
+  { phrase: 'incredible offer', replaceWith: 'update' },
+  { phrase: 'unbelievable deal', replaceWith: 'update' },
+  { phrase: 'huge discount', replaceWith: 'current pricing' },
+  { phrase: 'massive discount', replaceWith: 'current pricing' },
+  { phrase: 'biggest sale', replaceWith: 'current pricing' },
+  { phrase: 'best price', replaceWith: 'current price' },
+  { phrase: 'lowest price', replaceWith: 'current price' },
+  { phrase: 'lowest prices', replaceWith: 'current prices' },
+  { phrase: 'price drop', replaceWith: 'updated pricing' },
+  { phrase: 'slash prices', replaceWith: 'updated pricing' },
+  { phrase: 'half off', replaceWith: 'current pricing' },
+  { phrase: '50% off', replaceWith: 'current pricing' },
+  { phrase: '70% off', replaceWith: 'current pricing' },
+  { phrase: '90% off', replaceWith: 'current pricing' },
+  { phrase: 'clearance', replaceWith: 'available items' },
+  { phrase: 'bargain', replaceWith: 'offer' },
+  { phrase: 'deal of the day', replaceWith: 'today\'s update' },
+  { phrase: 'hot deal', replaceWith: 'update' },
+  { phrase: 'no obligation', replaceWith: '' },
+  { phrase: 'no credit check', replaceWith: '' },
+  { phrase: 'no questions asked', replaceWith: '' },
   { phrase: 'no catch', replaceWith: '' },
+  { phrase: 'no strings attached', replaceWith: '' },
+  { phrase: 'risk free', replaceWith: 'no pressure' },
+  { phrase: 'risk-free', replaceWith: 'no pressure' },
   { phrase: 'satisfaction guaranteed', replaceWith: 'we are here to help' },
+  { phrase: 'money back guarantee', replaceWith: 'support options' },
+  { phrase: 'money-back guarantee', replaceWith: 'support options' },
   { phrase: 'full refund', replaceWith: 'support options' },
+  { phrase: 'guaranteed', replaceWith: 'supported' },
   { phrase: 'increase sales', replaceWith: 'grow results' },
+  { phrase: 'increase your sales', replaceWith: 'grow your results' },
+
+  // Prize / lottery / phishing-ish
+  { phrase: 'congratulations!!!', replaceWith: 'hello' },
+  { phrase: 'congratulations!', replaceWith: 'hello' },
+  { phrase: 'congratulations', replaceWith: 'hello' },
+  { phrase: 'you have been selected', replaceWith: 'you have an update' },
+  { phrase: 'you\'ve been selected', replaceWith: 'you have an update' },
+  { phrase: 'you have won', replaceWith: 'you have an update' },
+  { phrase: 'you\'ve won', replaceWith: 'you have an update' },
+  { phrase: 'you\'re a winner', replaceWith: 'you have an update' },
+  { phrase: 'you are a winner', replaceWith: 'you have an update' },
+  { phrase: 'claim your prize', replaceWith: 'view your update' },
+  { phrase: 'claim your reward', replaceWith: 'view your update' },
+  { phrase: 'claim now', replaceWith: 'view update' },
+  { phrase: 'winner', replaceWith: 'update' },
+  { phrase: 'prize', replaceWith: 'update' },
+  { phrase: 'lottery', replaceWith: 'selection' },
+  { phrase: 'jackpot', replaceWith: 'update' },
+
+  // Account scare / phishing CTAs (soften wording — not brand spoofing help)
+  { phrase: 'verify immediately', replaceWith: 'please review' },
+  { phrase: 'verify your account', replaceWith: 'review your account' },
+  { phrase: 'confirm your identity', replaceWith: 'review your account' },
+  { phrase: 'confirm your account', replaceWith: 'review your account' },
+  { phrase: 'account suspended', replaceWith: 'account update' },
+  { phrase: 'account will be suspended', replaceWith: 'account update' },
+  { phrase: 'account locked', replaceWith: 'account update' },
+  { phrase: 'your account has been locked', replaceWith: 'please review your account' },
+  { phrase: 'your account has been compromised', replaceWith: 'please review your account' },
+  { phrase: 'unusual activity detected', replaceWith: 'account activity notice' },
+  { phrase: 'security alert', replaceWith: 'account notice' },
+  { phrase: 'password expires', replaceWith: 'password reminder' },
+  { phrase: 'update your payment', replaceWith: 'review billing details' },
+  { phrase: 'payment failed', replaceWith: 'billing notice' },
+  { phrase: 'invoice attached', replaceWith: 'billing details' },
+
+  // Misc classic spam
+  { phrase: 'this is not spam', replaceWith: '' },
+  { phrase: 'this is not a scam', replaceWith: '' },
+  { phrase: 'not spam', replaceWith: '' },
+  { phrase: 'dear friend', replaceWith: 'hello' },
+  { phrase: 'dear sir/madam', replaceWith: 'hello' },
+  { phrase: 'dear valued customer', replaceWith: 'hello' },
+  { phrase: 'as seen on tv', replaceWith: 'featured in' },
+  { phrase: 'as seen on', replaceWith: 'featured in' },
+  { phrase: 'instant access', replaceWith: 'account access' },
+  { phrase: 'mlm', replaceWith: 'partner program' },
+  { phrase: 'multi level marketing', replaceWith: 'partner program' },
+  { phrase: 'work from home', replaceWith: 'remote work' },
+  { phrase: 'be your own boss', replaceWith: 'grow independently' },
+  { phrase: 'weight loss', replaceWith: 'wellness' },
+  { phrase: 'lose weight', replaceWith: 'wellness goals' },
+  { phrase: 'viagra', replaceWith: 'medication' },
+  { phrase: 'cialis', replaceWith: 'medication' },
+  { phrase: 'casino', replaceWith: 'entertainment' },
+  { phrase: 'online pharmacy', replaceWith: 'health resources' },
+
+  // Punctuation / symbols
   { phrase: '!!!', replaceWith: '!' },
   { phrase: '$$$', replaceWith: '' },
+  { phrase: '$$', replaceWith: '' },
   { phrase: '!!', replaceWith: '!' },
+];
+
+/** Phrases that must not remain after scrub — queue blocks only on these. */
+const BLOCKING_SPAM_PHRASES = [
+  'make money',
+  'get rich',
+  'free money',
+  'this is not spam',
+  'you have won',
+  'claim your prize',
+  'crypto giveaway',
+  'double your money',
+  '100% free',
+  'no credit check',
+  'dear friend',
+  'viagra',
+  'cialis',
+  'online pharmacy',
 ];
 
 function escapeRegExp(value: string) {
@@ -86,10 +238,53 @@ function escapeRegExp(value: string) {
 
 function phrasePattern(phrase: string) {
   const escaped = escapeRegExp(phrase);
-  if (!/\s/.test(phrase) && /^[a-z0-9%-]+$/i.test(phrase)) {
+  if (!/\s/.test(phrase) && /^[a-z0-9%'-]+$/i.test(phrase)) {
     return new RegExp(`\\b${escaped}\\b`, 'gi');
   }
   return new RegExp(escaped, 'gi');
+}
+
+function decodeBasicEntities(input: string): string {
+  return input
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch {
+        return '';
+      }
+    })
+    .replace(/&#(\d+);/g, (_, num: string) => {
+      try {
+        return String.fromCodePoint(Number(num));
+      } catch {
+        return '';
+      }
+    });
+}
+
+/** Collapse "F R E E" / "B-U-Y" style obfuscation in plain text. */
+function deobfuscateSpacedLetters(input: string): string {
+  return input.replace(/\b([A-Za-z])(?:[\s.\-_*]{1,2}([A-Za-z])){2,8}\b/g, (match) => {
+    const letters = match.replace(/[^A-Za-z]/g, '');
+    if (letters.length >= 3 && letters.length <= 12) return letters;
+    return match;
+  });
+}
+
+function softenAllCapsRun(text: string): string {
+  return text.replace(/\b([A-Z][A-Z0-9]{3,})\b/g, (word) => {
+    if (/^[A-Z0-9]+$/.test(word) && word.length >= 4) {
+      return word.charAt(0) + word.slice(1).toLowerCase();
+    }
+    return word;
+  });
 }
 
 export function scrubSpamFromText(
@@ -97,7 +292,8 @@ export function scrubSpamFromText(
   options: { trim?: boolean } = {},
 ): SpamFilterResult {
   const shouldTrim = options.trim !== false;
-  let text = input;
+  const original = input;
+  let text = deobfuscateSpacedLetters(decodeBasicEntities(input));
   const removed: string[] = [];
 
   for (const { phrase, replaceWith } of SPAM_REPLACEMENTS) {
@@ -107,7 +303,10 @@ export function scrubSpamFromText(
     text = next;
   }
 
+  text = softenAllCapsRun(text);
   text = text
+    .replace(/!{2,}/g, '!')
+    .replace(/\${2,}/g, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/\s+([.,;:!?)])/g, '$1');
@@ -116,15 +315,51 @@ export function scrubSpamFromText(
   return {
     text,
     removed: [...new Set(removed.map((item) => item.toLowerCase()))],
-    changed: text !== input,
+    changed: text !== original,
   };
 }
 
+/** Strip scripts, harden risky attributes, scrub text nodes. */
 export function scrubSpamFromHtml(html: string): SpamFilterResult {
-  const parts = html.split(/(<[^>]+>)/g);
   const removed: string[] = [];
   let changed = false;
+  let working = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, () => {
+      changed = true;
+      removed.push('script');
+      return '';
+    })
+    .replace(/<!--[\s\S]*?-->/g, () => {
+      changed = true;
+      return '';
+    })
+    .replace(/\s*on\w+\s*=\s*("|')[\s\S]*?\1/gi, () => {
+      changed = true;
+      removed.push('inline-handler');
+      return '';
+    })
+    .replace(/javascript:/gi, () => {
+      changed = true;
+      removed.push('javascript-url');
+      return '';
+    })
+    // Soften classic spam red / screaming CTA colors in inline styles
+    .replace(/color\s*:\s*(#f{0,2}00|#ff0000|red|rgb\(\s*255\s*,\s*0\s*,\s*0\s*\))/gi, () => {
+      changed = true;
+      removed.push('spam-red-color');
+      return 'color:#333333';
+    })
+    .replace(/font-size\s*:\s*(\d{2,})px/gi, (_m, size: string) => {
+      const n = Number(size);
+      if (n >= 28) {
+        changed = true;
+        removed.push('oversized-font');
+        return 'font-size:18px';
+      }
+      return _m;
+    });
 
+  const parts = working.split(/(<[^>]+>)/g);
   const scrubbed = parts
     .map((part) => {
       if (!part || part.startsWith('<')) return part;
@@ -133,6 +368,7 @@ export function scrubSpamFromHtml(html: string): SpamFilterResult {
         removed.push(...result.removed);
         changed = true;
       }
+      if (result.text !== part) changed = true;
       return result.text;
     })
     .join('');
@@ -152,7 +388,7 @@ export function sentenceCaseSubject(subject: string) {
   if (!letters.length) return trimmed;
 
   const upperRatio = letters.replace(/[^A-Z]/g, '').length / letters.length;
-  if (upperRatio <= 0.6) return trimmed;
+  if (upperRatio <= 0.45) return trimmed;
 
   const lower = trimmed.toLowerCase();
   return lower.charAt(0).toUpperCase() + lower.slice(1);
@@ -161,8 +397,7 @@ export function sentenceCaseSubject(subject: string) {
 export function findRemainingSpamPhrases(text: string): string[] {
   const lower = text.toLowerCase();
   const remaining: string[] = [];
-  for (const { phrase } of SPAM_REPLACEMENTS) {
-    if (/^[!$]+$/.test(phrase)) continue;
+  for (const phrase of BLOCKING_SPAM_PHRASES) {
     const pattern = phrasePattern(phrase);
     pattern.lastIndex = 0;
     if (pattern.test(lower)) remaining.push(phrase.toLowerCase());
@@ -225,4 +460,68 @@ export function isImageOnlyHtml(html: string | null | undefined): boolean {
   if (text.length > 40) return false;
   const imgCount = (html.match(/<img[\s>]/gi) || []).length;
   return imgCount > 0 && text.length < 20;
+}
+
+/**
+ * Send-time hardening for any campaign HTML already in the DB.
+ * Scrubs spam phrases, normalizes subject casing, injects preview preheader,
+ * and ensures a plain-text part exists. Cannot force Primary vs Promotions.
+ */
+export function hardenOutboundMime(input: {
+  subject: string;
+  previewText?: string | null;
+  html: string;
+  text?: string | null;
+}): {
+  subject: string;
+  previewText: string;
+  html: string;
+  text: string;
+  removed: string[];
+} {
+  const scrubbed = scrubCampaignContent({
+    subject: input.subject,
+    previewText: input.previewText,
+    htmlContent: input.html,
+    plainTextContent: input.text,
+  });
+
+  let html = scrubbed.htmlContent || '';
+  let text = (scrubbed.plainTextContent || '').trim();
+  if (!text && html) text = stripHtmlTags(html);
+
+  // Image-heavy templates: add a short text anchor so filters see readable content
+  if (html && isImageOnlyHtml(html)) {
+    const anchor =
+      '<p style="font-size:14px;color:#444;line-height:1.5">Thanks for staying in touch. Open this message for the latest update from our team.</p>';
+    if (/<body[^>]*>/i.test(html)) {
+      html = html.replace(/<body[^>]*>/i, (open) => `${open}${anchor}`);
+    } else {
+      html = `${anchor}${html}`;
+    }
+    text = `${text}\nThanks for staying in touch. Open this message for the latest update from our team.`.trim();
+    scrubbed.removed.push('image-only-anchor');
+  }
+
+  const preview = (scrubbed.previewText || text.slice(0, 90) || '').trim();
+  if (preview && html && !/display:\s*none[^"]*max-height:\s*0/i.test(html)) {
+    const safe = preview
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const preheader = `<div style="display:none;font-size:1px;color:#fff;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden">${safe}</div>`;
+    if (/<body[^>]*>/i.test(html)) {
+      html = html.replace(/<body[^>]*>/i, (open) => `${open}${preheader}`);
+    } else {
+      html = `${preheader}${html}`;
+    }
+  }
+
+  return {
+    subject: scrubbed.subject || 'Update',
+    previewText: preview,
+    html,
+    text,
+    removed: scrubbed.removed,
+  };
 }

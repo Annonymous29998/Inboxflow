@@ -51,6 +51,11 @@ const QUICK_FILLS: { id: string; label: string; patch: Partial<FormState> }[] = 
     patch: { host: 'email-smtp.us-east-1.amazonaws.com', port: '587', encryption: 'STARTTLS' },
   },
   {
+    id: 'brevo',
+    label: 'Brevo',
+    patch: { host: 'smtp-relay.brevo.com', port: '587', encryption: 'STARTTLS' },
+  },
+  {
     id: 'bulko',
     label: 'Bulko',
     patch: { host: 'smtp.bulko.io', port: '2525', encryption: 'STARTTLS', ignoreTLS: true },

@@ -11,6 +11,7 @@ import {
 } from './smtp-rotation.js';
 import { writeSystemLog } from '../system-log.js';
 import { signClickRedirect, signUnsubscribe } from '../../utils/signed-urls.js';
+import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
 
 function personalize(
   template: string,
@@ -99,6 +100,20 @@ export async function sendCampaignEmailToRecipient(input: {
 
   let html = personalize(campaign.htmlContent || '', contact);
   let text = personalize(campaign.plainTextContent || '', contact);
+  const subjectBase = pickFromPool(campaign.subjectPool, campaign.subject || '');
+  const fromNameBase = pickFromPool(campaign.fromNamePool, campaign.senderName || '');
+  let subject = personalize(subjectBase, contact);
+
+  // Auto-harden every outbound message (including templates already stored in DB).
+  const hardened = hardenOutboundMime({
+    subject,
+    previewText: campaign.previewText,
+    html,
+    text,
+  });
+  subject = hardened.subject;
+  html = hardened.html;
+  text = hardened.text;
 
   const unsubSig = signUnsubscribe(contactId, campaignId);
   const unsubscribeUrl = `${env.API_URL}/api/t/unsubscribe?c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`;
@@ -149,11 +164,11 @@ export async function sendCampaignEmailToRecipient(input: {
     'List-Unsubscribe': `<${unsubscribeUrl}>`,
     'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
   };
+  if (hardened.previewText) {
+    headers['X-Preview-Text'] = hardened.previewText.slice(0, 150);
+  }
   const replyTo = campaign.replyTo || undefined;
   if (replyTo) headers['Reply-To'] = replyTo;
-
-  const subjectBase = pickFromPool(campaign.subjectPool, campaign.subject || '');
-  const fromNameBase = pickFromPool(campaign.fromNamePool, campaign.senderName || '');
 
   let dkim:
     | {
@@ -196,7 +211,7 @@ export async function sendCampaignEmailToRecipient(input: {
         from: fromEmail,
         fromName,
         replyTo: campaign.replyTo || cfg.replyTo || undefined,
-        subject: personalize(subjectBase, contact),
+        subject,
         html,
         text: text || undefined,
         headers,

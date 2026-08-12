@@ -8,7 +8,7 @@ import { requireOrg } from '../../utils/org.js';
 import { drainCampaignJobs, enqueueCampaign, enqueueCampaignScheduled } from '../../services/email/queue.js';
 import { sendCampaignEmailToRecipient } from '../../services/email/campaign-send.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
-import { scrubCampaignContent, findRemainingSpamPhrases } from '../deliverability/spam-scrubber.js';
+import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
 import { upsertJobProgress } from '../jobs/progress.js';
 
 type SegmentRules = {
@@ -1215,6 +1215,12 @@ export async function campaignRoutes(app: FastifyInstance) {
 
       for (const subject of body.subjects) {
         for (const fromName of fromNames) {
+          const hardened = hardenOutboundMime({
+            subject: body.noSubjectPrefix ? subject : `[TEST] ${subject}`,
+            previewText: campaign.previewText,
+            html: campaign.htmlContent || '<p>Test matrix message</p>',
+            text: campaign.plainTextContent || 'Test matrix message',
+          });
           const result = await sendViaProvider(
             provider.type,
             provider.config,
@@ -1223,9 +1229,15 @@ export async function campaignRoutes(app: FastifyInstance) {
               from: fromEmail,
               fromName: fromName.trim() || undefined,
               replyTo: campaign.replyTo || cfg.replyTo || undefined,
-              subject: body.noSubjectPrefix ? subject : `[TEST] ${subject}`,
-              html: campaign.htmlContent || '<p>Test matrix message</p>',
-              text: campaign.plainTextContent || 'Test matrix message',
+              subject: hardened.subject,
+              html: hardened.html,
+              text: hardened.text,
+              headers: {
+                'List-Unsubscribe': `<mailto:unsubscribe@${fromEmail.split('@')[1] || 'example.com'}>`,
+                ...(hardened.previewText
+                  ? { 'X-Preview-Text': hardened.previewText.slice(0, 150) }
+                  : {}),
+              },
               dkim,
             },
             { portFailover: provider.isDefault && provider.type === 'SMTP' },

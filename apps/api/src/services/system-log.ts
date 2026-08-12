@@ -171,11 +171,18 @@ export function detectSmtpDeliverabilityWarnings(config: {
     );
   }
 
-  const isSharedBulk = SHARED_BULK_HOST_HINTS.some((h) => host.includes(h));
-  if (isSharedBulk && fromDomain && !FREE_EMAIL_HOSTS.has(fromDomain)) {
+  const isBrevo = /brevo|sendinblue/i.test(host);
+  if (isBrevo && fromDomain && !FREE_EMAIL_HOSTS.has(fromDomain)) {
     warnings.push(
-      'This SMTP host is a shared bulk/marketing SMTP (SendGrid / Brevo / Mailchimp / etc). You MUST verify/authenticate your From domain on their dashboard with SPF + DKIM + DMARC before sending. Sending without a verified domain on the shared provider delivers mail servers sends the provider will land in Spam/Gmail Promotions folder or bounce (poor sender reputation.)',
+      `Brevo send: Gmail SPF is checked against ${fromDomain}, not SMTP Provider (akoneseo / 136.243.17.45). Publish one SPF TXT on ${fromDomain}: include:spf.brevo.com (merge with any existing includes, do not add a second v=spf1). Also authenticate ${fromDomain} in Brevo → Domains (brevo-code + DKIM CNAMEs). After 10–30 min, Gmail → Show original should show SPF: PASS.`,
     );
+  } else {
+    const isSharedBulk = SHARED_BULK_HOST_HINTS.some((h) => host.includes(h));
+    if (isSharedBulk && fromDomain && !FREE_EMAIL_HOSTS.has(fromDomain)) {
+      warnings.push(
+        'This SMTP host is a shared bulk/marketing SMTP (SendGrid / Brevo / Mailchimp / etc). You MUST verify/authenticate your From domain on their dashboard with SPF + DKIM + DMARC before sending. Sending without a verified domain on the shared provider delivers mail servers sends the provider will land in Spam/Gmail Promotions folder or bounce (poor sender reputation.)',
+      );
+    }
   }
 
   if (!fromDomain && host) {
