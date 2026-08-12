@@ -53,6 +53,7 @@ export function QueueConsolePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [live, setLive] = useState<SendStatus | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [campaignsOpen, setCampaignsOpen] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -173,6 +174,7 @@ export function QueueConsolePage() {
   const sendLogDefaultOpen =
     selectedStatus === 'SENDING' || selectedStatus === 'PAUSED' || progress.finished < 20;
   const engagementCount = live?.engagementActivity?.length ?? 0;
+  const activeQueueCount = rows.filter((r) => r.status === 'SENDING' || r.status === 'PAUSED').length;
   const canShowRecipientList =
     selectedRow &&
     (progress.total > 0 ||
@@ -469,9 +471,26 @@ export function QueueConsolePage() {
         </div>
       ) : null}
 
-      <div className="tui-box overflow-x-auto">
-        <div className="tui-box-title">Campaigns</div>
-        <table className="w-full min-w-180 text-left text-xs">
+      <div className="tui-box overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setCampaignsOpen((v) => !v)}
+          className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
+        >
+          {campaignsOpen ? (
+            <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-accent">Campaigns</span>
+          <Badge tone="neutral">{rows.length}</Badge>
+          {activeQueueCount > 0 ? (
+            <Badge tone="success">{activeQueueCount} active</Badge>
+          ) : null}
+        </button>
+        {campaignsOpen ? (
+          <div className="overflow-x-auto border-t border-border">
+            <table className="w-full min-w-180 text-left text-xs">
           <thead className="border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">Campaign</th>
@@ -566,7 +585,9 @@ export function QueueConsolePage() {
               </tr>
             ) : null}
           </tbody>
-        </table>
+            </table>
+          </div>
+        ) : null}
       </div>
     </div>
   );
