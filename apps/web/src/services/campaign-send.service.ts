@@ -36,7 +36,10 @@ export type SendStatus = {
   recentFailures?: Array<{ email: string; error: string }>;
   recentOpens?: Array<{ email: string; at: string }>;
   recentClicks?: Array<{ email: string; at: string; url?: string | null }>;
+  /** Send queue log — SENT / FAILED only */
   activity?: SendActivity[];
+  /** Verified opens/clicks — separate from send log */
+  engagementActivity?: SendActivity[];
 };
 
 export type JobProgressEvent = {

@@ -73,7 +73,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       isCountableClick(e.userAgent, e.metadata, true),
   );
 
-  const activity: SendActivityRow[] = [
+  const sendActivity: SendActivityRow[] = [
     ...recentDelivered.map((r) => ({
       email: r.contact.email,
       status: 'SENT' as const,
@@ -86,15 +86,18 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       error: r.error || 'Send failed',
       at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
     })),
+  ].sort((a, b) => (a.at < b.at ? 1 : -1));
+
+  const engagementActivity: SendActivityRow[] = [
     ...openEvents
       .filter((e) => isCountableOpen(e.userAgent, e.metadata))
       .slice(0, 40)
       .map((e) => ({
-      email: e.contact?.email || 'unknown',
-      status: 'OPENED' as const,
-      error: null,
-      at: e.createdAt.toISOString(),
-    })),
+        email: e.contact?.email || 'unknown',
+        status: 'OPENED' as const,
+        error: null,
+        at: e.createdAt.toISOString(),
+      })),
     ...countableClicks.slice(0, 40).map((e) => ({
       email: e.contact?.email || 'unknown',
       status: 'CLICKED' as const,
@@ -102,14 +105,14 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       at: e.createdAt.toISOString(),
       url: e.url,
     })),
-  ]
-    .sort((a, b) => (a.at < b.at ? 1 : -1))
-    .slice(0, 100);
+  ].sort((a, b) => (a.at < b.at ? 1 : -1));
 
   const recentSent = recentDelivered.slice(0, 12).map((r) => ({
     email: r.contact.email,
     at: r.sentAt,
   }));
+
+  const lastSentEmail = sendActivity.find((a) => a.status === 'SENT')?.email ?? null;
 
   return {
     success: true,
@@ -124,7 +127,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     openedCount: humanOpened,
     clickedCount: humanClicked,
     completedAt: campaign.completedAt,
-    lastEmail: activity[0]?.email || null,
+    lastEmail: lastSentEmail,
     recentSent,
     recentFailures: recentFailures.slice(0, 40).map((r) => ({
       email: r.contact.email,
@@ -134,14 +137,16 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       .filter((e) => isCountableOpen(e.userAgent, e.metadata))
       .slice(0, 20)
       .map((e) => ({
-      email: e.contact?.email || 'unknown',
-      at: e.createdAt.toISOString(),
-    })),
+        email: e.contact?.email || 'unknown',
+        at: e.createdAt.toISOString(),
+      })),
     recentClicks: countableClicks.slice(0, 20).map((e) => ({
       email: e.contact?.email || 'unknown',
       at: e.createdAt.toISOString(),
       url: e.url,
     })),
-    activity,
+    /** Send queue log only — SENT / FAILED (Nexlogs-style). */
+    activity: sendActivity.slice(0, 100),
+    engagementActivity,
   };
 }

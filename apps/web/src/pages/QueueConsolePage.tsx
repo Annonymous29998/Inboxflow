@@ -324,7 +324,7 @@ export function QueueConsolePage() {
 
             <div className="max-h-72 overflow-auto border border-border bg-muted/20">
               <div className="sticky top-0 border-b border-border bg-card px-3 py-1.5 text-[10px] uppercase tracking-wide text-accent">
-                Live log — sends, opens, clicks (newest first)
+                Send log — SENT / FAILED (newest first)
               </div>
               {live?.activity?.length ? (
                 <ul className="divide-y divide-border/50 text-[11px]">
@@ -336,6 +336,40 @@ export function QueueConsolePage() {
                           'shrink-0 font-semibold',
                           item.status === 'SENT' && 'text-primary',
                           item.status === 'FAILED' && 'text-destructive',
+                        )}
+                      >
+                        [{item.status}]
+                      </span>
+                      <span className="min-w-0 break-all">
+                        {item.email}
+                        {item.error ? (
+                          <span className="text-muted-foreground"> — {item.error}</span>
+                        ) : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
+                  {progress.pending > 0 && progress.finished === 0
+                    ? 'No email has left SMTP yet. If this stays empty, the worker is not dequeuing — use Resume or start the send again.'
+                    : 'No sent/failed lines yet for this campaign.'}
+                </p>
+              )}
+            </div>
+
+            {live?.engagementActivity && live.engagementActivity.length > 0 ? (
+              <div className="max-h-48 overflow-auto border border-border bg-muted/20">
+                <div className="sticky top-0 border-b border-border bg-card px-3 py-1.5 text-[10px] uppercase tracking-wide text-accent">
+                  Opens & clicks — verified only (separate from send log)
+                </div>
+                <ul className="divide-y divide-border/50 text-[11px]">
+                  {live.engagementActivity.map((item, i) => (
+                    <li key={`eng-${item.status}-${item.email}-${item.at}-${i}`} className="flex gap-2 px-3 py-1.5">
+                      <span className="shrink-0 tabular-nums text-muted-foreground">{formatTime(item.at)}</span>
+                      <span
+                        className={cn(
+                          'shrink-0 font-semibold',
                           item.status === 'OPENED' && 'text-accent',
                           item.status === 'CLICKED' && 'text-primary',
                         )}
@@ -350,9 +384,6 @@ export function QueueConsolePage() {
                           <MousePointerClick className="mr-1 inline h-3 w-3" aria-hidden />
                         ) : null}
                         {item.email}
-                        {item.error ? (
-                          <span className="text-muted-foreground"> — {item.error}</span>
-                        ) : null}
                         {item.url ? (
                           <span className="text-muted-foreground"> → {item.url}</span>
                         ) : null}
@@ -360,14 +391,8 @@ export function QueueConsolePage() {
                     </li>
                   ))}
                 </ul>
-              ) : (
-                <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-                  {progress.pending > 0 && progress.finished === 0
-                    ? 'No email has left SMTP yet. If this stays empty, the worker is not dequeuing — use Resume or start the send again.'
-                    : 'No sent/failed lines yet for this campaign.'}
-                </p>
-              )}
-            </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
