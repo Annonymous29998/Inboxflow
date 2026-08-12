@@ -3,6 +3,8 @@ import { api } from '@/lib/api';
 export type DashboardData = {
   stats: {
     totalContacts: number;
+    subscribedContacts: number;
+    unsubscribedContacts: number;
     activeCampaigns: number;
     scheduledCampaigns: number;
     emailsSent: number;

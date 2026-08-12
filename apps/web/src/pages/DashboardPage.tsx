@@ -54,7 +54,15 @@ export function DashboardPage() {
   const stats = data?.stats;
 
   const cards = [
-    { label: 'Total Contacts', value: formatNumber(stats?.totalContacts ?? 0), icon: Users },
+    {
+      label: 'Total Contacts',
+      value: formatNumber(stats?.totalContacts ?? 0),
+      hint:
+        stats != null
+          ? `${formatNumber(stats.subscribedContacts)} subscribed · ${formatNumber(stats.unsubscribedContacts)} unsubscribed`
+          : undefined,
+      icon: Users,
+    },
     { label: 'Active Campaigns', value: formatNumber(stats?.activeCampaigns ?? 0), icon: Mail },
     { label: 'Scheduled', value: formatNumber(stats?.scheduledCampaigns ?? 0), icon: Calendar },
     { label: 'Emails Sent', value: formatNumber(stats?.emailsSent ?? 0), icon: Send },
@@ -125,6 +133,9 @@ export function DashboardPage() {
                 <card.icon className="h-4 w-4 shrink-0 text-primary" />
               </div>
               <div className="mt-2 text-lg font-semibold tracking-tight capitalize sm:mt-3 sm:text-2xl">{card.value}</div>
+              {'hint' in card && card.hint ? (
+                <div className="mt-1 text-[10px] text-ink-muted sm:text-xs">{card.hint}</div>
+              ) : null}
             </Card>
           </motion.div>
         ))}

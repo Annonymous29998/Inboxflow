@@ -4,6 +4,8 @@ import { getCampaignLiveStats, getOrgLiveEngagement } from '../../services/campa
 export type DashboardPayload = {
   stats: {
     totalContacts: number;
+    subscribedContacts: number;
+    unsubscribedContacts: number;
     activeCampaigns: number;
     scheduledCampaigns: number;
     emailsSent: number;
@@ -42,13 +44,17 @@ const rate = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 10000) / 10
 export async function buildDashboardPayload(organizationId: string): Promise<DashboardPayload> {
   const [
     totalContacts,
+    subscribedContacts,
+    unsubscribedContacts,
     activeCampaigns,
     scheduledCampaigns,
     domains,
     recentCampaignsRaw,
     liveTotals,
   ] = await Promise.all([
+    prisma.contact.count({ where: { organizationId } }),
     prisma.contact.count({ where: { organizationId, status: 'SUBSCRIBED' } }),
+    prisma.contact.count({ where: { organizationId, status: 'UNSUBSCRIBED' } }),
     prisma.campaign.count({ where: { organizationId, status: { in: ['SENDING', 'READY'] } } }),
     prisma.campaign.count({ where: { organizationId, status: 'SCHEDULED' } }),
     prisma.domain.findMany({ where: { organizationId } }),
@@ -105,6 +111,8 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
   return {
     stats: {
       totalContacts,
+      subscribedContacts,
+      unsubscribedContacts,
       activeCampaigns,
       scheduledCampaigns,
       emailsSent: totals.delivered,
@@ -128,6 +136,8 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
 
 export function dashboardFingerprint(p: DashboardPayload): string {
   return [
+    p.stats.totalContacts,
+    p.stats.subscribedContacts,
     p.stats.emailsSent,
     p.stats.openRate,
     p.stats.clickRate,
