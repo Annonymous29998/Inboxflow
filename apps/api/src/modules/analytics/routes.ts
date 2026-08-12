@@ -9,7 +9,8 @@ import {
   humanClickCountByContact,
   humanOpenCountByContact,
 } from '../../services/tracking/recount.js';
-import { getCampaignLiveStats, getOrgLiveEngagement } from '../../services/campaigns/live-stats.js';
+import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
+import { buildDashboardPayload, dashboardFingerprint } from './dashboard-builder.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
 // Eliminates repeated identical DB calls on fast page refreshes (10-second TTL).
@@ -44,98 +45,97 @@ export async function analyticsRoutes(app: FastifyInstance) {
   app.get('/dashboard', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
+      const q = request.query as { live?: string };
+      const skipCache = q.live === '1' || q.live === 'true';
       const cacheKey = `dash:${orgId}`;
-      const cached = getCached<{ stats: unknown; recentCampaigns: unknown }>(cacheKey);
-      if (cached) return reply.send(cached);
+      if (!skipCache) {
+        const cached = getCached<{ stats: unknown; recentCampaigns: unknown }>(cacheKey);
+        if (cached) return reply.send(cached);
+      }
 
-      const [
-        totalContacts,
-        activeCampaigns,
-        scheduledCampaigns,
-        domains,
-        recentCampaignsRaw,
-        liveTotals,
-      ] = await Promise.all([
-        prisma.contact.count({ where: { organizationId: orgId, status: 'SUBSCRIBED' } }),
-        prisma.campaign.count({ where: { organizationId: orgId, status: { in: ['SENDING', 'READY'] } } }),
-        prisma.campaign.count({ where: { organizationId: orgId, status: 'SCHEDULED' } }),
-        prisma.domain.findMany({ where: { organizationId: orgId } }),
-        prisma.campaign.findMany({
-          where: { organizationId: orgId },
-          orderBy: { updatedAt: 'desc' },
-          take: 8,
-          select: {
-            id: true,
-            name: true,
-            status: true,
-            subject: true,
-            totalRecipients: true,
-            bouncedCount: true,
-            deliverabilityScore: true,
-            sentAt: true,
-            updatedAt: true,
-          },
-        }),
-        getOrgLiveEngagement(orgId),
-      ]);
-
-      const recentCampaigns = await Promise.all(
-        recentCampaignsRaw.map(async (c) => {
-          const live = await getCampaignLiveStats(c.id, c.totalRecipients);
-          return {
-            ...c,
-            sentCount: live.sentCount,
-            deliveredCount: live.deliveredCount,
-            failedCount: live.failedCount,
-            pendingCount: live.pendingCount,
-            openedCount: live.openedCount,
-            clickedCount: live.clickedCount,
-            bouncedCount: live.bouncedCount || c.bouncedCount,
-          };
-        }),
-      );
-
-      const totals = {
-        sent: liveTotals.sent,
-        delivered: liveTotals.delivered,
-        opened: liveTotals.opened,
-        clicked: liveTotals.clicked,
-        bounced: liveTotals.bounced,
-        complained: liveTotals.complained,
-      };
-
-      const rate = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 10000) / 100 : 0);
-
-      const verifiedDomains = domains.filter((d) => d.status === 'VERIFIED');
-      const avgReputation =
-        domains.length > 0
-          ? Math.round(domains.reduce((s, d) => s + d.reputationScore, 0) / domains.length)
-          : 0;
-
-      const response = {
-        stats: {
-          totalContacts,
-          activeCampaigns,
-          scheduledCampaigns,
-          emailsSent: totals.sent,
-          deliveryRate: rate(totals.delivered, totals.sent),
-          bounceRate: rate(totals.bounced, totals.sent),
-          openRate: rate(totals.opened, totals.delivered || totals.sent),
-          clickRate: rate(totals.clicked, totals.opened || totals.delivered || totals.sent),
-          spamComplaintRate: rate(totals.complained, totals.sent),
-          domainHealth: verifiedDomains.length
-            ? verifiedDomains.every((d) => d.spfValid && d.dkimValid && d.dmarcValid)
-              ? 'healthy'
-              : 'needs_attention'
-            : 'not_configured',
-          senderReputationScore: avgReputation,
-          domainsConfigured: domains.length,
-          domainsVerified: verifiedDomains.length,
-        },
-        recentCampaigns,
-      };
-      setCached(cacheKey, response, 10_000);
+      const response = await buildDashboardPayload(orgId);
+      if (!skipCache) setCached(cacheKey, response, 5_000);
       return reply.send(response);
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/dashboard/stream', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const SSE_KEEPALIVE_MS = 15_000;
+      const SSE_POLL_MS = 2000;
+
+      reply.raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.setHeader('X-Accel-Buffering', 'no');
+      const origin = String(request.headers.origin || '');
+      const allowed = (await import('../../config/env.js')).env.CORS_ORIGIN.split(',').map((s) =>
+        s.trim(),
+      );
+      if (origin && allowed.includes(origin)) {
+        reply.raw.setHeader('Access-Control-Allow-Origin', origin);
+        reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+        reply.raw.setHeader('Vary', 'Origin');
+      }
+      if (reply.raw.socket) {
+        reply.raw.socket.setNoDelay(true);
+        reply.raw.socket.setKeepAlive(true, SSE_KEEPALIVE_MS);
+      }
+      reply.raw.flushHeaders?.();
+
+      let stopped = false;
+      let lastKey = '';
+      const send = (evt: string, data: Record<string, unknown>) => {
+        if (stopped) return;
+        const chunk =
+          (evt ? `event: ${evt}\n` : '') + `data: ${JSON.stringify(data)}\n\n`;
+        try {
+          reply.raw.write(chunk);
+        } catch {
+          /* client disconnected */
+        }
+      };
+
+      const initial = await buildDashboardPayload(orgId);
+      lastKey = dashboardFingerprint(initial);
+      send('dashboard', initial as unknown as Record<string, unknown>);
+
+      const poll = setInterval(async () => {
+        if (stopped) return;
+        try {
+          const fresh = await buildDashboardPayload(orgId);
+          const key = dashboardFingerprint(fresh);
+          if (key !== lastKey) {
+            lastKey = key;
+            send('dashboard', fresh as unknown as Record<string, unknown>);
+          }
+          send('ping', { t: Date.now() });
+        } catch {
+          /* ignore transient errors */
+        }
+      }, SSE_POLL_MS);
+
+      const keepalive = setInterval(() => send('ping', { t: Date.now() }), SSE_KEEPALIVE_MS);
+
+      function stop() {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(poll);
+        clearInterval(keepalive);
+        try {
+          reply.raw.end();
+        } catch {
+          /* already closed */
+        }
+      }
+
+      reply.raw.on('close', stop);
+      reply.raw.on('error', stop);
+
+      return reply;
     } catch (error) {
       return sendError(reply, error);
     }

@@ -219,7 +219,9 @@ export function CampaignsPage() {
   }
 
   useEffect(() => {
-    load().catch(console.error);
+    void load();
+    const id = window.setInterval(() => void load(), 4000);
+    return () => window.clearInterval(id);
   }, []);
 
   async function createNewDraftCampaign() {
@@ -285,7 +287,7 @@ export function CampaignsPage() {
               <Link to={`/app/campaigns/${c.id}`} className="min-w-0 flex-1">
                 <div className="font-medium hover:text-primary">{c.name}</div>
                 <div className="truncate text-sm text-ink-muted">{c.subject || 'No subject'}</div>
-                {c.status === 'SENT' && (c.sentCount ?? 0) > 0 ? (
+                {['SENT', 'SENDING', 'PAUSED'].includes(c.status) && (c.sentCount ?? 0) > 0 ? (
                   <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-ink-muted">
                     <span>
                       <span className="font-semibold text-success">{c.deliveredCount || c.sentCount}</span>

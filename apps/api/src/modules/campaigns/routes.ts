@@ -17,6 +17,7 @@ import {
 } from './recipient-stats.js';
 import { buildCampaignSendStatus } from './send-status-builder.js';
 import { recountCampaignEngagement } from '../../services/tracking/recount.js';
+import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -126,7 +127,24 @@ export async function campaignRoutes(app: FastifyInstance) {
         prisma.campaign.count({ where }),
       ]);
 
-      return reply.send({ campaigns, total, page, limit });
+      const enriched = await Promise.all(
+        campaigns.map(async (c) => {
+          if (!['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'].includes(c.status)) return c;
+          const live = await getCampaignLiveStats(c.id, c.totalRecipients);
+          return {
+            ...c,
+            sentCount: live.sentCount,
+            deliveredCount: live.deliveredCount,
+            failedCount: live.failedCount,
+            pendingCount: live.pendingCount,
+            openedCount: live.openedCount,
+            clickedCount: live.clickedCount,
+            bouncedCount: live.bouncedCount || c.bouncedCount,
+          };
+        }),
+      );
+
+      return reply.send({ campaigns: enriched, total, page, limit });
     } catch (error) {
       return sendError(reply, error);
     }

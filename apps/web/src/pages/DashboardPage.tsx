@@ -13,67 +13,43 @@ import {
   Globe,
   Activity,
 } from 'lucide-react';
-import { api } from '@/lib/api';
 import { Badge, Card } from '@/components/ui';
 import { formatNumber, formatPercent, scoreColor } from '@/lib/utils';
-
-type DashboardData = {
-  stats: {
-    totalContacts: number;
-    activeCampaigns: number;
-    scheduledCampaigns: number;
-    emailsSent: number;
-    deliveryRate: number;
-    bounceRate: number;
-    openRate: number;
-    clickRate: number;
-    spamComplaintRate: number;
-    domainHealth: string;
-    senderReputationScore: number;
-    domainsConfigured: number;
-    domainsVerified: number;
-  };
-  recentCampaigns: Array<{
-    id: string;
-    name: string;
-    status: string;
-    subject: string | null;
-    sentCount: number;
-    pendingCount?: number;
-    totalRecipients?: number;
-    openedCount: number;
-    clickedCount: number;
-    deliverabilityScore: number | null;
-    updatedAt: string;
-  }>;
-};
+import { analyticsService, type DashboardData } from '@/services/analytics.service';
 
 export function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-
-  const load = () =>
-    api
-      .get<DashboardData>('/api/analytics/dashboard')
-      .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard'))
-      .finally(() => setLoading(false));
+  const [liveConnected, setLiveConnected] = useState(false);
 
   useEffect(() => {
-    void load();
+    let cancelled = false;
+    void analyticsService.getDashboard().then((d) => {
+      if (!cancelled) setData(d);
+    }).catch((err) => {
+      if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    const sub = analyticsService.streamDashboard({
+      onUpdate: (d) => {
+        if (!cancelled) {
+          setData(d);
+          setLiveConnected(true);
+          setError('');
+        }
+      },
+      onError: () => setLiveConnected(false),
+      onDone: () => setLiveConnected(false),
+    });
+
+    return () => {
+      cancelled = true;
+      sub.cancel();
+    };
   }, []);
-
-  useEffect(() => {
-    const live =
-      (data?.stats?.activeCampaigns ?? 0) > 0 ||
-      data?.recentCampaigns?.some((c) => c.status === 'SENDING' || c.status === 'PAUSED');
-    if (!live) return;
-    const id = window.setInterval(() => {
-      api.get<DashboardData>('/api/analytics/dashboard').then(setData).catch(() => {});
-    }, 5000);
-    return () => window.clearInterval(id);
-  }, [data?.stats?.activeCampaigns, data?.recentCampaigns]);
 
   const stats = data?.stats;
 
@@ -103,8 +79,17 @@ export function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="page-title">Dashboard</h1>
-          <p className="page-sub">Live sent/delivered from queue · opens/clicks verified (no bot noise)</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="page-title">Dashboard</h1>
+            {liveConnected ? (
+              <Badge tone="success" className="text-[10px] uppercase tracking-wide">
+                Live
+              </Badge>
+            ) : null}
+          </div>
+          <p className="page-sub">
+            Real-time from queue + verified opens/clicks (bots excluded, not demo data)
+          </p>
         </div>
         <Link
           to="/app/campaigns/new"
