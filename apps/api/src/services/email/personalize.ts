@@ -1,6 +1,6 @@
 /**
- * Derive a first name from the email local-part only when it looks like a real name.
- * Skips addresses with digits (e.g. ronniech78@gmail.com, john99@x.com).
+ * Derive a first name from the email local-part when no contact first name is saved.
+ * Digits are stripped (ronniech78 → Ronniech); only letters are used.
  */
 export function firstNameFromEmail(email: string): string {
   const local =
@@ -9,11 +9,17 @@ export function firstNameFromEmail(email: string): string {
       ?.trim()
       .toLowerCase() || '';
   if (!local) return '';
-  // Any digit → do not invent a first name
-  if (/\d/.test(local)) return '';
-  // Take first segment: john.doe → john, mary_smith → mary
-  const segment = local.split(/[._+\-]+/).find((p) => p.length >= 2) || local;
-  if (!/^[a-z]+$/i.test(segment) || segment.length < 2) return '';
+
+  // Remove digits entirely — keep letter name only (ronniech78 → ronniech)
+  const withoutDigits = local.replace(/\d+/g, '');
+  // Split on common separators, prefer first alphabetic segment
+  const segment =
+    withoutDigits
+      .split(/[._+\-]+/)
+      .map((p) => p.replace(/[^a-z]/gi, ''))
+      .find((p) => p.length >= 2) || withoutDigits.replace(/[^a-z]/gi, '');
+
+  if (!segment || segment.length < 2) return '';
   return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
 }
 

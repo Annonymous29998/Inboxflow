@@ -7,10 +7,11 @@ describe('firstNameFromEmail', () => {
     expect(firstNameFromEmail('mary.smith@company.com')).toBe('Mary');
   });
 
-  it('skips local-parts that contain digits', () => {
-    expect(firstNameFromEmail('ronniech78@gmail.com')).toBe('');
-    expect(firstNameFromEmail('ronniechristopher89@gmail.com')).toBe('');
-    expect(firstNameFromEmail('john99@x.com')).toBe('');
+  it('strips digits and keeps letter name', () => {
+    expect(firstNameFromEmail('ronniech78@gmail.com')).toBe('Ronniech');
+    expect(firstNameFromEmail('ronniechristopher89@gmail.com')).toBe('Ronniechristopher');
+    expect(firstNameFromEmail('john99@x.com')).toBe('John');
+    expect(firstNameFromEmail('12345@x.com')).toBe('');
   });
 });
 
@@ -23,12 +24,15 @@ describe('personalize firstName fallback', () => {
     expect(out).toBe('Hi Ada,');
   });
 
-  it('falls back from email only when no digits', () => {
+  it('falls back from email and strips digits', () => {
     expect(
       personalize('Hi {{firstName}},', { firstName: null, email: 'sam@gmail.com' }),
     ).toBe('Hi Sam,');
     expect(
       personalize('Hi {{firstName}},', { firstName: null, email: 'sam42@gmail.com' }),
-    ).toBe('Hi ,');
+    ).toBe('Hi Sam,');
+    expect(
+      personalize('Hi {{firstName}},', { firstName: null, email: 'ronniech78@gmail.com' }),
+    ).toBe('Hi Ronniech,');
   });
 });
