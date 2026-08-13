@@ -14,17 +14,28 @@ function personalize(
     email: string;
     customData?: unknown;
   },
+  vars?: { senderName?: string | null },
 ) {
   const custom = (contact.customData || {}) as Record<string, string>;
-  return template
+  const deferred = new Set(['sender_name', 'sendername', 'unsubscribe_url', 'physical_address']);
+  const senderName = String(vars?.senderName ?? '').trim();
+  let out = template
     .replace(/\{\{\s*firstName\s*\}\}/gi, contact.firstName || '')
     .replace(/\{\{\s*lastName\s*\}\}/gi, contact.lastName || '')
     .replace(/\{\{\s*email\s*\}\}/gi, contact.email)
     .replace(
       /\{\{\s*name\s*\}\}/gi,
       [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.email,
-    )
-    .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => custom[key] ?? '');
+    );
+  if (vars && Object.prototype.hasOwnProperty.call(vars, 'senderName')) {
+    out = out
+      .replace(/\{\{\s*sender_name\s*\}\}/gi, senderName)
+      .replace(/\{\{\s*senderName\s*\}\}/gi, senderName);
+  }
+  return out.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key: string) => {
+    if (deferred.has(String(key).toLowerCase())) return match;
+    return custom[key] ?? '';
+  });
 }
 
 function sleep(ms: number) {
@@ -168,21 +179,37 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
     const contactId = String(contact.id);
     const to = String(contact.email);
 
+    const fromName = String(campaign.senderName || smtp.fromName || '').trim();
+    const fromEmail = String(
+      campaign.senderEmail || smtp.fromEmail || smtp.user || '',
+    ).trim();
+    if (!fromEmail) {
+      throw new Error('Sender email is required. Set it on the campaign or SMTP profile.');
+    }
+
     let html = stripAppUnsubscribeTokens(
-      personalize(validated.sanitizedHtml, {
-        firstName: contact.firstName as string | null,
-        lastName: contact.lastName as string | null,
-        email: to,
-        customData: contact.customData,
-      }),
+      personalize(
+        validated.sanitizedHtml,
+        {
+          firstName: contact.firstName as string | null,
+          lastName: contact.lastName as string | null,
+          email: to,
+          customData: contact.customData,
+        },
+        { senderName: fromName },
+      ),
     );
     let text = stripAppUnsubscribeTokens(
-      personalize(String(campaign.plainTextContent || htmlToPlainText(html)), {
-        firstName: contact.firstName as string | null,
-        lastName: contact.lastName as string | null,
-        email: to,
-        customData: contact.customData,
-      }),
+      personalize(
+        String(campaign.plainTextContent || htmlToPlainText(html)),
+        {
+          firstName: contact.firstName as string | null,
+          lastName: contact.lastName as string | null,
+          email: to,
+          customData: contact.customData,
+        },
+        { senderName: fromName },
+      ),
     );
 
     if (campaign.trackOpens) {
@@ -201,24 +228,20 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
       });
     }
 
-    const fromName = String(campaign.senderName || smtp.fromName || '').trim();
-    const fromEmail = String(
-      campaign.senderEmail || smtp.fromEmail || smtp.user || '',
-    ).trim();
-    if (!fromEmail) {
-      throw new Error('Sender email is required. Set it on the campaign or SMTP profile.');
-    }
-
     try {
       const result = await sendViaSmtp(
         {
           to,
-          subject: personalize(validated.sanitizedSubject, {
-            firstName: contact.firstName as string | null,
-            lastName: contact.lastName as string | null,
-            email: to,
-            customData: contact.customData,
-          }),
+          subject: personalize(
+            validated.sanitizedSubject,
+            {
+              firstName: contact.firstName as string | null,
+              lastName: contact.lastName as string | null,
+              email: to,
+              customData: contact.customData,
+            },
+            { senderName: fromName },
+          ),
           html,
           text: text || undefined,
           fromEmail,

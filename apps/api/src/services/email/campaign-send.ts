@@ -13,7 +13,7 @@ import {
 import { writeSystemLog } from '../system-log.js';
 import { signClickRedirect, signUnsubscribe } from '../../utils/signed-urls.js';
 import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
-import { personalize } from './personalize.js';
+import { applySenderName, personalize } from './personalize.js';
 
 function pickFromPool(pool: unknown, fallback: string): string {
   const arr = Array.isArray(pool)
@@ -79,10 +79,11 @@ export async function sendCampaignEmailToRecipient(input: {
     await logRotationPick(campaign.organizationId, providers[0], rotation.mode);
   }
 
-  let html = personalize(campaign.htmlContent || '', contact);
-  let text = personalize(campaign.plainTextContent || '', contact);
   const subjectBase = pickFromPool(campaign.subjectPool, campaign.subject || '');
   const fromNameBase = pickFromPool(campaign.fromNamePool, campaign.senderName || '');
+  // Contact merge tags only — {{sender_name}} is applied per attempt once From name is final.
+  let html = personalize(campaign.htmlContent || '', contact);
+  let text = personalize(campaign.plainTextContent || '', contact);
   let subject = personalize(subjectBase, contact);
 
   // Auto-harden every outbound message (including templates already stored in DB).
@@ -181,6 +182,10 @@ export async function sendCampaignEmailToRecipient(input: {
       continue;
     }
 
+    const htmlOut = applySenderName(html, fromName);
+    const textOut = applySenderName(text, fromName);
+    const subjectOut = applySenderName(subject, fromName);
+
     const result = await sendViaProvider(
       p.type,
       p.config,
@@ -189,9 +194,9 @@ export async function sendCampaignEmailToRecipient(input: {
         from: fromEmail,
         fromName,
         replyTo: campaign.replyTo || cfg.replyTo || undefined,
-        subject,
-        html,
-        text: text || undefined,
+        subject: subjectOut,
+        html: htmlOut,
+        text: textOut || undefined,
         headers,
         dkim,
       },

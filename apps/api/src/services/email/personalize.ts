@@ -32,6 +32,14 @@ function resolveFirstName(contact: {
   return firstNameFromEmail(contact.email);
 }
 
+/** Tags filled later (send-time), not from contact customData. */
+const DEFERRED_TAGS = new Set([
+  'sender_name',
+  'sendername',
+  'unsubscribe_url',
+  'physical_address',
+]);
+
 export function personalize(
   template: string,
   contact: {
@@ -40,15 +48,39 @@ export function personalize(
     email: string;
     customData?: unknown;
   },
+  vars?: {
+    /** Campaign / SMTP display name — fills {{sender_name}} and {{senderName}} */
+    senderName?: string | null;
+  },
 ) {
   const custom = (contact.customData || {}) as Record<string, string>;
   const firstName = resolveFirstName(contact);
   const lastName = String(contact.lastName || '').trim();
   const fullName = [firstName, lastName].filter(Boolean).join(' ') || contact.email;
-  return template
+  const senderName = String(vars?.senderName ?? '').trim();
+
+  let out = template
     .replace(/\{\{\s*firstName\s*\}\}/gi, firstName)
     .replace(/\{\{\s*lastName\s*\}\}/gi, lastName)
     .replace(/\{\{\s*email\s*\}\}/gi, contact.email)
-    .replace(/\{\{\s*name\s*\}\}/gi, fullName)
-    .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => custom[key] ?? '');
+    .replace(/\{\{\s*name\s*\}\}/gi, fullName);
+
+  if (vars && Object.prototype.hasOwnProperty.call(vars, 'senderName')) {
+    out = out
+      .replace(/\{\{\s*sender_name\s*\}\}/gi, senderName)
+      .replace(/\{\{\s*senderName\s*\}\}/gi, senderName);
+  }
+
+  return out.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key: string) => {
+    if (DEFERRED_TAGS.has(String(key).toLowerCase())) return match;
+    return custom[key] ?? '';
+  });
+}
+
+/** Fill {{sender_name}} / {{senderName}} after the final From name is known. */
+export function applySenderName(template: string, senderName: string): string {
+  const name = String(senderName || '').trim();
+  return template
+    .replace(/\{\{\s*sender_name\s*\}\}/gi, name)
+    .replace(/\{\{\s*senderName\s*\}\}/gi, name);
 }

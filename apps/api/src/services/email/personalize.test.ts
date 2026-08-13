@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { firstNameFromEmail, personalize } from './personalize.js';
+import { applySenderName, firstNameFromEmail, personalize } from './personalize.js';
 
 describe('firstNameFromEmail', () => {
   it('uses clean local-part as first name', () => {
@@ -34,5 +34,25 @@ describe('personalize firstName fallback', () => {
     expect(
       personalize('Hi {{firstName}},', { firstName: null, email: 'ronniech78@gmail.com' }),
     ).toBe('Hi Ronniech,');
+  });
+});
+
+describe('personalize sender_name', () => {
+  it('fills {{sender_name}} and {{senderName}} from vars', () => {
+    const contact = { firstName: null, email: 'a@b.com' };
+    expect(
+      personalize('© 2026 {{sender_name}}. All rights reserved.', contact, {
+        senderName: 'Inbox Flow',
+      }),
+    ).toBe('© 2026 Inbox Flow. All rights reserved.');
+    expect(
+      personalize('From {{senderName}}', contact, { senderName: 'Acme' }),
+    ).toBe('From Acme');
+  });
+
+  it('preserves {{sender_name}} until applySenderName when vars omitted', () => {
+    const raw = personalize('© {{sender_name}}', { email: 'a@b.com' });
+    expect(raw).toBe('© {{sender_name}}');
+    expect(applySenderName(raw, 'Brand Co')).toBe('© Brand Co');
   });
 });
