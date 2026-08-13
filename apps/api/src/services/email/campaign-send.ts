@@ -13,27 +13,7 @@ import {
 import { writeSystemLog } from '../system-log.js';
 import { signClickRedirect, signUnsubscribe } from '../../utils/signed-urls.js';
 import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
-
-function personalize(
-  template: string,
-  contact: {
-    firstName?: string | null;
-    lastName?: string | null;
-    email: string;
-    customData?: unknown;
-  },
-) {
-  const custom = (contact.customData || {}) as Record<string, string>;
-  return template
-    .replace(/\{\{\s*firstName\s*\}\}/gi, contact.firstName || '')
-    .replace(/\{\{\s*lastName\s*\}\}/gi, contact.lastName || '')
-    .replace(/\{\{\s*email\s*\}\}/gi, contact.email)
-    .replace(
-      /\{\{\s*name\s*\}\}/gi,
-      [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.email,
-    )
-    .replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => custom[key] ?? '');
-}
+import { personalize } from './personalize.js';
 
 function pickFromPool(pool: unknown, fallback: string): string {
   const arr = Array.isArray(pool)
@@ -274,4 +254,4 @@ export async function sendCampaignEmailToRecipient(input: {
   return { success: false, error: lastError };
 }
 
-export { personalize };
+export { personalize, firstNameFromEmail } from './personalize.js';
