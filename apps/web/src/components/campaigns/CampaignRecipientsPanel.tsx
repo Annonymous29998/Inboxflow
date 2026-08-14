@@ -146,8 +146,8 @@ export function CampaignRecipientsPanel({
         <div>
           <h2 className="font-medium">Recipients</h2>
           <p className="text-xs text-ink-muted">
-            Verified link clicks from browsers. Opens need the tracking pixel (images on);
-            a click still counts as opened if images were blocked.
+            Verified mail-client opens and real clicks only. Security scanners
+            (Safe Links / 2× bursts) are hidden.
           </p>
         </div>
       ) : null}

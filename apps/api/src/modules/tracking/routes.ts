@@ -5,7 +5,7 @@ import {
   verifyClickRedirect,
   verifyUnsubscribe,
 } from '../../utils/signed-urls.js';
-import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { classifyAutomatedTracking, filterCountableClicks, isCountableClick, isCountableOpen, SCANNER_BURST_MS } from '../../utils/tracking-bot-filter.js';
 
 export { webhookRoutes } from './webhook-routes.js';
 
@@ -129,22 +129,30 @@ export async function trackingRoutes(app: FastifyInstance) {
     const auto = classifyAutomatedTracking(rawUa);
 
     try {
-      const countable = isCountableClick(rawUa, undefined);
+      const priorClicks = await prisma.trackingEvent.findMany({
+        where: { campaignId, contactId, type: 'CLICKED' },
+        select: { userAgent: true, metadata: true, createdAt: true },
+      });
+      const priorOpens = await prisma.trackingEvent.findMany({
+        where: { campaignId, contactId, type: 'OPENED' },
+        select: { userAgent: true, metadata: true },
+      });
+      const hasVerifiedOpen = priorOpens.some((e) => isCountableOpen(e.userAgent, e.metadata));
+      const burst = priorClicks.some(
+        (e) => Date.now() - e.createdAt.getTime() <= SCANNER_BURST_MS,
+      );
 
+      const countable = isCountableClick(rawUa, undefined, { hasVerifiedOpen, burst });
       const metadata = countable
         ? undefined
         : {
             source: 'automated',
-            reason: auto.reason ?? 'non_mail_client',
+            reason: burst ? 'scanner_burst' : auto.reason ?? 'non_mail_client',
           };
-
-      const priorClicks = await prisma.trackingEvent.findMany({
-        where: { campaignId, contactId, type: 'CLICKED' },
-        select: { userAgent: true, metadata: true },
-      });
-      const existingCountable = priorClicks.some((e) =>
-        isCountableClick(e.userAgent, e.metadata),
-      );
+      const existingCountable = filterCountableClicks(
+        priorClicks.map((e) => ({ ...e, contactId })),
+        hasVerifiedOpen ? new Set([contactId]) : new Set(),
+      ).length > 0;
 
       await prisma.trackingEvent.create({
         data: {

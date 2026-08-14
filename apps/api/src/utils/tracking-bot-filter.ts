@@ -37,9 +37,16 @@ const AUTOMATED_UA = [
   /selenium/i,
   /urlscan/i,
   /phishtank/i,
-  /safe link/i,
+  /safe.?link/i,
+  /safelinks/i,
   /link scanner/i,
   /email scanner/i,
+  /skypeuripreview/i,
+  /microsoft office existence/i,
+  /defender/i,
+  /bingpreview/i,
+  /slackbot/i,
+  /facebookexternalhit/i,
 ];
 
 function isLegitimateMailProxy(ua: string): boolean {
@@ -71,7 +78,11 @@ export type AutomatedTrackingReason =
   | 'bot_user_agent'
   | 'scanner_chrome'
   | 'no_verified_open'
-  | 'non_mail_client';
+  | 'non_mail_client'
+  | 'scanner_burst';
+
+/** Two hits this close are Microsoft Safe Links / ATP, not a person clicking twice. */
+export const SCANNER_BURST_MS = 15_000;
 
 export function classifyAutomatedTracking(userAgent: string | undefined | null): {
   automated: boolean;
@@ -125,35 +136,87 @@ export function isCountableOpen(
   return false;
 }
 
+export type CountableClickOpts = {
+  /** True when this contact already loaded a real mail-client open pixel. */
+  hasVerifiedOpen?: boolean;
+  /** True when another click from the same contact landed within SCANNER_BURST_MS. */
+  burst?: boolean;
+};
+
 /**
- * Count a real click. Does NOT require a prior open (images may be blocked).
- * Clicks usually come from a browser after the mail app — so normal Chrome/Safari/etc. are allowed,
- * while scanners / headless / ESP prefetch stay filtered.
+ * Count a real click. Scanners (Safe Links, ATP) look like Chrome on Windows and
+ * hit every link twice in a few seconds — those must not count as people.
  *
- * `contactHasVerifiedOpen` is ignored (kept for call-site compatibility).
+ * Windows/Linux Chrome is only trusted if this contact already had a mail-client open
+ * (Gmail/Outlook/Yahoo proxy or mobile mail). Mac / phone browsers can count without that.
  */
 export function isCountableClick(
   userAgent: string | null | undefined,
   metadata: unknown,
-  _contactHasVerifiedOpen?: boolean,
+  contactHasVerifiedOpenOrOpts?: boolean | CountableClickOpts,
 ): boolean {
+  const opts: CountableClickOpts =
+    typeof contactHasVerifiedOpenOrOpts === 'object' && contactHasVerifiedOpenOrOpts
+      ? contactHasVerifiedOpenOrOpts
+      : { hasVerifiedOpen: Boolean(contactHasVerifiedOpenOrOpts) };
+
+  if (opts.burst) return false;
+
   if (metadata && typeof metadata === 'object') {
-    const m = metadata as { source?: string; reason?: string };
-    // Old rows marked automated only because images never loaded — re-evaluate by UA.
-    if (m.source === 'automated' && m.reason !== 'no_verified_open') {
-      return false;
-    }
+    const m = metadata as { source?: string };
+    if (m.source === 'automated') return false;
   }
   const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
   if (isScannerChrome(ua)) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
-  // Browser click-through from webmail / desktop mail (not the same as open-pixel bots).
+  if (/Macintosh|Mac OS X/i.test(ua) && /Safari\/|Chrome\/|Firefox\/|Edg\//i.test(ua)) {
+    return true;
+  }
+  // Safe Links / ATP almost always spoof Chrome on Windows or Linux.
+  if (isDesktopBotBrowser(ua)) {
+    return Boolean(opts.hasVerifiedOpen);
+  }
   if (/Chrome\/|CriOS\/|Firefox\/|FxiOS\/|Edg\/|EdgiOS\/|Safari\//i.test(ua)) {
     return true;
   }
   return false;
+}
+
+type ClickLike = {
+  contactId: string | null;
+  createdAt: Date;
+  userAgent: string | null;
+  metadata: unknown;
+};
+
+/** Drop Safe Links double-fetches and untrusted Windows Chrome clicks. */
+export function filterCountableClicks<T extends ClickLike>(
+  clicks: T[],
+  verifiedOpenContactIds: Set<string>,
+): T[] {
+  const timesByContact = new Map<string, number[]>();
+  for (const e of clicks) {
+    if (!e.contactId) continue;
+    const arr = timesByContact.get(e.contactId) ?? [];
+    arr.push(e.createdAt.getTime());
+    timesByContact.set(e.contactId, arr);
+  }
+
+  return clicks.filter((e) => {
+    if (!e.contactId) return false;
+    const times = timesByContact.get(e.contactId) ?? [];
+    const t = e.createdAt.getTime();
+    const burst = times.some((other) => {
+      const d = Math.abs(other - t);
+      return d > 0 && d <= SCANNER_BURST_MS;
+    });
+    return isCountableClick(e.userAgent, e.metadata, {
+      hasVerifiedOpen: verifiedOpenContactIds.has(e.contactId),
+      burst,
+    });
+  });
 }
 
 /** @deprecated use isCountableOpen */

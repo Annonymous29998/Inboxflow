@@ -1,6 +1,6 @@
 import { prisma } from '../../config/prisma.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from './recipient-stats.js';
-import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
 import { normalizeBatchSize } from '../../services/email/queue-settings.js';
 
@@ -86,7 +86,11 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     }),
   ]);
 
-  const countableClicks = clickEvents.filter((e) => isCountableClick(e.userAgent, e.metadata));
+  const humanOpens = openEvents.filter((e) => isCountableOpen(e.userAgent, e.metadata));
+  const verifiedOpenIds = new Set(
+    humanOpens.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
+  );
+  const countableClicks = filterCountableClicks(clickEvents, verifiedOpenIds);
 
   const sendActivity: SendActivityRow[] = [
     ...recentDelivered

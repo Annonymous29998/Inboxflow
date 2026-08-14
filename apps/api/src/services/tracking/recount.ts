@@ -1,5 +1,5 @@
 import { prisma } from '../../config/prisma.js';
-import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 type TrackingRow = {
   contactId: string | null;
@@ -18,12 +18,18 @@ async function loadOpenEvents(campaignId: string) {
 }
 
 async function loadClickEvents(campaignId: string) {
-  const rows = await prisma.trackingEvent.findMany({
-    where: { campaignId, type: 'CLICKED', contactId: { not: null } },
-    select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
-    orderBy: { createdAt: 'asc' },
-  });
-  return rows.filter((e) => isCountableClick(e.userAgent, e.metadata)) as TrackingRow[];
+  const [rows, openEvents] = await Promise.all([
+    prisma.trackingEvent.findMany({
+      where: { campaignId, type: 'CLICKED', contactId: { not: null } },
+      select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
+      orderBy: { createdAt: 'asc' },
+    }),
+    loadOpenEvents(campaignId),
+  ]);
+  const verifiedOpens = new Set(
+    openEvents.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
+  );
+  return filterCountableClicks(rows, verifiedOpens) as TrackingRow[];
 }
 
 /** Recompute campaign + recipient stats from verified human tracking only. */
@@ -57,7 +63,7 @@ export async function recountCampaignEngagement(campaignId: string) {
   for (const r of recipients) {
     const openedAt = firstOpen.get(r.contactId) ?? null;
     const clickedAt = firstClick.get(r.contactId) ?? null;
-    // Click without open still means they engaged — surface openedAt for recipient UI.
+    // Click without open still means they engaged — only after scanner filter.
     const effectiveOpenedAt = openedAt || clickedAt;
     const wasDelivered =
       r.sentAt != null || ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);

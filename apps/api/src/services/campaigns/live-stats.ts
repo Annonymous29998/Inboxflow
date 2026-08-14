@@ -6,7 +6,7 @@ import {
   sumDeliveredFromCounts,
 } from '../../modules/campaigns/recipient-stats.js';
 import { countHumanClicks, countHumanOpens } from '../tracking/recount.js';
-import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 export type CampaignLiveStats = {
   sentCount: number;
@@ -61,7 +61,7 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
   const out = new Map<string, ListStat>();
   if (!campaignIds.length) return out;
 
-  const [byStatus, inbox, openedRows, clickedRows, trackEvents] = await Promise.all([
+  const [byStatus, inbox, trackEvents] = await Promise.all([
     prisma.campaignRecipient.groupBy({
       by: ['campaignId', 'status'],
       where: { campaignId: { in: campaignIds } },
@@ -75,29 +75,20 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
       },
       _count: { _all: true },
     }),
-    prisma.campaignRecipient.groupBy({
-      by: ['campaignId'],
-      where: {
-        campaignId: { in: campaignIds },
-        OR: [{ openedAt: { not: null } }, { status: { in: ['OPENED', 'CLICKED'] } }],
-      },
-      _count: { _all: true },
-    }),
-    prisma.campaignRecipient.groupBy({
-      by: ['campaignId'],
-      where: {
-        campaignId: { in: campaignIds },
-        OR: [{ clickedAt: { not: null } }, { status: 'CLICKED' }],
-      },
-      _count: { _all: true },
-    }),
     prisma.trackingEvent.findMany({
       where: {
         campaignId: { in: campaignIds },
         type: { in: ['OPENED', 'CLICKED'] },
         contactId: { not: null },
       },
-      select: { campaignId: true, contactId: true, type: true, userAgent: true, metadata: true },
+      select: {
+        campaignId: true,
+        contactId: true,
+        type: true,
+        userAgent: true,
+        metadata: true,
+        createdAt: true,
+      },
     }),
   ]);
 
@@ -107,21 +98,35 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
     counts.set(`${r.campaignId}:${r.status}` as K, r._count._all);
   }
   const inboxById = new Map(inbox.map((r) => [r.campaignId, r._count._all]));
-  const openedById = new Map(openedRows.map((r) => [r.campaignId, r._count._all]));
-  const clickedById = new Map(clickedRows.map((r) => [r.campaignId, r._count._all]));
 
   const eventOpened = new Map<string, Set<string>>();
   const eventClicked = new Map<string, Set<string>>();
+  const opensByCampaign = new Map<string, Set<string>>();
   for (const e of trackEvents) {
-    if (!e.contactId || !e.campaignId) continue;
-    if (e.type === 'CLICKED' && isCountableClick(e.userAgent, e.metadata)) {
-      if (!eventClicked.has(e.campaignId)) eventClicked.set(e.campaignId, new Set());
-      eventClicked.get(e.campaignId)!.add(e.contactId);
-      if (!eventOpened.has(e.campaignId)) eventOpened.set(e.campaignId, new Set());
-      eventOpened.get(e.campaignId)!.add(e.contactId);
-    } else if (e.type === 'OPENED' && isCountableOpen(e.userAgent, e.metadata)) {
-      if (!eventOpened.has(e.campaignId)) eventOpened.set(e.campaignId, new Set());
-      eventOpened.get(e.campaignId)!.add(e.contactId);
+    if (!e.contactId || !e.campaignId || e.type !== 'OPENED') continue;
+    if (!isCountableOpen(e.userAgent, e.metadata)) continue;
+    if (!opensByCampaign.has(e.campaignId)) opensByCampaign.set(e.campaignId, new Set());
+    opensByCampaign.get(e.campaignId)!.add(e.contactId);
+  }
+  const clicksByCampaign = new Map<string, typeof trackEvents>();
+  for (const e of trackEvents) {
+    if (!e.contactId || !e.campaignId || e.type !== 'CLICKED') continue;
+    const list = clicksByCampaign.get(e.campaignId) ?? [];
+    list.push(e);
+    clicksByCampaign.set(e.campaignId, list);
+  }
+  for (const [campaignId, opens] of opensByCampaign) {
+    eventOpened.set(campaignId, new Set(opens));
+  }
+  for (const [campaignId, clicks] of clicksByCampaign) {
+    const verified = opensByCampaign.get(campaignId) ?? new Set<string>();
+    const human = filterCountableClicks(clicks, verified);
+    if (!eventClicked.has(campaignId)) eventClicked.set(campaignId, new Set());
+    if (!eventOpened.has(campaignId)) eventOpened.set(campaignId, new Set());
+    for (const e of human) {
+      if (!e.contactId) continue;
+      eventClicked.get(campaignId)!.add(e.contactId);
+      eventOpened.get(campaignId)!.add(e.contactId);
     }
   }
 
@@ -132,8 +137,8 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
       failedCount: counts.get(`${id}:FAILED` as K) ?? 0,
       pendingCount: counts.get(`${id}:QUEUED` as K) ?? 0,
       bouncedCount: counts.get(`${id}:BOUNCED` as K) ?? 0,
-      openedCount: Math.max(openedById.get(id) ?? 0, eventOpened.get(id)?.size ?? 0),
-      clickedCount: Math.max(clickedById.get(id) ?? 0, eventClicked.get(id)?.size ?? 0),
+      openedCount: eventOpened.get(id)?.size ?? 0,
+      clickedCount: eventClicked.get(id)?.size ?? 0,
     });
   }
   return out;

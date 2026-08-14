@@ -8,7 +8,7 @@ import {
   humanOpenCountByContact,
 } from '../../services/tracking/recount.js';
 import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
-import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { buildDashboardPayload, dashboardFingerprint } from './dashboard-builder.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
@@ -202,6 +202,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
             emailClient: true,
             userAgent: true,
             metadata: true,
+            contactId: true,
           },
           take: 25_000,
           orderBy: { createdAt: 'asc' },
@@ -212,9 +213,19 @@ export async function analyticsRoutes(app: FastifyInstance) {
         }),
       ]);
 
+      const humanOpens = trackEvents.filter(
+        (e) => e.type === 'OPENED' && isCountableOpen(e.userAgent, e.metadata),
+      );
+      const verifiedOpenIds = new Set(
+        humanOpens.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
+      );
+      const humanClicks = filterCountableClicks(
+        trackEvents.filter((e) => e.type === 'CLICKED'),
+        verifiedOpenIds,
+      );
       const countable = trackEvents.filter((e) => {
         if (e.type === 'OPENED') return isCountableOpen(e.userAgent, e.metadata);
-        if (e.type === 'CLICKED') return isCountableClick(e.userAgent, e.metadata);
+        if (e.type === 'CLICKED') return humanClicks.includes(e);
         return e.type === 'SENT' || e.type === 'DELIVERED';
       });
 
@@ -319,8 +330,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
       const mapped = rows.map((r) => {
         const pixelOpens = openMap[r.contactId] ?? 0;
         const clicks = clickMap[r.contactId] ?? 0;
-        const clicked = clicks > 0 || !!r.clickedAt || r.status === 'CLICKED';
-        const opened = pixelOpens > 0 || !!r.openedAt || clicked;
+          const clicked = clicks > 0;
+          const opened = pixelOpens > 0 || clicked;
         const bounced = !!r.bouncedAt || r.status === 'BOUNCED';
         const smtpAcceptedRow =
           !!r.sentAt ||
@@ -335,15 +346,15 @@ export async function analyticsRoutes(app: FastifyInstance) {
           clicked,
           bounced,
           openCount: pixelOpens > 0 ? pixelOpens : opened ? 1 : 0,
-          clickCount: clicks > 0 ? clicks : clicked ? 1 : 0,
+          clickCount: clicks,
           sentAt: r.sentAt,
           openedAt: r.openedAt,
           clickedAt: r.clickedAt,
           error: r.error,
           _rank:
-            clicked || r.status === 'CLICKED'
+            clicked
               ? 0
-              : opened || r.status === 'OPENED'
+              : opened
                 ? 1
                 : r.status === 'DELIVERED' || r.deliveredAt
                   ? 2
