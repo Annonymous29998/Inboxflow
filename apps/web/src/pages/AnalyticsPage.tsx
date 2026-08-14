@@ -13,16 +13,19 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '@/lib/api';
-import { Button, Card, Select } from '@/components/ui';
+import { Button, Card, PageLoading, Select } from '@/components/ui';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 
 export function AnalyticsPage() {
   const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedId, setSelectedId] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'recipients'>('overview');
+  const [loadingList, setLoadingList] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [detail, setDetail] = useState<{
     campaign: {
       name: string;
+      status?: string;
       sentCount: number;
       openedCount: number;
       clickedCount: number;
@@ -37,15 +40,25 @@ export function AnalyticsPage() {
   } | null>(null);
 
   useEffect(() => {
-    api.get<{ campaigns: Array<{ id: string; name: string }> }>('/api/campaigns').then((d) => {
-      setCampaigns(d.campaigns);
-      if (d.campaigns[0]) setSelectedId(d.campaigns[0].id);
-    });
+    setLoadingList(true);
+    api
+      .get<{ campaigns: Array<{ id: string; name: string }> }>('/api/campaigns')
+      .then((d) => {
+        setCampaigns(d.campaigns);
+        if (d.campaigns[0]) setSelectedId((prev) => prev || d.campaigns[0]!.id);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingList(false));
   }, []);
 
   useEffect(() => {
     if (!selectedId) return;
-    api.get<typeof detail>(`/api/analytics/campaigns/${selectedId}`).then(setDetail).catch(console.error);
+    setLoadingDetail(true);
+    api
+      .get<typeof detail>(`/api/analytics/campaigns/${selectedId}`)
+      .then(setDetail)
+      .catch(console.error)
+      .finally(() => setLoadingDetail(false));
   }, [selectedId]);
 
   function exportCsv() {
@@ -94,7 +107,9 @@ export function AnalyticsPage() {
         </div>
       </div>
 
-      {!campaigns.length ? (
+      {loadingList ? <PageLoading label="Loading analytics…" /> : null}
+
+      {!loadingList && !campaigns.length ? (
         <Card className="py-10 text-center">
           <p className="mb-4 text-sm text-ink-muted">Send a campaign first to unlock analytics.</p>
           <Link
@@ -106,7 +121,9 @@ export function AnalyticsPage() {
         </Card>
       ) : null}
 
-      {detail && (
+      {loadingDetail && selectedId ? <PageLoading label="Loading campaign stats…" /> : null}
+
+      {detail && !loadingDetail && (
         <div className="flex gap-1 border-b border-border">
           {(['overview', 'recipients'] as const).map((tab) => (
             <button
@@ -125,7 +142,7 @@ export function AnalyticsPage() {
         </div>
       )}
 
-      {detail && activeTab === 'recipients' && selectedId ? (
+      {detail && !loadingDetail && activeTab === 'recipients' && selectedId ? (
         <CampaignRecipientsPanel
           campaignId={selectedId}
           campaignName={detail.campaign.name}
@@ -135,7 +152,7 @@ export function AnalyticsPage() {
         />
       ) : null}
 
-      {detail && activeTab === 'overview' && (
+      {detail && !loadingDetail && activeTab === 'overview' && (
         <>
           <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
             {[

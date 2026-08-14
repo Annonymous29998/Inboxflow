@@ -10,6 +10,7 @@ import {
   humanOpenCountByContact,
 } from '../../services/tracking/recount.js';
 import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
+import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { buildDashboardPayload, dashboardFingerprint } from './dashboard-builder.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
@@ -145,83 +146,124 @@ export async function analyticsRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      const campaign = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          subject: true,
+          sentAt: true,
+          totalRecipients: true,
+          sentCount: true,
+          openedCount: true,
+          clickedCount: true,
+          bouncedCount: true,
+          deliveredCount: true,
+          failedCount: true,
+          deliverabilityScore: true,
+        },
+      });
       if (!campaign) throw new AppError(404, 'Campaign not found');
+
+      const live = await getCampaignLiveStats(id, campaign.totalRecipients);
+      const campaignOut = {
+        ...campaign,
+        sentCount: Math.max(live.sentCount, campaign.totalRecipients, campaign.sentCount),
+        openedCount: live.openedCount,
+        clickedCount: live.clickedCount,
+        bouncedCount: live.bouncedCount || campaign.bouncedCount,
+        deliveredCount: live.deliveredCount,
+        failedCount: live.failedCount,
+      };
 
       const cacheKey = `campaign-ana:${id}`;
       const cached = getCached<{
-        campaign: typeof campaign;
         eventCounts: Record<string, number>;
         topLinks: Array<{ url: string | null; clicks: number }>;
         devices: Array<{ device: string | null; count: number }>;
         emailClients: Array<{ client: string | null; count: number }>;
         timeline: Array<{ date: string; opened: number; clicked: number; delivered: number }>;
       }>(cacheKey);
-      if (cached) return reply.send({ ...cached, campaign });
+      if (cached) return reply.send({ ...cached, campaign: campaignOut });
 
       const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
-      const [events, clicks, devices, clients, recentEvents] = await Promise.all([
-        prisma.trackingEvent.groupBy({
-          by: ['type'],
-          where: { campaignId: id },
-          _count: { _all: true },
-        }),
-        prisma.trackingEvent.groupBy({
-          by: ['url'],
-          where: { campaignId: id, type: 'CLICKED', url: { not: null } },
-          _count: { _all: true },
-          orderBy: { _count: { url: 'desc' } },
-          take: 10,
-        }),
-        prisma.trackingEvent.groupBy({
-          by: ['device'],
-          where: { campaignId: id, device: { not: null } },
-          _count: { _all: true },
-        }),
-        prisma.trackingEvent.groupBy({
-          by: ['emailClient'],
-          where: { campaignId: id, emailClient: { not: null } },
-          _count: { _all: true },
-        }),
+      const [trackEvents, sentRows] = await Promise.all([
         prisma.trackingEvent.findMany({
-          where: { campaignId: id, createdAt: { gte: since }, type: { in: ['OPENED', 'CLICKED', 'DELIVERED'] } },
-          select: { type: true, createdAt: true },
-          // Speed up timeline build: most recent 25k events only (14 days). If there are more than
-          // this, a user would already see very-high-level stats and the timeline is still representative.
+          where: {
+            campaignId: id,
+            createdAt: { gte: since },
+            type: { in: ['OPENED', 'CLICKED', 'SENT', 'DELIVERED'] },
+          },
+          select: {
+            type: true,
+            createdAt: true,
+            url: true,
+            device: true,
+            emailClient: true,
+            userAgent: true,
+            metadata: true,
+          },
           take: 25_000,
           orderBy: { createdAt: 'asc' },
         }),
+        prisma.campaignRecipient.findMany({
+          where: { campaignId: id, sentAt: { not: null } },
+          select: { sentAt: true },
+        }),
       ]);
+
+      const countable = trackEvents.filter((e) => {
+        if (e.type === 'OPENED') return isCountableOpen(e.userAgent, e.metadata);
+        if (e.type === 'CLICKED') return isCountableClick(e.userAgent, e.metadata);
+        return e.type === 'SENT' || e.type === 'DELIVERED';
+      });
 
       const byDay: Record<string, { opened: number; clicked: number; delivered: number }> = {};
       const todayISO = new Date().toISOString().slice(0, 10);
-      for (const e of recentEvents) {
+      for (const e of countable) {
         const day = e.createdAt.toISOString().slice(0, 10);
         if (!byDay[day]) byDay[day] = { opened: 0, clicked: 0, delivered: 0 };
-        if (e.type === 'OPENED') byDay[day].opened++;
-        if (e.type === 'CLICKED') byDay[day].clicked++;
-        if (e.type === 'DELIVERED') byDay[day].delivered++;
+        if (e.type === 'OPENED') byDay[day].opened += 1;
+        if (e.type === 'CLICKED') byDay[day].clicked += 1;
       }
-      // Always include TODAY even with 0 events, so timeline UX doesn't jump to 14 days ago gap
+      for (const r of sentRows) {
+        if (!r.sentAt) continue;
+        const day = r.sentAt.toISOString().slice(0, 10);
+        if (!byDay[day]) byDay[day] = { opened: 0, clicked: 0, delivered: 0 };
+        byDay[day].delivered += 1;
+      }
       if (!byDay[todayISO]) byDay[todayISO] = { opened: 0, clicked: 0, delivered: 0 };
 
-      const response = {
-        campaign,
-        eventCounts: Object.fromEntries(events.map((e) => [e.type, e._count._all])) as Record<
-          string,
-          number
-        >,
-        topLinks: clicks.map((c) => ({ url: c.url, clicks: c._count._all })),
-        devices: devices.map((d) => ({ device: d.device, count: d._count._all })),
-        emailClients: clients.map((c) => ({ client: c.emailClient, count: c._count._all })),
+      const linkCounts = new Map<string, number>();
+      const deviceCounts = new Map<string, number>();
+      const clientCounts = new Map<string, number>();
+      const typeCounts: Record<string, number> = {};
+      for (const e of countable) {
+        typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1;
+        if (e.type === 'CLICKED' && e.url) {
+          linkCounts.set(e.url, (linkCounts.get(e.url) ?? 0) + 1);
+        }
+        if (e.device) deviceCounts.set(e.device, (deviceCounts.get(e.device) ?? 0) + 1);
+        if (e.emailClient) clientCounts.set(e.emailClient, (clientCounts.get(e.emailClient) ?? 0) + 1);
+      }
+
+      const charts = {
+        eventCounts: typeCounts,
+        topLinks: [...linkCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10)
+          .map(([url, clicks]) => ({ url, clicks })),
+        devices: [...deviceCounts.entries()].map(([device, count]) => ({ device, count })),
+        emailClients: [...clientCounts.entries()].map(([client, count]) => ({ client, count })),
         timeline: Object.entries(byDay)
           .sort(([a], [b]) => a.localeCompare(b))
-          .slice(-14) // hard cap last 14 days
+          .slice(-14)
           .map(([date, values]) => ({ date, ...values })),
       };
-      setCached(cacheKey, response, 15_000);
-      return reply.send(response);
+      setCached(cacheKey, charts, 15_000);
+      return reply.send({ campaign: campaignOut, ...charts });
     } catch (error) {
       return sendError(reply, error);
     }
