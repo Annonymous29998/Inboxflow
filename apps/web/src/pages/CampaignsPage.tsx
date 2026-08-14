@@ -389,12 +389,15 @@ export function CampaignEditorPage() {
   const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
   const defaultQueueSettings = {
-    batchSize: 5,
+    batchSize: 10,
     batchPauseMs: 30_000,
     betweenEmailMs: 4_000,
     maxPerMinute: 12,
     maxPerHour: 400,
   };
+  const [queueStage, setQueueStage] = useState<string>('sending');
+  const [pauseUntil, setPauseUntil] = useState<string | null>(null);
+  const [batchNumber, setBatchNumber] = useState<number | null>(null);
   const [queueSettings, setQueueSettings] = useDraft(`${draftKey}:queueSettings`, defaultQueueSettings);
   const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
@@ -968,6 +971,9 @@ export function CampaignEditorPage() {
       setRecentFailures([]);
       setRecentSent([]);
       setLastEmail(null);
+      setQueueStage('sending');
+      setPauseUntil(null);
+      setBatchNumber(null);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
 
       if (result.jobId) {
@@ -985,6 +991,10 @@ export function CampaignEditorPage() {
                 return next.slice(0, 12);
               });
             }
+            if (typeof meta.stage === 'string') setQueueStage(meta.stage);
+            if (typeof meta.pauseUntil === 'string') setPauseUntil(meta.pauseUntil);
+            else if (meta.stage === 'sending' || meta.pauseUntil === null) setPauseUntil(null);
+            if (typeof meta.batchNumber === 'number') setBatchNumber(meta.batchNumber);
             if (u.total && Number(u.total) > 0) {
               setSendCount((prev) => Math.max(prev, Number(u.total)));
             }
@@ -1197,6 +1207,9 @@ export function CampaignEditorPage() {
         if (status.recentFailures) setRecentFailures(status.recentFailures);
         if (status.recentSent) setRecentSent(status.recentSent);
         if (status.lastEmail) setLastEmail(status.lastEmail);
+        setQueueStage(status.queueStage || 'sending');
+        setPauseUntil(status.pauseUntil ?? null);
+        if (status.batchNumber != null) setBatchNumber(status.batchNumber);
         if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
 
         if (status.status === 'PAUSED') {
@@ -1346,6 +1359,10 @@ export function CampaignEditorPage() {
         fromLabel={fromLabel}
         batchSize={queueSettings.batchSize}
         batchPauseSeconds={Math.max(1, Math.round(queueSettings.batchPauseMs / 1000))}
+        betweenEmailMs={queueSettings.betweenEmailMs}
+        queueStage={queueStage}
+        pauseUntil={pauseUntil}
+        batchNumber={batchNumber}
         cancelled={sendCancelled}
         paused={sendPaused}
         onConfirmSend={() => void confirmBackgroundSend(false)}
@@ -1636,10 +1653,10 @@ export function CampaignEditorPage() {
                   type="number"
                   value={queueSettings.batchSize}
                   onChange={(e) =>
-                    setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 5 })
+                    setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 10 })
                   }
                 />
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Default 5</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Default 10</p>
               </div>
               <div>
                 <Label>Pause between batches</Label>
@@ -1656,19 +1673,22 @@ export function CampaignEditorPage() {
                 <p className="mt-0.5 text-[10px] text-muted-foreground">Seconds (default 30)</p>
               </div>
               <div>
-                <Label>Gap between emails</Label>
+                <Label>Gap between emails (ms)</Label>
                 <Input
                   type="number"
-                  step="0.5"
-                  value={queueSettings.betweenEmailMs / 1000}
+                  step={500}
+                  min={0}
+                  value={queueSettings.betweenEmailMs}
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      betweenEmailMs: Math.max(0, Math.round((Number(e.target.value) || 4) * 1000)),
+                      betweenEmailMs: Math.max(0, Number(e.target.value) || 4_000),
                     })
                   }
                 />
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Seconds (default 4)</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  Default 4,000ms (~{queueSettings.betweenEmailMs / 1000}s with jitter)
+                </p>
               </div>
               <div>
                 <Label>Max emails / minute</Label>

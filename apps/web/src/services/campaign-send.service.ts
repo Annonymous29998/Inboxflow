@@ -44,6 +44,13 @@ export type SendStatus = {
   activity?: SendActivity[];
   /** Verified opens/clicks — separate from send log */
   engagementActivity?: SendActivity[];
+  /** Live queue stage: sending | between_emails | batch_pause */
+  queueStage?: string;
+  pauseUntil?: string | null;
+  betweenEmailMs?: number | null;
+  batchPauseMs?: number | null;
+  batchNumber?: number | null;
+  queueBatchSize?: number | null;
 };
 
 export type JobProgressEvent = {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
+import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
 
 export type SendFlowPhase = 'confirm' | 'background' | 'success' | 'error';
 
@@ -20,6 +21,10 @@ interface SendProgressModalProps {
   fromLabel?: string;
   batchSize?: number;
   batchPauseSeconds?: number;
+  betweenEmailMs?: number;
+  queueStage?: string;
+  pauseUntil?: string | null;
+  batchNumber?: number | null;
   cancelled?: boolean;
   paused?: boolean;
   onConfirmSend: () => void;
@@ -73,7 +78,11 @@ export function SendProgressModal({
   confirmMessage,
   fromLabel,
   batchSize = 10,
-  batchPauseSeconds = 5,
+  batchPauseSeconds = 30,
+  betweenEmailMs = 4_000,
+  queueStage = 'sending',
+  pauseUntil = null,
+  batchNumber = null,
   cancelled = false,
   paused = false,
   onConfirmSend,
@@ -127,10 +136,23 @@ export function SendProgressModal({
     return { success, failed, remaining, total, finished, percent, liveSpeed, etaMs };
   }, [sendCount, sentCount, failedCount, now, phase]);
 
+  const isBackground = phase === 'background';
+  const isBatchPause = isBackground && !paused && queueStage === 'batch_pause';
+  const queueHeartbeat = formatQueueHeartbeat({
+    status: paused ? 'PAUSED' : 'SENDING',
+    lastEmail,
+    finished: stats.finished,
+    queueStage,
+    pauseUntil,
+    betweenEmailMs,
+    batchNumber,
+    queueBatchSize: batchSize,
+    now,
+  });
+
   if (!open) return null;
 
   const backdropClose = phase === 'confirm' || phase === 'background';
-  const isBackground = phase === 'background';
 
   return (
     <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 px-4 font-mono">
@@ -161,7 +183,7 @@ export function SendProgressModal({
                 <p className="mt-3 text-xs leading-5 text-muted-foreground">
                   Sending runs on the server in the background. You can close this tab or window
                   anytime — emails will keep going. Batches of {batchSize} with a {batchPauseSeconds}s
-                  pause between batches.
+                  pause between batches · {betweenEmailMs.toLocaleString()}ms gap between each email.
                 </p>
               </div>
               <button
@@ -194,7 +216,11 @@ export function SendProgressModal({
                     : 'Complete'
                   : paused
                     ? 'Paused'
-                    : 'Background send'}
+                    : isBatchPause
+                      ? 'Batch pause'
+                      : queueStage === 'between_emails'
+                        ? 'Waiting between emails'
+                        : 'Background send'}
               </p>
               <h2 className="mt-2 text-2xl font-bold tracking-wide text-primary">
                 {phase === 'success'
@@ -203,7 +229,9 @@ export function SendProgressModal({
                     : 'Send finished'
                   : paused
                     ? 'Campaign paused'
-                    : 'Sending in background…'}
+                    : isBatchPause
+                      ? 'Pausing between batches…'
+                      : 'Sending in background…'}
               </h2>
 
               {isBackground ? (
@@ -239,11 +267,21 @@ export function SendProgressModal({
               </p>
 
               {phase === 'background' ? (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {lastEmail
-                    ? `Last: ${lastEmail}`
-                    : 'Live progress updates as each email is processed…'}
-                </p>
+                isBatchPause ? (
+                  <div className="mt-4 border border-warning/40 bg-warning/10 px-4 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-warning">Batch pause</p>
+                    <p className="mt-1 text-3xl font-semibold tabular-nums text-warning">
+                      {pauseSecondsRemaining(pauseUntil, now)}s
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {batchNumber != null
+                        ? `Batch ${batchNumber} done (${batchSize} emails). Next batch starts after this break.`
+                        : `Pausing after ${batchSize} emails. Next batch starts after this break.`}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">{queueHeartbeat}</p>
+                )
               ) : (
                 <p className="mt-2 text-xs text-muted-foreground">
                   {cancelled

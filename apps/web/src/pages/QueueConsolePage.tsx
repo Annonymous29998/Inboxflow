@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { Badge, Button } from '@/components/ui';
 import { toast } from '@/stores/toast';
 import { cn } from '@/lib/utils';
+import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
 import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 import { SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
@@ -90,6 +91,7 @@ function QueueCampaignColumn({
   onRetryFailed,
 }: CampaignColumnProps) {
   void expanded;
+  const [tick, setTick] = useState(() => Date.now());
   const status = live?.status || row.status;
   const sent = live?.sentCount ?? row.sent ?? 0;
   const failed = live?.failedCount ?? row.failed ?? 0;
@@ -132,22 +134,24 @@ function QueueCampaignColumn({
     return [...fails, ...bounces];
   }, [activitySorted, live?.recentFailures, live?.recentBounces]);
 
-  const heartbeat =
-    status === 'SENDING'
-      ? live?.lastEmail
-        ? `Sending now · last ${live.lastEmail}`
-        : finished === 0
-          ? 'Queued on server — waiting for the first email…'
-          : 'Sending…'
-      : status === 'PAUSED'
-        ? 'Paused — Resume to continue SMTP'
-        : status === 'CANCELLED'
-          ? 'Cancelled'
-          : status === 'SENT'
-            ? 'Finished'
-            : status === 'FAILED'
-              ? 'Stopped by an error'
-              : `Status: ${status}`;
+  const isBatchPause = status === 'SENDING' && live?.queueStage === 'batch_pause';
+  useEffect(() => {
+    if (!isBatchPause) return;
+    const id = window.setInterval(() => setTick(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [isBatchPause, live?.pauseUntil]);
+
+  const heartbeat = formatQueueHeartbeat({
+    status,
+    lastEmail: live?.lastEmail,
+    finished,
+    queueStage: live?.queueStage,
+    pauseUntil: live?.pauseUntil,
+    betweenEmailMs: live?.betweenEmailMs,
+    batchNumber: live?.batchNumber,
+    queueBatchSize: live?.queueBatchSize,
+    now: tick,
+  });
 
   return (
     <div id={`queue-col-${row.id}`} className="tui-box min-w-0 overflow-hidden">
@@ -165,7 +169,9 @@ function QueueCampaignColumn({
         <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-accent">
           Live send · {row.name}
         </span>
-        <Badge tone={statusTone(status)}>{status}</Badge>
+        <Badge tone={isBatchPause ? 'warning' : statusTone(status)}>
+          {isBatchPause ? 'BATCH PAUSE' : status}
+        </Badge>
         <Badge tone="neutral">
           {finished}/{total}
         </Badge>
@@ -199,7 +205,20 @@ function QueueCampaignColumn({
               processed · {percent}%
             </span>
           </p>
-          <p className="text-xs text-accent">{heartbeat}</p>
+          <p className={cn('text-xs', isBatchPause ? 'text-warning' : 'text-accent')}>{heartbeat}</p>
+          {isBatchPause ? (
+            <div className="border border-warning/40 bg-warning/10 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wide text-warning">Waiting before next batch</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-warning">
+                {pauseSecondsRemaining(live?.pauseUntil, tick)}s
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {live?.batchNumber != null && live?.queueBatchSize != null
+                  ? `Batch ${live.batchNumber} done (${live.queueBatchSize} emails). Sending resumes automatically.`
+                  : 'Sending resumes automatically after this pause.'}
+              </p>
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
             <div className="border border-border bg-muted/40 px-2 py-2">

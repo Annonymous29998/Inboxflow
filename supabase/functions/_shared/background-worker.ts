@@ -114,7 +114,7 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
     batchPauseMs?: number;
   };
   const betweenEmailMs = queueSettings.betweenEmailMs ?? 4_000;
-  const batchSize = queueSettings.batchSize ?? 5;
+  const batchSize = queueSettings.batchSize ?? 10;
   const batchPauseMs = queueSettings.batchPauseMs ?? 30_000;
   const humanDelay = (baseMs: number) => {
     if (baseMs <= 0) return 0;

@@ -10,6 +10,7 @@ import {
 } from '../queue/pgmq-client.js';
 import { env } from '../../config/env.js';
 import { prisma } from '../../config/prisma.js';
+import { Prisma } from '@prisma/client';
 import { analyzeCampaign } from '../../modules/deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, stripHtmlTags, isImageOnlyHtml } from '../../modules/deliverability/spam-scrubber.js';
 import { sendCampaignEmailToRecipient } from './campaign-send.js';
@@ -300,7 +301,7 @@ async function dispatchCampaign(campaignId: string) {
   const queueSettings = (campaign.queueSettings || {}) as {
     batchSize?: number;
   };
-  const batchSize = Math.max(1, Number(queueSettings.batchSize || 5));
+  const batchSize = Math.max(1, Number(queueSettings.batchSize || 10));
 
   // Enqueue only recipients that still need sending. Never reset SENT back to QUEUED
   // (Retry failed / Resume used to re-dispatch the whole list and could duplicate sends).
@@ -362,7 +363,7 @@ async function processEmailJob(data: EmailJobData) {
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { status: true, organizationId: true, totalRecipients: true, queueSettings: true, sentCount: true },
+    select: { status: true, organizationId: true, totalRecipients: true, queueSettings: true },
   });
   if (!campaign || ['PAUSED', 'CANCELLED'].includes(campaign.status)) {
     return;
@@ -384,14 +385,83 @@ async function processEmailJob(data: EmailJobData) {
   };
   const betweenEmailMs = Math.max(0, Number(qs.betweenEmailMs ?? 4_000));
   const batchPauseMs = Math.max(0, Number(qs.batchPauseMs ?? 30_000));
-  const batchSize = Math.max(1, Number(qs.batchSize || 5));
+  const batchSize = Math.max(1, Number(qs.batchSize || 10));
   const jitter = (baseMs: number) => Math.max(250, Math.round(baseMs * (0.6 + Math.random() * 0.8)));
-  if (betweenEmailMs > 0) {
-    await new Promise((r) => setTimeout(r, jitter(betweenEmailMs)));
+
+  const processedCount = await prisma.campaignRecipient.count({
+    where: { campaignId, status: { not: 'QUEUED' } },
+  });
+
+  async function stillSending(): Promise<boolean> {
+    const live = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { status: true },
+    });
+    return Boolean(live && live.status === 'SENDING');
   }
-  if (batchPauseMs > 0 && campaign.sentCount > 0 && campaign.sentCount % batchSize === 0) {
-    await new Promise((r) => setTimeout(r, jitter(batchPauseMs)));
+
+  async function waitMs(ms: number): Promise<boolean> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (!(await stillSending())) return false;
+      await sleep(Math.min(1000, end - Date.now()));
+    }
+    return stillSending();
   }
+
+  async function pushQueueStage(meta: Record<string, unknown>) {
+    try {
+      const { upsertJobProgress } = await import('../../modules/jobs/progress.js');
+      const job = await prisma.job.findFirst({
+        where: {
+          campaignId,
+          type: 'CAMPAIGN_SEND',
+          status: { in: ['RUNNING', 'PENDING', 'PAUSED'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, organizationId: true, total: true, processed: true, meta: true },
+      });
+      if (!job) return;
+      const prev = (job.meta && typeof job.meta === 'object' ? job.meta : {}) as Record<string, unknown>;
+      await upsertJobProgress({
+        id: job.id,
+        type: 'CAMPAIGN_SEND',
+        organizationId: job.organizationId,
+        campaignId,
+        total: job.total,
+        processed: job.processed,
+        status: 'RUNNING',
+        meta: { ...prev, ...meta } as Prisma.InputJsonValue,
+      });
+    } catch {
+      /* UI hint must not block send */
+    }
+  }
+
+  const atBatchBoundary = processedCount > 0 && processedCount % batchSize === 0;
+
+  if (betweenEmailMs > 0 && processedCount > 0 && !atBatchBoundary) {
+    await pushQueueStage({ stage: 'between_emails', betweenEmailMs, batchSize, pauseUntil: null });
+    if (!(await waitMs(jitter(betweenEmailMs)))) return;
+  }
+  if (batchPauseMs > 0 && atBatchBoundary) {
+    const pauseMs = jitter(batchPauseMs);
+    const batchNumber = Math.floor(processedCount / batchSize);
+    await pushQueueStage({
+      stage: 'batch_pause',
+      pauseUntil: new Date(Date.now() + pauseMs).toISOString(),
+      batchPauseMs: pauseMs,
+      batchNumber,
+      batchSize,
+      betweenEmailMs,
+    });
+    if (!(await waitMs(pauseMs))) return;
+    await pushQueueStage({ stage: 'sending', pauseUntil: null, betweenEmailMs, batchSize });
+  } else {
+    await pushQueueStage({ stage: 'sending', pauseUntil: null, betweenEmailMs, batchSize });
+  }
+
+  if (!(await stillSending())) return;
 
   const result = await sendCampaignEmailToRecipient({
     campaignId,
@@ -417,12 +487,13 @@ async function processEmailJob(data: EmailJobData) {
         status: { in: ['RUNNING', 'PENDING', 'PAUSED'] },
       },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, organizationId: true, total: true },
+      select: { id: true, organizationId: true, total: true, meta: true },
     });
     if (job) {
       const processed = sentCount + failedCount;
       const total = Math.max(job.total || 0, campaign.totalRecipients || 0, processed);
       const done = pendingCount === 0 && processed >= total && total > 0;
+      const prev = (job.meta && typeof job.meta === 'object' ? job.meta : {}) as Record<string, unknown>;
       await upsertJobProgress({
         id: job.id,
         type: 'CAMPAIGN_SEND',
@@ -433,14 +504,18 @@ async function processEmailJob(data: EmailJobData) {
         processed,
         finishedAt: done ? new Date() : null,
         meta: {
+          ...prev,
           stage: done ? 'finalized' : 'sending',
+          pauseUntil: null,
+          betweenEmailMs,
+          batchSize,
           sent: sentCount,
           failed: failedCount,
           pending: pendingCount,
           lastEmail: to,
           lastResult: result.success ? 'sent' : 'failed',
           lastError: result.success ? null : result.error || 'Send failed',
-        },
+        } as Prisma.InputJsonValue,
       });
     }
   } catch {

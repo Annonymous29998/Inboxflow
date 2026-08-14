@@ -466,6 +466,8 @@ export async function campaignRoutes(app: FastifyInstance) {
               p.clickedCount,
               p.activity?.[0]?.at,
               p.activity?.length,
+              p.queueStage,
+              p.pauseUntil,
             ].join('|')
           : '';
 

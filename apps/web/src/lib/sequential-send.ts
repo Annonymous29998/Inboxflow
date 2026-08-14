@@ -1,5 +1,5 @@
 /** Send this many emails, then pause before the next batch. */
-export const EMAIL_SEND_BATCH_SIZE = 5;
+export const EMAIL_SEND_BATCH_SIZE = 10;
 /** Pause between batches (human-like break after a short burst). */
 export const EMAIL_SEND_BATCH_PAUSE_MS = 30_000;
 /**
