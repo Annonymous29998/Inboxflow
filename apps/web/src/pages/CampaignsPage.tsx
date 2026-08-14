@@ -32,7 +32,7 @@ import {
   useCampaignDeliverability,
 } from '@/components/campaigns/CampaignDeliverabilityPanel';
 import { scrubCampaignEditorContent, scrubSpamFromHtml, scrubSpamFromText } from '@/lib/spam-content-filter';
-import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
+import { Badge, Button, Card, Input, Label, PageLoading, Select, Textarea } from '@/components/ui';
 import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
@@ -215,18 +215,25 @@ function blocksToHtml(blocks: EditorBlock[], dark = false): string {
 
 export function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busyCreate, setBusyCreate] = useState(false);
   const navigate = useNavigate();
 
-  async function load() {
-    const d = await api.get<{ campaigns: Campaign[] }>('/api/campaigns');
-    setCampaigns(d.campaigns);
+  async function load(isPoll = false) {
+    try {
+      const d = await api.get<{ campaigns: Campaign[] }>('/api/campaigns');
+      setCampaigns(d.campaigns);
+    } catch (err) {
+      if (!isPoll) flash(err instanceof Error ? err.message : 'Could not load campaigns', 'error');
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
     void load();
-    const id = window.setInterval(() => void load(), 4000);
+    const id = window.setInterval(() => void load(true), 10_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -287,6 +294,10 @@ export function CampaignsPage() {
       </div>
 
       <div className="grid gap-3">
+        {loading ? (
+          <PageLoading label="Loading campaigns…" />
+        ) : (
+          <>
         {campaigns.map((c) => (
           <Card key={c.id} className="transition-colors hover:border-primary/50">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -344,6 +355,8 @@ export function CampaignsPage() {
               <Plus className="h-4 w-4" /> Create your first campaign
             </Button>
           </Card>
+        )}
+          </>
         )}
       </div>
     </div>

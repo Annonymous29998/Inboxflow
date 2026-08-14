@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import { Badge, Button, Card, Input, Label, Progress, Select } from '@/components/ui';
+import { Badge, Button, Card, Input, Label, PageLoading, Progress, Select } from '@/components/ui';
 import { Download, FileUp, Plus, Search, Upload, AlertTriangle, Trash2, ListPlus, Users, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown, MinusSquare, PlusSquare } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
@@ -130,6 +130,7 @@ function listNameFromFileName(fileName: string): string {
 
 export function ContactsPage() {
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState<number>(1);
   const [pages, setPages] = useState<number>(1);
@@ -265,6 +266,8 @@ export function ContactsPage() {
       }
     } catch (err) {
       toast.error('Could not load contacts', err instanceof Error ? err.message : undefined);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -706,7 +709,9 @@ export function ContactsPage() {
       </Card>
 
       <div className="space-y-3">
-        {visibleGroups.length === 0 && (
+        {loading ? (
+          <PageLoading label="Loading contacts…" />
+        ) : visibleGroups.length === 0 ? (
           <Card>
             <div className="px-4 py-16 text-center text-muted-foreground">
               <Users className="mx-auto mb-3 h-10 w-10 opacity-40" />
@@ -714,8 +719,8 @@ export function ContactsPage() {
               <p className="mt-1 text-xs">Click Import or Add Contact to grow your audience.</p>
             </div>
           </Card>
-        )}
-        {visibleGroups.map((g) => {
+        ) : null}
+        {!loading && visibleGroups.map((g) => {
           const isOpen = expanded[g.id] ?? grouped.length <= 6;
           const listTotal =
             g.id === '__unassigned__'

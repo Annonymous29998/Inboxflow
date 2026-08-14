@@ -1,4 +1,5 @@
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
+import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function Button({
@@ -171,6 +172,19 @@ export function Progress({
         className="h-full bg-gradient-to-r from-primary via-accent to-primary transition-[width] duration-300 ease-out"
         style={{ width: `${pct}%` }}
       />
+    </div>
+  );
+}
+
+export function PageLoading({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-3 border border-border bg-card py-16"
+      role="status"
+      aria-live="polite"
+    >
+      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <p className="text-sm text-muted-foreground">{label}</p>
     </div>
   );
 }

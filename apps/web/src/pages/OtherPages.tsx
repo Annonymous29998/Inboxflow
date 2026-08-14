@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { templateService } from '@/services/template.service';
 import { NewTemplateModal } from '@/components/templates/NewTemplateModal';
-import { Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
+import { Button, Card, Input, Label, PageLoading, Select, Textarea } from '@/components/ui';
 import { Sparkles, Trash2 } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
@@ -120,12 +120,19 @@ export function TemplatesPage() {
   const [templates, setTemplates] = useState<
     Array<{ id: string; name: string; description?: string | null; isPublic: boolean; organizationId?: string | null }>
   >([]);
+  const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [newTemplateOpen, setNewTemplateOpen] = useState(false);
 
   async function load() {
-    const d = await api.get<{ templates: typeof templates }>('/api/templates');
-    setTemplates(d.templates);
+    try {
+      const d = await api.get<{ templates: typeof templates }>('/api/templates');
+      setTemplates(d.templates);
+    } catch (err) {
+      toast.error('Could not load templates', err instanceof Error ? err.message : undefined);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -214,7 +221,12 @@ export function TemplatesPage() {
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {templates.map((t) => (
+        {loading ? (
+          <div className="md:col-span-2 xl:col-span-3">
+            <PageLoading label="Loading templates…" />
+          </div>
+        ) : (
+          templates.map((t) => (
           <Card key={t.id}>
             <div className="font-medium">{t.name}</div>
             <p className="mt-1 text-sm text-ink-muted">
@@ -240,9 +252,10 @@ export function TemplatesPage() {
               </Button>
             </div>
           </Card>
-        ))}
+        ))
+        )}
       </div>
-      {!templates.length ? (
+      {!loading && !templates.length ? (
         <Card className="py-10 text-center">
           <p className="mb-4 text-sm text-ink-muted">
             No templates yet. Click New template to name and import an HTML design, or start blank.

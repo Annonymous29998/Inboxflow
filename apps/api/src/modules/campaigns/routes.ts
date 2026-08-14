@@ -17,7 +17,7 @@ import {
 } from './recipient-stats.js';
 import { buildCampaignSendStatus } from './send-status-builder.js';
 import { recountCampaignEngagement } from '../../services/tracking/recount.js';
-import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
+import { getCampaignsListStats } from '../../services/campaigns/live-stats.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -119,7 +119,22 @@ export async function campaignRoutes(app: FastifyInstance) {
           orderBy: { updatedAt: 'desc' },
           skip: (page - 1) * limit,
           take: limit,
-          include: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            type: true,
+            subject: true,
+            deliverabilityScore: true,
+            sentCount: true,
+            deliveredCount: true,
+            failedCount: true,
+            openedCount: true,
+            clickedCount: true,
+            bouncedCount: true,
+            totalRecipients: true,
+            sentAt: true,
+            updatedAt: true,
             list: { select: { id: true, name: true } },
             createdBy: { select: { id: true, firstName: true, lastName: true } },
           },
@@ -127,22 +142,23 @@ export async function campaignRoutes(app: FastifyInstance) {
         prisma.campaign.count({ where }),
       ]);
 
-      const enriched = await Promise.all(
-        campaigns.map(async (c) => {
-          if (!['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'].includes(c.status)) return c;
-          const live = await getCampaignLiveStats(c.id, c.totalRecipients);
-          return {
-            ...c,
-            sentCount: live.sentCount,
-            deliveredCount: live.deliveredCount,
-            failedCount: live.failedCount,
-            pendingCount: live.pendingCount,
-            openedCount: live.openedCount,
-            clickedCount: live.clickedCount,
-            bouncedCount: live.bouncedCount || c.bouncedCount,
-          };
-        }),
-      );
+      const liveIds = campaigns
+        .filter((c) => ['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'].includes(c.status))
+        .map((c) => c.id);
+      const liveById = await getCampaignsListStats(liveIds);
+
+      const enriched = campaigns.map((c) => {
+        const live = liveById.get(c.id);
+        if (!live) return c;
+        return {
+          ...c,
+          sentCount: live.sentCount,
+          deliveredCount: live.deliveredCount,
+          failedCount: live.failedCount,
+          pendingCount: live.pendingCount,
+          bouncedCount: live.bouncedCount || c.bouncedCount,
+        };
+      });
 
       return reply.send({ campaigns: enriched, total, page, limit });
     } catch (error) {
