@@ -17,31 +17,24 @@ async function loadOpenEvents(campaignId: string) {
   return rows.filter((e) => isCountableOpen(e.userAgent, e.metadata)) as TrackingRow[];
 }
 
-async function loadClickEvents(campaignId: string, verifiedOpenContacts: Set<string>) {
+async function loadClickEvents(campaignId: string) {
   const rows = await prisma.trackingEvent.findMany({
     where: { campaignId, type: 'CLICKED', contactId: { not: null } },
     select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.filter(
-    (e) =>
-      e.contactId &&
-      verifiedOpenContacts.has(e.contactId) &&
-      isCountableClick(e.userAgent, e.metadata, true),
-  ) as TrackingRow[];
+  return rows.filter((e) => isCountableClick(e.userAgent, e.metadata)) as TrackingRow[];
 }
 
 /** Recompute campaign + recipient stats from verified human tracking only. */
 export async function recountCampaignEngagement(campaignId: string) {
   const openEvents = await loadOpenEvents(campaignId);
+  const clickEvents = await loadClickEvents(campaignId);
 
   const firstOpen = new Map<string, Date>();
   for (const e of openEvents) {
     if (e.contactId && !firstOpen.has(e.contactId)) firstOpen.set(e.contactId, e.createdAt);
   }
-
-  const verifiedOpenContacts = new Set(firstOpen.keys());
-  const clickEvents = await loadClickEvents(campaignId, verifiedOpenContacts);
 
   const firstClick = new Map<string, Date>();
   for (const e of clickEvents) {
@@ -58,23 +51,30 @@ export async function recountCampaignEngagement(campaignId: string) {
 
   const recipients = await prisma.campaignRecipient.findMany({
     where: { campaignId },
-    select: { id: true, contactId: true, sentAt: true, status: true },
+    select: { id: true, contactId: true, sentAt: true, status: true, deliveredAt: true },
   });
 
   for (const r of recipients) {
     const openedAt = firstOpen.get(r.contactId) ?? null;
     const clickedAt = firstClick.get(r.contactId) ?? null;
+    // Click without open still means they engaged — surface openedAt for recipient UI.
+    const effectiveOpenedAt = openedAt || clickedAt;
     const wasDelivered =
       r.sentAt != null || ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);
 
     let status = r.status;
     if (clickedAt) status = 'CLICKED';
-    else if (openedAt) status = 'OPENED';
+    else if (effectiveOpenedAt) status = 'OPENED';
     else if (wasDelivered && ['OPENED', 'CLICKED'].includes(r.status)) status = 'SENT';
 
     await prisma.campaignRecipient.update({
       where: { id: r.id },
-      data: { openedAt, clickedAt, status },
+      data: {
+        openedAt: effectiveOpenedAt,
+        clickedAt,
+        status,
+        ...(clickedAt && !r.deliveredAt ? { deliveredAt: clickedAt } : {}),
+      },
     });
   }
 
@@ -92,9 +92,7 @@ export async function countHumanOpens(campaignId: string): Promise<number> {
 }
 
 export async function countHumanClicks(campaignId: string): Promise<number> {
-  const openEvents = await loadOpenEvents(campaignId);
-  const verified = new Set(openEvents.map((e) => e.contactId).filter(Boolean) as string[]);
-  const clickEvents = await loadClickEvents(campaignId, verified);
+  const clickEvents = await loadClickEvents(campaignId);
   return new Set(clickEvents.map((e) => e.contactId).filter(Boolean)).size;
 }
 
@@ -118,9 +116,7 @@ export async function humanClickCountByContact(
   contactIds: string[],
 ): Promise<Record<string, number>> {
   if (!contactIds.length) return {};
-  const openEvents = await loadOpenEvents(campaignId);
-  const verified = new Set(openEvents.map((e) => e.contactId).filter(Boolean) as string[]);
-  const events = await loadClickEvents(campaignId, verified);
+  const events = await loadClickEvents(campaignId);
   const out: Record<string, number> = {};
   for (const e of events) {
     if (e.contactId && contactIds.includes(e.contactId)) {

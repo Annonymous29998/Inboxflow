@@ -126,22 +126,33 @@ export function isCountableOpen(
 }
 
 /**
- * Count a click only when the contact has a verified open and the click is not from a bot UA.
+ * Count a real click. Does NOT require a prior open (images may be blocked).
+ * Clicks usually come from a browser after the mail app — so normal Chrome/Safari/etc. are allowed,
+ * while scanners / headless / ESP prefetch stay filtered.
+ *
+ * `contactHasVerifiedOpen` is ignored (kept for call-site compatibility).
  */
 export function isCountableClick(
   userAgent: string | null | undefined,
   metadata: unknown,
-  contactHasVerifiedOpen: boolean,
+  _contactHasVerifiedOpen?: boolean,
 ): boolean {
-  if (!contactHasVerifiedOpen) return false;
-  if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
-    return false;
+  if (metadata && typeof metadata === 'object') {
+    const m = metadata as { source?: string; reason?: string };
+    // Old rows marked automated only because images never loaded — re-evaluate by UA.
+    if (m.source === 'automated' && m.reason !== 'no_verified_open') {
+      return false;
+    }
   }
   const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
+  if (isScannerChrome(ua)) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
-  if (isDesktopBotBrowser(ua)) return false;
+  // Browser click-through from webmail / desktop mail (not the same as open-pixel bots).
+  if (/Chrome\/|CriOS\/|Firefox\/|FxiOS\/|Edg\/|EdgiOS\/|Safari\//i.test(ua)) {
+    return true;
+  }
   return false;
 }
 

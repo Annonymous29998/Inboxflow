@@ -36,6 +36,7 @@ import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/component
 import { cn, scoreColor, scoreLabel } from '@/lib/utils';
 import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
+import { formatSmtpPickLabel, SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
 import { toast } from '@/stores/toast';
 import { confirmDialog, promptDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
@@ -76,6 +77,11 @@ type ProviderOption = {
   user?: string;
   lastTestStatus?: string | null;
   issues?: string[];
+  successCount?: number;
+  failCount?: number;
+  successRate?: number;
+  sentToday?: number;
+  dailyLimit?: number | null;
 };
 
 type Campaign = {
@@ -1518,8 +1524,7 @@ export function CampaignEditorPage() {
                 <option value="rotate">Auto-rotate (all active SMTPs) — default</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name}
-                    {p.isDefault ? ' (default)' : ''} · {p.type}
+                    {formatSmtpPickLabel(p)}
                   </option>
                 ))}
               </Select>
@@ -1527,13 +1532,14 @@ export function CampaignEditorPage() {
                 <p className="mt-1 text-[10px] text-muted-foreground">
                   Default for every campaign. Round-robins {providers.length || 0} active SMTPs; each
                   email uses that profile&apos;s host, encryption, and From. Pick one SMTP below only
-                  to pin.
+                  to pin. % ok = live success rate (fails vs accepts).
                 </p>
               ) : (
                 <p className="mt-1 text-[10px] text-muted-foreground">
                   Pinned to one SMTP (others only as failover). Choose Auto-rotate to use all again.
                 </p>
               )}
+              <SmtpHealthStrip providers={providers} className="mt-2" />
             </div>
             <div className="border border-border bg-background px-3 py-2 text-xs">
               <div className="uppercase tracking-wider text-accent">From preview</div>
@@ -1618,13 +1624,14 @@ export function CampaignEditorPage() {
           </Card>
 
           <Card className="space-y-3">
-            <h3 className="font-medium text-xs uppercase tracking-wider text-accent">Intelligent queue</h3>
+            <h3 className="font-medium text-xs uppercase tracking-wider text-accent">Send pacing</h3>
             <p className="text-[11px] text-muted-foreground">
-              Human-like pacing: ~4s between emails (±jitter), small batches, longer pauses. Faster bursts look automated and hurt inbox placement.
+              Flow: send a batch → pause → next batch. Keep gaps so it looks human (default is
+              safe).
             </p>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <Label>Batch size</Label>
+                <Label>Emails per batch</Label>
                 <Input
                   type="number"
                   value={queueSettings.batchSize}
@@ -1632,50 +1639,54 @@ export function CampaignEditorPage() {
                     setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 5 })
                   }
                 />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Default 5</p>
               </div>
               <div>
-                <Label>Batch pause (ms)</Label>
+                <Label>Pause between batches</Label>
                 <Input
                   type="number"
-                  value={queueSettings.batchPauseMs}
+                  value={Math.round(queueSettings.batchPauseMs / 1000)}
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      batchPauseMs: Number(e.target.value) || 30_000,
+                      batchPauseMs: Math.max(0, Number(e.target.value) || 30) * 1000,
                     })
                   }
                 />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Seconds (default 30)</p>
               </div>
               <div>
-                <Label>Between emails (ms)</Label>
+                <Label>Gap between emails</Label>
                 <Input
                   type="number"
-                  value={queueSettings.betweenEmailMs}
+                  step="0.5"
+                  value={queueSettings.betweenEmailMs / 1000}
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      betweenEmailMs: Number(e.target.value) || 4_000,
+                      betweenEmailMs: Math.max(0, Math.round((Number(e.target.value) || 4) * 1000)),
                     })
                   }
                 />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Seconds (default 4)</p>
               </div>
               <div>
-                <Label>Max / minute</Label>
+                <Label>Max emails / minute</Label>
                 <Input
                   type="number"
                   value={queueSettings.maxPerMinute}
                   onChange={(e) =>
                     setQueueSettings({
                       ...queueSettings,
-                      maxPerMinute: Number(e.target.value) || 60,
+                      maxPerMinute: Number(e.target.value) || 12,
                     })
                   }
                 />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Cap (default 12)</p>
               </div>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Sends in batches with a pause between them. Pause / resume / retry from the send modal
-              or the{' '}
+              Pause / resume / retry from the send modal or{' '}
               <Link to="/app/queue" className="text-primary underline">
                 Queue Console
               </Link>

@@ -70,19 +70,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     countHumanClicks(campaignId),
   ]);
 
-  const verifiedOpenIds = new Set(
-    openEvents
-      .filter((e) => isCountableOpen(e.userAgent, e.metadata))
-      .map((e) => e.contactId)
-      .filter(Boolean) as string[],
-  );
-
-  const countableClicks = clickEvents.filter(
-    (e) =>
-      e.contactId &&
-      verifiedOpenIds.has(e.contactId) &&
-      isCountableClick(e.userAgent, e.metadata, true),
-  );
+  const countableClicks = clickEvents.filter((e) => isCountableClick(e.userAgent, e.metadata));
 
   const sendActivity: SendActivityRow[] = [
     ...recentDelivered

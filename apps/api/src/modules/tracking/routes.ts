@@ -129,28 +129,21 @@ export async function trackingRoutes(app: FastifyInstance) {
     const auto = classifyAutomatedTracking(rawUa);
 
     try {
-      const priorOpens = await prisma.trackingEvent.findMany({
-        where: { campaignId, contactId, type: 'OPENED' },
-        select: { userAgent: true, metadata: true },
-      });
-      const hasVerifiedOpen = priorOpens.some((e) => isCountableOpen(e.userAgent, e.metadata));
-      const countable = isCountableClick(rawUa, undefined, hasVerifiedOpen);
+      const countable = isCountableClick(rawUa, undefined);
 
       const metadata = countable
         ? undefined
         : {
             source: 'automated',
-            reason: hasVerifiedOpen
-              ? (auto.reason ?? 'non_mail_client')
-              : 'no_verified_open',
+            reason: auto.reason ?? 'non_mail_client',
           };
 
       const priorClicks = await prisma.trackingEvent.findMany({
         where: { campaignId, contactId, type: 'CLICKED' },
         select: { userAgent: true, metadata: true },
       });
-      const existingCountable = priorClicks.some(
-        (e) => isCountableClick(e.userAgent, e.metadata, hasVerifiedOpen),
+      const existingCountable = priorClicks.some((e) =>
+        isCountableClick(e.userAgent, e.metadata),
       );
 
       await prisma.trackingEvent.create({
@@ -174,10 +167,41 @@ export async function trackingRoutes(app: FastifyInstance) {
       }
 
       if (countable) {
-        await prisma.campaignRecipient.updateMany({
+        // Real click = engagement even if images were blocked (no open pixel).
+        const recipient = await prisma.campaignRecipient.findFirst({
           where: { campaignId, contactId },
-          data: { clickedAt: new Date(), status: 'CLICKED' },
+          select: { id: true, openedAt: true, deliveredAt: true, status: true },
         });
+        if (recipient) {
+          const data: {
+            clickedAt: Date;
+            status: 'CLICKED';
+            openedAt?: Date;
+            deliveredAt?: Date;
+            error?: null;
+          } = {
+            clickedAt: new Date(),
+            status: 'CLICKED',
+            error: null,
+          };
+          if (!recipient.openedAt) data.openedAt = new Date();
+          if (!recipient.deliveredAt) data.deliveredAt = new Date();
+          await prisma.campaignRecipient.update({
+            where: { id: recipient.id },
+            data,
+          });
+          if (!recipient.deliveredAt) {
+            await prisma.campaign.update({
+              where: { id: campaignId },
+              data: { deliveredCount: { increment: 1 } },
+            });
+          }
+        } else {
+          await prisma.campaignRecipient.updateMany({
+            where: { campaignId, contactId },
+            data: { clickedAt: new Date(), status: 'CLICKED' },
+          });
+        }
       }
     } catch (e) {
       console.error('Click tracking error', e);

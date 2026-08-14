@@ -5,8 +5,10 @@ import { api } from '@/lib/api';
 import { Badge, Button } from '@/components/ui';
 import { toast } from '@/stores/toast';
 import { cn } from '@/lib/utils';
-import { campaignSendService, type SendStatus } from '@/services/campaign-send.service';
+import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
+import { SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
+import { smtpService, type SmtpProfile } from '@/services/smtp.service';
 
 type QueueRow = {
   id: string;
@@ -50,6 +52,16 @@ function sectionKey(campaignId: string, section: string) {
   return `${campaignId}:${section}`;
 }
 
+/** Failed/Bounced first (Kestrel-style), then newest. */
+function sortProblemsFirst(items: SendActivity[]): SendActivity[] {
+  return [...items].sort((a, b) => {
+    const rank = (s: string) => (s === 'FAILED' || s === 'BOUNCED' ? 0 : 1);
+    const d = rank(a.status) - rank(b.status);
+    if (d !== 0) return d;
+    return a.at < b.at ? 1 : -1;
+  });
+}
+
 type CampaignColumnProps = {
   row: QueueRow;
   live: SendStatus | null;
@@ -89,10 +101,36 @@ function QueueCampaignColumn({
   const total = Math.max(live?.totalRecipients || 0, row.total || 0, sent + failed + pending, 1);
   const finished = sent + failed;
   const percent = Math.min(100, Math.round((finished / total) * 100));
+  const problems = failed + bounced;
   const sendLogDefaultOpen = status === 'SENDING' || status === 'PAUSED' || finished < 20;
+  const problemsDefaultOpen = problems > 0;
   const engagementCount = live?.engagementActivity?.length ?? 0;
   const canShowRecipientList =
     total > 0 || ['SENDING', 'SENT', 'PAUSED', 'CANCELLED', 'FAILED', 'READY'].includes(status);
+
+  const activitySorted = useMemo(
+    () => (live?.activity?.length ? sortProblemsFirst(live.activity) : []),
+    [live?.activity],
+  );
+  const problemLines = useMemo(() => {
+    const fromActivity = activitySorted.filter(
+      (a) => a.status === 'FAILED' || a.status === 'BOUNCED',
+    );
+    if (fromActivity.length) return fromActivity;
+    const fails = (live?.recentFailures || []).map((f) => ({
+      email: f.email,
+      status: 'FAILED' as const,
+      error: f.error,
+      at: '',
+    }));
+    const bounces = (live?.recentBounces || []).map((f) => ({
+      email: f.email,
+      status: 'BOUNCED' as const,
+      error: f.error,
+      at: '',
+    }));
+    return [...fails, ...bounces];
+  }, [activitySorted, live?.recentFailures, live?.recentBounces]);
 
   const heartbeat =
     status === 'SENDING'
@@ -165,20 +203,20 @@ function QueueCampaignColumn({
 
           <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
             <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Accepted</div>
-              <div className="mt-1 text-lg tabular-nums text-primary">{sent}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Delivered</div>
-              <div className="mt-1 text-lg tabular-nums text-success">{delivered}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
               <div className="text-[10px] uppercase text-muted-foreground">Failed</div>
               <div className="mt-1 text-lg tabular-nums text-destructive">{failed}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
               <div className="text-[10px] uppercase text-muted-foreground">Bounced</div>
               <div className="mt-1 text-lg tabular-nums text-destructive">{bounced}</div>
+            </div>
+            <div className="border border-border bg-muted/40 px-2 py-2">
+              <div className="text-[10px] uppercase text-muted-foreground">Accepted</div>
+              <div className="mt-1 text-lg tabular-nums text-primary">{sent}</div>
+            </div>
+            <div className="border border-border bg-muted/40 px-2 py-2">
+              <div className="text-[10px] uppercase text-muted-foreground">Delivered</div>
+              <div className="mt-1 text-lg tabular-nums text-success">{delivered}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
               <div className="text-[10px] uppercase text-muted-foreground">Opened</div>
@@ -212,6 +250,52 @@ function QueueCampaignColumn({
             <div className="overflow-hidden border border-border">
               <button
                 type="button"
+                onClick={() => onToggleSection(sectionKey(row.id, 'problems'))}
+                className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
+              >
+                {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
+                  <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                )}
+                <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-destructive">
+                  Failed & bounced
+                </span>
+                <Badge tone={problems > 0 ? 'danger' : 'neutral'}>{problems}</Badge>
+              </button>
+              {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
+                <div className="max-h-40 overflow-auto border-t border-border bg-destructive/5">
+                  {problemLines.length ? (
+                    <ul className="divide-y divide-border/50 text-[11px]">
+                      {problemLines.map((item, i) => (
+                        <li key={`prob-${item.status}-${item.email}-${i}`} className="flex gap-2 px-3 py-1.5">
+                          {item.at ? (
+                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                              {formatTime(item.at)}
+                            </span>
+                          ) : null}
+                          <span className="shrink-0 font-semibold text-destructive">[{item.status}]</span>
+                          <span className="min-w-0 break-all">
+                            {item.email}
+                            {item.error ? (
+                              <span className="text-muted-foreground"> — {item.error}</span>
+                            ) : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="px-3 py-5 text-center text-[11px] text-muted-foreground">
+                      No SMTP rejects or ESP bounces yet.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="overflow-hidden border border-border">
+              <button
+                type="button"
                 onClick={() => onToggleSection(sectionKey(row.id, 'sendLog'))}
                 className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
               >
@@ -227,9 +311,9 @@ function QueueCampaignColumn({
               </button>
               {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? (
                 <div className="max-h-56 overflow-auto border-t border-border bg-muted/20">
-                  {live?.activity?.length ? (
+                  {activitySorted.length ? (
                     <ul className="divide-y divide-border/50 text-[11px]">
-                      {live.activity.map((item, i) => (
+                      {activitySorted.map((item, i) => (
                         <li key={`${item.status}-${item.email}-${item.at}-${i}`} className="flex gap-2 px-3 py-1.5">
                           <span className="shrink-0 tabular-nums text-muted-foreground">{formatTime(item.at)}</span>
                           <span
@@ -359,6 +443,16 @@ export function QueueConsolePage() {
   const [panelOpen, setPanelOpen] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [campaignsOpen, setCampaignsOpen] = useState(true);
+  const [smtpProfiles, setSmtpProfiles] = useState<SmtpProfile[]>([]);
+
+  const loadSmtp = useCallback(async () => {
+    try {
+      const list = await smtpService.list();
+      setSmtpProfiles(list);
+    } catch {
+      /* non-blocking */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -383,9 +477,14 @@ export function QueueConsolePage() {
 
   useEffect(() => {
     void load();
+    void loadSmtp();
     const id = window.setInterval(() => void load(), 8000);
-    return () => window.clearInterval(id);
-  }, [load]);
+    const smtpId = window.setInterval(() => void loadSmtp(), 20_000);
+    return () => {
+      window.clearInterval(id);
+      window.clearInterval(smtpId);
+    };
+  }, [load, loadSmtp]);
 
   // Live SSE for every campaign currently in the queue console (new send = new stream)
   useEffect(() => {
@@ -501,11 +600,13 @@ export function QueueConsolePage() {
             beside (or under) the others — all live, all independent.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => { void load(); void loadSmtp(); }} disabled={loading}>
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           Refresh
         </Button>
       </div>
+
+      <SmtpHealthStrip providers={smtpProfiles} compact />
 
       {rows.length ? (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">

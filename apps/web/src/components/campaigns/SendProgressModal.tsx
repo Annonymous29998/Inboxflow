@@ -271,24 +271,24 @@ export function SendProgressModal({
             {phase === 'background' && (recentSent.length > 0 || recentFailures.length > 0) ? (
               <div className="mt-4 max-h-44 overflow-auto border border-border bg-muted/30 px-3 py-2 text-left">
                 <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent">
-                  Live activity
+                  Live activity (failed first)
                 </div>
                 <ul className="space-y-1 font-mono text-[11px]">
+                  {recentFailures.slice(0, 8).map((f) => (
+                    <li key={`fail-${f.email}`} className="break-all text-destructive">
+                      [FAIL] {f.email} — {f.error}
+                    </li>
+                  ))}
                   {recentSent.slice(0, 8).map((r) => (
                     <li key={`ok-${r.email}`} className="break-all text-primary">
                       [SENT] {r.email}
-                    </li>
-                  ))}
-                  {recentFailures.slice(0, 6).map((f) => (
-                    <li key={`fail-${f.email}`} className="break-all text-destructive">
-                      [FAIL] {f.email} — {f.error}
                     </li>
                   ))}
                 </ul>
               </div>
             ) : null}
 
-            {phase === 'success' && recentFailures.length > 0 ? (
+            {(phase === 'background' || phase === 'success') && recentFailures.length > 0 ? (
               <div className="mt-4 max-h-40 overflow-auto border border-destructive/30 bg-destructive/5 px-3 py-2 text-left">
                 <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-destructive">
                   Failed recipients ({failedCount})
