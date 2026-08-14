@@ -13,7 +13,6 @@ import { upsertJobProgress } from '../jobs/progress.js';
 import { writeSystemLog } from '../../services/system-log.js';
 import {
   deliveredRecipientFilter,
-  sumDeliveredFromCounts,
 } from './recipient-stats.js';
 import { buildCampaignSendStatus } from './send-status-builder.js';
 import { recountCampaignEngagement } from '../../services/tracking/recount.js';
@@ -296,33 +295,21 @@ export async function campaignRoutes(app: FastifyInstance) {
         },
       });
 
-      // Single groupBy query across all campaigns × status to eliminate N+1 (120 queries → 1)
       const allIds = campaigns.map((c) => c.id);
-      const statuses = allIds.length
-        ? await prisma.campaignRecipient.groupBy({
-            by: ['campaignId', 'status'],
-            where: { campaignId: { in: allIds } },
-            _count: { _all: true },
-          })
-        : [];
-
-      type K = `${string}:${string}`;
-      const counts = new Map<K, number>();
-      for (const r of statuses) {
-        counts.set(`${r.campaignId}:${r.status}` as K, r._count._all);
-      }
+      const liveById = await getCampaignsListStats(allIds);
 
       const rows = campaigns.map((c) => {
-        const pending = counts.get(`${c.id}:QUEUED` as K) ?? 0;
-        const sent = sumDeliveredFromCounts(counts, c.id);
-        const failed = counts.get(`${c.id}:FAILED` as K) ?? 0;
+        const live = liveById.get(c.id);
+        const pending = live?.pendingCount ?? 0;
+        const sent = live?.sentCount ?? c.sentCount ?? 0;
+        const failed = live?.failedCount ?? 0;
         return {
           ...c,
           pending,
           sent,
           failed,
-          opened: c.openedCount ?? 0,
-          clicked: c.clickedCount ?? 0,
+          opened: live?.openedCount ?? c.openedCount ?? 0,
+          clicked: live?.clickedCount ?? c.clickedCount ?? 0,
           total: c.totalRecipients || pending + sent + failed,
         };
       });

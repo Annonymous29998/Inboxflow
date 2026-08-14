@@ -683,7 +683,11 @@ export function QueueConsolePage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {rows.map((row) => {
+                  const live = liveById[row.id];
+                  const opened = live?.openedCount ?? row.opened ?? 0;
+                  const clicked = live?.clickedCount ?? row.clicked ?? 0;
+                  return (
                   <tr
                     key={row.id}
                     className={cn(
@@ -719,8 +723,8 @@ export function QueueConsolePage() {
                     </td>
                     <td className="px-3 py-2 tabular-nums text-warning">{row.pending}</td>
                     <td className="px-3 py-2 tabular-nums text-primary">{row.sent}</td>
-                    <td className="px-3 py-2 tabular-nums text-primary">{row.opened ?? 0}</td>
-                    <td className="px-3 py-2 tabular-nums text-primary">{row.clicked ?? 0}</td>
+                    <td className="px-3 py-2 tabular-nums text-primary">{opened}</td>
+                    <td className="px-3 py-2 tabular-nums text-primary">{clicked}</td>
                     <td className="px-3 py-2 tabular-nums text-destructive">{row.failed}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
@@ -758,7 +762,8 @@ export function QueueConsolePage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {!rows.length && !loading ? (
                   <tr>
                     <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
