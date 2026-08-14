@@ -5,7 +5,11 @@ import {
   INBOX_DELIVERED_STATUSES,
   sumDeliveredFromCounts,
 } from '../../modules/campaigns/recipient-stats.js';
-import { countHumanClicks, countHumanOpens } from '../tracking/recount.js';
+import {
+  countHumanClicks,
+  countHumanOpens,
+  maybeRecountCampaignEngagement,
+} from '../tracking/recount.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 export type CampaignLiveStats = {
@@ -24,6 +28,8 @@ export async function getCampaignLiveStats(
   campaignId: string,
   totalRecipients?: number,
 ): Promise<CampaignLiveStats> {
+  maybeRecountCampaignEngagement(campaignId);
+
   const [accepted, inboxDelivered, failed, pending, bounced, opened, clicked] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
     prisma.campaignRecipient.count({ where: inboxDeliveredFilter(campaignId) }),
@@ -119,8 +125,7 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
     eventOpened.set(campaignId, new Set(opens));
   }
   for (const [campaignId, clicks] of clicksByCampaign) {
-    const verified = opensByCampaign.get(campaignId) ?? new Set<string>();
-    const human = filterCountableClicks(clicks, verified);
+    const human = filterCountableClicks(clicks);
     if (!eventClicked.has(campaignId)) eventClicked.set(campaignId, new Set());
     if (!eventOpened.has(campaignId)) eventOpened.set(campaignId, new Set());
     for (const e of human) {
@@ -138,6 +143,7 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
   }
 
   for (const id of campaignIds) {
+    maybeRecountCampaignEngagement(id);
     out.set(id, {
       sentCount: sumDeliveredFromCounts(counts, id),
       deliveredCount: inboxById.get(id) ?? 0,
@@ -183,6 +189,7 @@ export async function getOrgLiveEngagement(organizationId: string) {
   let opened = 0;
   let clicked = 0;
   for (const id of ids) {
+    maybeRecountCampaignEngagement(id);
     opened += await countHumanOpens(id);
     clicked += await countHumanClicks(id);
   }

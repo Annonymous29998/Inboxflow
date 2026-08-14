@@ -4,8 +4,7 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from '../campaigns/recipient-stats.js';
 import {
-  humanClickCountByContact,
-  humanOpenCountByContact,
+  humanEngagementByContact,
 } from '../../services/tracking/recount.js';
 import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
@@ -323,17 +322,15 @@ export async function analyticsRoutes(app: FastifyInstance) {
       ]);
 
       const contactIds = rows.map((r) => r.contactId).filter(Boolean);
-      const [openMap, clickMap] = await Promise.all([
-        humanOpenCountByContact(id, contactIds),
-        humanClickCountByContact(id, contactIds),
-      ]);
+      const engagement = await humanEngagementByContact(id, contactIds);
 
       const mapped = rows.map((r) => {
-        const pixelOpens = openMap[r.contactId] ?? 0;
-        const clicks = clickMap[r.contactId] ?? 0;
+        const pixelOpens = engagement.openCount[r.contactId] ?? 0;
+        const clicks = engagement.clickCount[r.contactId] ?? 0;
         const unsubscribed = r.status === 'UNSUBSCRIBED';
-          const clicked = clicks > 0 || unsubscribed;
-          const opened = pixelOpens > 0 || clicked;
+        const clicked =
+          clicks > 0 || !!r.clickedAt || r.status === 'CLICKED' || unsubscribed;
+        const opened = pixelOpens > 0 || !!r.openedAt || clicked;
         const bounced = !!r.bouncedAt || r.status === 'BOUNCED';
         const smtpAcceptedRow =
           !!r.sentAt ||
@@ -348,10 +345,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
           clicked,
           bounced,
           openCount: pixelOpens > 0 ? pixelOpens : opened ? 1 : 0,
-          clickCount: clicks,
+          clickCount: clicks > 0 ? clicks : clicked ? 1 : 0,
           sentAt: r.sentAt,
-          openedAt: r.openedAt,
-          clickedAt: r.clickedAt,
+          openedAt: r.openedAt ?? engagement.openedAt[r.contactId] ?? null,
+          clickedAt: r.clickedAt ?? engagement.clickedAt[r.contactId] ?? null,
           error: r.error,
           _rank:
             clicked

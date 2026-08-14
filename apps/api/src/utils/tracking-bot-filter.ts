@@ -81,9 +81,6 @@ export type AutomatedTrackingReason =
   | 'non_mail_client'
   | 'scanner_burst';
 
-/** Two hits this close are Microsoft Safe Links / ATP, not a person clicking twice. */
-export const SCANNER_BURST_MS = 15_000;
-
 export function classifyAutomatedTracking(userAgent: string | undefined | null): {
   automated: boolean;
   reason?: AutomatedTrackingReason;
@@ -117,67 +114,56 @@ export function classifyAutomatedTracking(userAgent: string | undefined | null):
 }
 
 /**
- * Count an open only when the request looks like a real mail client loading images
- * (Gmail/Outlook/Yahoo proxy, Apple/Android mobile mail) — not a spam sandbox.
+ * Count an open when a mail client loads the pixel, or a Mac/phone browser.
+ * A click still counts as opened in the recipient table.
  */
 export function isCountableOpen(
   userAgent: string | null | undefined,
   metadata: unknown,
 ): boolean {
   if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
-    return false;
+    const reason = (metadata as { reason?: string }).reason;
+    if (reason && !['no_verified_open', 'non_mail_client', 'scanner_burst'].includes(reason)) {
+      return false;
+    }
   }
   const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
-  // Reject generic desktop browsers for the *pixel* (spam filters mimic Chrome).
-  // Real people still count via click / unsubscribe.
-  if (isDesktopBotBrowser(ua)) return false;
   if (/Macintosh|Mac OS X/i.test(ua)) return true;
+  if (isDesktopBotBrowser(ua)) return false;
   return false;
 }
 
-export type CountableClickOpts = {
-  /** True when this contact already loaded a real mail-client open pixel. */
-  hasVerifiedOpen?: boolean;
-  /** True when another click from the same contact landed within SCANNER_BURST_MS. */
-  burst?: boolean;
-};
-
 /**
- * Count a real click. Scanners (Safe Links, ATP) hit every link twice in a few
- * seconds — those bursts are dropped. Known scanner UAs are dropped.
- * A single browser click (including Windows Chrome / unsubscribe) is a person.
+ * Count a click from a real browser (Chrome/Safari/Firefox/Edge), including Windows.
+ * Named bots (curl, Proofpoint) stay out. Double-clicks still show as 2×.
  */
 export function isCountableClick(
   userAgent: string | null | undefined,
   metadata: unknown,
-  contactHasVerifiedOpenOrOpts?: boolean | CountableClickOpts,
+  _contactHasVerifiedOpen?: boolean,
 ): boolean {
-  const opts: CountableClickOpts =
-    typeof contactHasVerifiedOpenOrOpts === 'object' && contactHasVerifiedOpenOrOpts
-      ? contactHasVerifiedOpenOrOpts
-      : { hasVerifiedOpen: Boolean(contactHasVerifiedOpenOrOpts) };
-
-  if (opts.burst) return false;
-
   if (metadata && typeof metadata === 'object') {
-    const m = metadata as { source?: string };
-    if (m.source === 'automated') return false;
+    const m = metadata as { source?: string; reason?: string };
+    if (
+      m.source === 'automated' &&
+      m.reason &&
+      !['no_verified_open', 'non_mail_client', 'scanner_burst'].includes(m.reason)
+    ) {
+      return false;
+    }
   }
   const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
   if (isScannerChrome(ua)) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
-  if (/Macintosh|Mac OS X/i.test(ua) && /Safari\/|Chrome\/|Firefox\/|Edg\//i.test(ua)) {
-    return true;
-  }
   if (/Chrome\/|CriOS\/|Firefox\/|FxiOS\/|Edg\/|EdgiOS\/|Safari\//i.test(ua)) {
     return true;
   }
-  return Boolean(opts.hasVerifiedOpen);
+  return false;
 }
 
 type ClickLike = {
@@ -187,32 +173,11 @@ type ClickLike = {
   metadata: unknown;
 };
 
-/** Drop Safe Links double-fetches and untrusted Windows Chrome clicks. */
 export function filterCountableClicks<T extends ClickLike>(
   clicks: T[],
-  verifiedOpenContactIds: Set<string>,
+  _verifiedOpenContactIds?: Set<string>,
 ): T[] {
-  const timesByContact = new Map<string, number[]>();
-  for (const e of clicks) {
-    if (!e.contactId) continue;
-    const arr = timesByContact.get(e.contactId) ?? [];
-    arr.push(e.createdAt.getTime());
-    timesByContact.set(e.contactId, arr);
-  }
-
-  return clicks.filter((e) => {
-    if (!e.contactId) return false;
-    const times = timesByContact.get(e.contactId) ?? [];
-    const t = e.createdAt.getTime();
-    const burst = times.some((other) => {
-      const d = Math.abs(other - t);
-      return d > 0 && d <= SCANNER_BURST_MS;
-    });
-    return isCountableClick(e.userAgent, e.metadata, {
-      hasVerifiedOpen: verifiedOpenContactIds.has(e.contactId),
-      burst,
-    });
-  });
+  return clicks.filter((e) => isCountableClick(e.userAgent, e.metadata));
 }
 
 /** @deprecated use isCountableOpen */

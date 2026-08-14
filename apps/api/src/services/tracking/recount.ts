@@ -30,19 +30,15 @@ async function loadOpenEvents(campaignId: string) {
 }
 
 async function loadClickEvents(campaignId: string) {
-  const [rows, openEvents, unsubs] = await Promise.all([
+  const [rows, unsubs] = await Promise.all([
     prisma.trackingEvent.findMany({
       where: { campaignId, type: 'CLICKED', contactId: { not: null } },
       select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
       orderBy: { createdAt: 'asc' },
     }),
-    loadOpenEvents(campaignId),
     loadUnsubscribeEvents(campaignId),
   ]);
-  const verifiedOpens = new Set(
-    openEvents.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
-  );
-  const clicks = filterCountableClicks(rows, verifiedOpens) as TrackingRow[];
+  const clicks = filterCountableClicks(rows) as TrackingRow[];
   return [...clicks, ...(unsubs as TrackingRow[])];
 }
 
@@ -165,4 +161,52 @@ export async function humanClickCountByContact(
     }
   }
   return out;
+}
+
+export async function humanEngagementByContact(
+  campaignId: string,
+  contactIds: string[],
+): Promise<{
+  openCount: Record<string, number>;
+  clickCount: Record<string, number>;
+  openedAt: Record<string, Date>;
+  clickedAt: Record<string, Date>;
+}> {
+  if (!contactIds.length) {
+    return { openCount: {}, clickCount: {}, openedAt: {}, clickedAt: {} };
+  }
+  const idSet = new Set(contactIds);
+  const [openEvents, clickEvents] = await Promise.all([
+    loadOpenEvents(campaignId),
+    loadClickEvents(campaignId),
+  ]);
+  const openCount: Record<string, number> = {};
+  const clickCount: Record<string, number> = {};
+  const openedAt: Record<string, Date> = {};
+  const clickedAt: Record<string, Date> = {};
+  for (const e of openEvents) {
+    if (!e.contactId || !idSet.has(e.contactId)) continue;
+    openCount[e.contactId] = (openCount[e.contactId] ?? 0) + 1;
+    if (!openedAt[e.contactId]) openedAt[e.contactId] = e.createdAt;
+  }
+  for (const e of clickEvents) {
+    if (!e.contactId || !idSet.has(e.contactId)) continue;
+    clickCount[e.contactId] = (clickCount[e.contactId] ?? 0) + 1;
+    if (!clickedAt[e.contactId]) clickedAt[e.contactId] = e.createdAt;
+    if (!openedAt[e.contactId]) openedAt[e.contactId] = e.createdAt;
+    if ((openCount[e.contactId] ?? 0) === 0) openCount[e.contactId] = 1;
+  }
+  return { openCount, clickCount, openedAt, clickedAt };
+}
+
+const recountedCampaigns = new Set<string>();
+
+/** Once per process after deploy so older campaigns get openedAt/clickedAt written back. */
+export function maybeRecountCampaignEngagement(campaignId: string): void {
+  if (recountedCampaigns.has(campaignId)) return;
+  recountedCampaigns.add(campaignId);
+  void recountCampaignEngagement(campaignId).catch((err) => {
+    recountedCampaigns.delete(campaignId);
+    console.error('recount engagement failed', campaignId, err);
+  });
 }

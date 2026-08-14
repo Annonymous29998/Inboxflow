@@ -146,8 +146,8 @@ export function CampaignRecipientsPanel({
         <div>
           <h2 className="font-medium">Recipients</h2>
           <p className="text-xs text-ink-muted">
-            Verified mail-client opens and real clicks only. Security scanners
-            (Safe Links / 2× bursts) are hidden.
+            Opens and clicks from mail clients and browsers, including people
+            who unsubscribed. Named bots (curl, scanners) are hidden.
           </p>
         </div>
       ) : null}
@@ -346,6 +346,8 @@ export function CampaignRecipientsPanel({
                         <span className="font-medium text-destructive" title={r.error || undefined}>
                           Bounced
                         </span>
+                      ) : r.status === 'UNSUBSCRIBED' ? (
+                        <span className="text-primary">Unsubscribed</span>
                       ) : r.clicked || r.clickCount > 0 ? (
                         <span className="text-primary">Clicked</span>
                       ) : r.opened || r.openCount > 0 ? (
