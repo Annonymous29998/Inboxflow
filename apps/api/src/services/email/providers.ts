@@ -473,6 +473,32 @@ async function sendSmtp(
       try {
         const info = await transport.sendMail(mail);
         transport.close?.();
+        const rejected = Array.isArray((info as { rejected?: unknown }).rejected)
+          ? ((info as { rejected: unknown[] }).rejected as unknown[])
+              .map((x) => String(x || '').toLowerCase())
+              .filter(Boolean)
+          : [];
+        const toAddr = String(payload.to || '').toLowerCase();
+        if (rejected.length && (!toAddr || rejected.some((r) => r.includes(toAddr) || toAddr.includes(r)))) {
+          return {
+            success: false,
+            error: `SMTP rejected recipient: ${rejected.join(', ')}`,
+            provider: 'SMTP',
+            messageId: info.messageId || messageId,
+          };
+        }
+        // Also fail if nodemailer reports zero accepted and a response suggesting reject
+        const accepted = Array.isArray((info as { accepted?: unknown }).accepted)
+          ? ((info as { accepted: unknown[] }).accepted as unknown[])
+          : null;
+        if (accepted && accepted.length === 0 && rejected.length > 0) {
+          return {
+            success: false,
+            error: `SMTP rejected recipient: ${rejected.join(', ')}`,
+            provider: 'SMTP',
+            messageId: info.messageId || messageId,
+          };
+        }
         return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
       } catch (error) {
         transport.close?.();

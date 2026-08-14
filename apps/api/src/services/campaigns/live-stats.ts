@@ -1,5 +1,8 @@
 import { prisma } from '../../config/prisma.js';
-import { deliveredRecipientFilter } from '../../modules/campaigns/recipient-stats.js';
+import {
+  deliveredRecipientFilter,
+  inboxDeliveredFilter,
+} from '../../modules/campaigns/recipient-stats.js';
 import { countHumanClicks, countHumanOpens } from '../tracking/recount.js';
 
 export type CampaignLiveStats = {
@@ -18,8 +21,9 @@ export async function getCampaignLiveStats(
   campaignId: string,
   totalRecipients?: number,
 ): Promise<CampaignLiveStats> {
-  const [delivered, failed, pending, bounced, opened, clicked] = await Promise.all([
+  const [accepted, inboxDelivered, failed, pending, bounced, opened, clicked] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
+    prisma.campaignRecipient.count({ where: inboxDeliveredFilter(campaignId) }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'BOUNCED' } }),
@@ -28,8 +32,8 @@ export async function getCampaignLiveStats(
   ]);
 
   return {
-    sentCount: delivered,
-    deliveredCount: delivered,
+    sentCount: accepted,
+    deliveredCount: inboxDelivered,
     failedCount: failed,
     pendingCount: pending,
     openedCount: opened,

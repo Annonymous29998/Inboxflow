@@ -1,14 +1,13 @@
 import type { FastifyInstance } from 'fastify';
-import { timingSafeEqual } from 'crypto';
 import { prisma } from '../../config/prisma.js';
-import { env } from '../../config/env.js';
-import { enqueueBounce } from '../../services/email/queue.js';
 import {
   isSafeRedirectUrl,
   verifyClickRedirect,
   verifyUnsubscribe,
 } from '../../utils/signed-urls.js';
 import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+
+export { webhookRoutes } from './webhook-routes.js';
 
 const TRANSPARENT_GIF = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
@@ -42,28 +41,6 @@ function parseUa(ua: string | undefined) {
   else if (u.includes('edg')) browser = 'edge';
 
   return { device, emailClient, os, browser };
-}
-
-function webhookAuthorized(request: {
-  headers: Record<string, unknown>;
-  query: unknown;
-}): boolean {
-  const expected = env.WEBHOOK_SECRET;
-  if (!expected) {
-    // Refuse unsigned webhooks outside explicit local-dev without a secret
-    return env.NODE_ENV !== 'production';
-  }
-  const header =
-    (request.headers['x-webhook-secret'] as string | undefined) ||
-    (request.headers['x-api-key'] as string | undefined) ||
-    '';
-  const querySecret = (request.query as { secret?: string }).secret || '';
-  const provided = header || querySecret;
-  if (!provided) return false;
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
 }
 
 export async function trackingRoutes(app: FastifyInstance) {
@@ -105,10 +82,28 @@ export async function trackingRoutes(app: FastifyInstance) {
           where: { id: campaignId },
           data: { openedCount: { increment: 1 } },
         });
-        await prisma.campaignRecipient.updateMany({
+        const updated = await prisma.campaignRecipient.updateMany({
           where: { campaignId, contactId: contactIdClean, openedAt: null },
           data: { openedAt: new Date(), status: 'OPENED' },
         });
+        // Engagement implies inbox delivery — promote SENT → delivered without waiting for ESP webhook.
+        if (updated.count > 0) {
+          const promoted = await prisma.campaignRecipient.updateMany({
+            where: {
+              campaignId,
+              contactId: contactIdClean,
+              deliveredAt: null,
+              status: { in: ['OPENED', 'SENT', 'DELIVERED'] },
+            },
+            data: { deliveredAt: new Date() },
+          });
+          if (promoted.count > 0) {
+            await prisma.campaign.update({
+              where: { id: campaignId },
+              data: { deliveredCount: { increment: promoted.count } },
+            });
+          }
+        }
       }
     } catch (e) {
       console.error('Open tracking error', e);
@@ -251,63 +246,5 @@ export async function trackingRoutes(app: FastifyInstance) {
         <p>You will no longer receive marketing emails from this sender.</p>
       </body></html>`);
     },
-  });
-}
-
-export async function webhookRoutes(app: FastifyInstance) {
-  app.post('/:provider', async (request, reply) => {
-    if (!webhookAuthorized(request)) {
-      return reply.status(401).send({ error: 'Unauthorized webhook' });
-    }
-
-    const { provider } = request.params as { provider: string };
-    const body = request.body as Record<string, unknown>;
-    const orgId = (request.query as { org?: string }).org || '';
-
-    if (!orgId) {
-      return reply.status(400).send({ error: 'Missing org query parameter' });
-    }
-
-    try {
-      if (provider === 'ses') {
-        const msg = typeof body.Message === 'string' ? JSON.parse(body.Message) : body;
-        const notificationType = (msg as { notificationType?: string }).notificationType;
-        if (notificationType === 'Bounce') {
-          const bounce = (
-            msg as {
-              bounce?: {
-                bounceType?: string;
-                bouncedRecipients?: Array<{ emailAddress: string }>;
-              };
-            }
-          ).bounce;
-          for (const r of bounce?.bouncedRecipients || []) {
-            await enqueueBounce({
-              email: r.emailAddress,
-              type: bounce?.bounceType === 'Permanent' ? 'HARD' : 'SOFT',
-              organizationId: orgId,
-            });
-          }
-        }
-      }
-
-      if (provider === 'sendgrid') {
-        const events = Array.isArray(body) ? body : [body];
-        for (const ev of events as Array<{ event?: string; email?: string }>) {
-          if (ev.event === 'bounce' || ev.event === 'dropped') {
-            if (!ev.email) continue;
-            await enqueueBounce({
-              email: ev.email,
-              type: ev.event === 'bounce' ? 'HARD' : 'SOFT',
-              organizationId: orgId,
-            });
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Webhook processing error', e);
-    }
-
-    return reply.send({ received: true });
   });
 }

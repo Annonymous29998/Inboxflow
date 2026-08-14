@@ -24,10 +24,12 @@ type Recipient = {
 
 type Summary = {
   sent: number;
+  accepted?: number;
   delivered: number;
   opened: number;
   clicked: number;
   failed?: number;
+  bounced?: number;
 };
 
 type Props = {
@@ -133,9 +135,10 @@ export function CampaignRecipientsPanel({
   const clickPct =
     summary && summary.sent > 0 ? Math.round((summary.clicked / summary.sent) * 100) : 0;
 
+  /** True inbox delivery — SMTP accept (SENT) alone is not enough. */
   const isDelivered = (r: Recipient) =>
     r.delivered ||
-    ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);
+    ['DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);
 
   return (
     <div className="space-y-3">
@@ -164,6 +167,10 @@ export function CampaignRecipientsPanel({
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <span>
+              <span className="font-semibold text-foreground">{summary.accepted ?? summary.delivered}</span>
+              <span className="text-ink-muted"> accepted</span>
+            </span>
+            <span>
               <span className="font-semibold text-success">{summary.delivered}</span>
               <span className="text-ink-muted">/{summary.sent} delivered</span>
             </span>
@@ -175,6 +182,18 @@ export function CampaignRecipientsPanel({
               <span className="font-semibold text-primary">{summary.clicked}</span>
               <span className="text-ink-muted"> clicked ({clickPct}%)</span>
             </span>
+            {(summary.bounced ?? 0) > 0 ? (
+              <button
+                type="button"
+                className="text-destructive hover:underline"
+                onClick={() => {
+                  setFilter('BOUNCED');
+                  setPage(1);
+                }}
+              >
+                <span className="font-semibold">{summary.bounced}</span> bounced — view
+              </button>
+            ) : null}
             {(summary.failed ?? 0) > 0 ? (
               <button
                 type="button"
@@ -212,6 +231,7 @@ export function CampaignRecipientsPanel({
               className="h-8 text-xs"
             >
               <option value="ALL">All statuses</option>
+              <option value="SENT">Accepted (SMTP)</option>
               <option value="DELIVERED">Delivered</option>
               <option value="OPENED">Opened</option>
               <option value="CLICKED">Clicked</option>
@@ -280,8 +300,12 @@ export function CampaignRecipientsPanel({
                           <Mail className="h-3.5 w-3.5" />
                           Yes
                         </span>
-                      ) : r.status === 'FAILED' ? (
+                      ) : r.status === 'FAILED' || r.status === 'BOUNCED' || r.bounced ? (
                         <span className="inline-flex items-center gap-1.5 text-destructive">No</span>
+                      ) : r.status === 'SENT' ? (
+                        <span className="text-ink-muted" title="Accepted by SMTP — waiting for ESP delivery confirmation">
+                          Pending
+                        </span>
                       ) : (
                         <span className="text-ink-muted">—</span>
                       )}
@@ -321,12 +345,20 @@ export function CampaignRecipientsPanel({
                         <span className="font-medium text-destructive" title={r.error || undefined}>
                           Failed
                         </span>
+                      ) : r.status === 'BOUNCED' || r.bounced ? (
+                        <span className="font-medium text-destructive" title={r.error || undefined}>
+                          Bounced
+                        </span>
                       ) : r.clicked || r.clickCount > 0 ? (
                         <span className="text-primary">Clicked</span>
                       ) : r.opened || r.openCount > 0 ? (
                         <span className="text-primary">Opened</span>
                       ) : isDelivered(r) ? (
                         <span className="text-success">Delivered</span>
+                      ) : r.status === 'SENT' ? (
+                        <span className="text-ink-muted" title="Accepted by SMTP">
+                          Accepted
+                        </span>
                       ) : (
                         <span className="text-ink-muted">{r.status}</span>
                       )}

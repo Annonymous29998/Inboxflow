@@ -54,10 +54,16 @@ export async function sendCampaignEmailToRecipient(input: {
   }
 
   if (contact.status !== 'SUBSCRIBED') {
-    await prisma.campaignRecipient.update({
-      where: { id: recipientId },
-      data: { status: 'FAILED', error: 'Contact not subscribed' },
-    });
+    await prisma.$transaction([
+      prisma.campaignRecipient.update({
+        where: { id: recipientId },
+        data: { status: 'FAILED', error: 'Contact not subscribed' },
+      }),
+      prisma.campaign.update({
+        where: { id: campaignId },
+        data: { failedCount: { increment: 1 } },
+      }),
+    ]);
     return { success: false, error: 'Contact not subscribed' };
   }
 
@@ -145,6 +151,11 @@ export async function sendCampaignEmailToRecipient(input: {
   const headers: Record<string, string> = {
     'List-Unsubscribe': `<${unsubscribeUrl}>`,
     'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    // Correlate ESP webhooks (Brevo/SendGrid/etc.) back to this recipient
+    'X-IF-Campaign-Id': campaignId,
+    'X-IF-Recipient-Id': recipientId,
+    'X-IF-Contact-Id': contactId,
+    'X-Mailin-custom': JSON.stringify({ campaignId, recipientId, contactId }),
   };
   if (hardened.previewText) {
     headers['X-Preview-Text'] = hardened.previewText.slice(0, 150);
@@ -204,6 +215,7 @@ export async function sendCampaignEmailToRecipient(input: {
     );
 
     if (result.success) {
+      // SMTP accept ≠ inbox delivery. Mark SENT only; DELIVERED/BOUNCED come from ESP webhooks.
       await prisma.$transaction([
         prisma.campaignRecipient.update({
           where: { id: recipientId },
@@ -211,13 +223,12 @@ export async function sendCampaignEmailToRecipient(input: {
             status: 'SENT',
             messageId: result.messageId,
             sentAt: new Date(),
-            deliveredAt: new Date(),
             error: null,
           },
         }),
         prisma.campaign.update({
           where: { id: campaignId },
-          data: { sentCount: { increment: 1 }, deliveredCount: { increment: 1 } },
+          data: { sentCount: { increment: 1 } },
         }),
         prisma.trackingEvent.create({
           data: {
@@ -251,10 +262,16 @@ export async function sendCampaignEmailToRecipient(input: {
     });
   }
 
-  await prisma.campaignRecipient.update({
-    where: { id: recipientId },
-    data: { status: 'FAILED', error: lastError },
-  });
+  await prisma.$transaction([
+    prisma.campaignRecipient.update({
+      where: { id: recipientId },
+      data: { status: 'FAILED', error: lastError },
+    }),
+    prisma.campaign.update({
+      where: { id: campaignId },
+      data: { failedCount: { increment: 1 } },
+    }),
+  ]);
 
   return { success: false, error: lastError };
 }

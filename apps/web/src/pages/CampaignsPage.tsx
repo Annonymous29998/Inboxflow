@@ -290,7 +290,7 @@ export function CampaignsPage() {
                 {['SENT', 'SENDING', 'PAUSED'].includes(c.status) && (c.sentCount ?? 0) > 0 ? (
                   <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-ink-muted">
                     <span>
-                      <span className="font-semibold text-success">{c.deliveredCount || c.sentCount}</span>
+                      <span className="font-semibold text-success">{c.deliveredCount ?? 0}</span>
                       /{c.sentCount} delivered
                     </span>
                     <span>

@@ -33,6 +33,10 @@ export type BounceJobData = {
   type: 'HARD' | 'SOFT';
   organizationId: string;
   campaignId?: string;
+  recipientId?: string;
+  contactId?: string;
+  messageId?: string;
+  reason?: string;
 };
 
 const MAX_ATTEMPTS = env.MAX_RETRY_ATTEMPTS;
@@ -443,8 +447,9 @@ async function processEmailJob(data: EmailJobData) {
     /* progress updates must not fail the send */
   }
 
+  // Permanent recipient failure is already stored — don't throw or the queue retries a dead row.
   if (!result.success) {
-    throw new Error(result.error || 'Send failed');
+    return;
   }
 
   const counts = await prisma.campaign.findUnique({
@@ -469,9 +474,16 @@ async function processEmailJob(data: EmailJobData) {
 }
 
 async function processBounce(data: BounceJobData) {
-  const contact = await prisma.contact.findFirst({
-    where: { organizationId: data.organizationId, email: data.email.toLowerCase() },
-  });
+  const email = data.email.toLowerCase().trim();
+  const contact =
+    (data.contactId
+      ? await prisma.contact.findFirst({
+          where: { id: data.contactId, organizationId: data.organizationId },
+        })
+      : null) ||
+    (await prisma.contact.findFirst({
+      where: { organizationId: data.organizationId, email },
+    }));
 
   if (data.type === 'HARD') {
     if (contact) {
@@ -484,16 +496,16 @@ async function processBounce(data: BounceJobData) {
       where: {
         organizationId_email: {
           organizationId: data.organizationId,
-          email: data.email.toLowerCase(),
+          email,
         },
       },
       create: {
         organizationId: data.organizationId,
-        email: data.email.toLowerCase(),
-        reason: 'hard_bounce',
+        email,
+        reason: data.reason || 'hard_bounce',
         source: 'bounce_processor',
       },
-      update: { reason: 'hard_bounce' },
+      update: { reason: data.reason || 'hard_bounce' },
     });
   } else if (contact) {
     await prisma.contact.update({
@@ -502,10 +514,75 @@ async function processBounce(data: BounceJobData) {
     });
   }
 
-  if (data.campaignId) {
+  // Flip the campaign recipient off SENT so Queue/UI show real ESP rejections.
+  const recipient =
+    (data.recipientId
+      ? await prisma.campaignRecipient.findFirst({
+          where: { id: data.recipientId },
+          include: { campaign: { select: { organizationId: true } } },
+        })
+      : null) ||
+    (data.campaignId && contact
+      ? await prisma.campaignRecipient.findFirst({
+          where: { campaignId: data.campaignId, contactId: contact.id },
+          include: { campaign: { select: { organizationId: true } } },
+        })
+      : null) ||
+    (contact
+      ? await prisma.campaignRecipient.findFirst({
+          where: {
+            contactId: contact.id,
+            status: { in: ['SENT', 'DELIVERED', 'OPENED', 'CLICKED', 'QUEUED'] },
+            campaign: { organizationId: data.organizationId },
+          },
+          orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+          include: { campaign: { select: { organizationId: true } } },
+        })
+      : null);
+
+  if (!recipient || recipient.campaign.organizationId !== data.organizationId) {
+    if (data.campaignId && data.type === 'HARD') {
+      await prisma.campaign.update({
+        where: { id: data.campaignId },
+        data: { bouncedCount: { increment: 1 } },
+      });
+    }
+    return;
+  }
+
+  const reason =
+    data.reason ||
+    (data.type === 'HARD' ? 'Hard bounce / rejected by provider' : 'Soft bounce / deferred');
+  const alreadyTerminal = recipient.status === 'BOUNCED' || recipient.status === 'FAILED';
+
+  await prisma.trackingEvent.create({
+    data: {
+      type: 'BOUNCED',
+      campaignId: recipient.campaignId,
+      contactId: contact?.id ?? null,
+      messageId: data.messageId || recipient.messageId,
+      metadata: { bounceType: data.type, reason },
+    },
+  });
+
+  if (data.type === 'HARD' && !alreadyTerminal) {
+    await prisma.campaignRecipient.update({
+      where: { id: recipient.id },
+      data: {
+        status: 'BOUNCED',
+        bouncedAt: new Date(),
+        error: reason.slice(0, 500),
+      },
+    });
     await prisma.campaign.update({
-      where: { id: data.campaignId },
+      where: { id: data.campaignId || recipient.campaignId },
       data: { bouncedCount: { increment: 1 } },
+    });
+  } else if (data.type === 'SOFT' && !alreadyTerminal && !recipient.error) {
+    // Soft/deferred: keep SENT so a later delivered webhook can still win; surface reason in UI.
+    await prisma.campaignRecipient.update({
+      where: { id: recipient.id },
+      data: { error: `Soft bounce: ${reason}`.slice(0, 500) },
     });
   }
 }

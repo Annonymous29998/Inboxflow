@@ -11,7 +11,7 @@ export type SendRecipient = {
 
 export type SendActivity = {
   email: string;
-  status: 'SENT' | 'FAILED' | 'QUEUED' | 'OPENED' | 'CLICKED';
+  status: 'SENT' | 'FAILED' | 'BOUNCED' | 'QUEUED' | 'OPENED' | 'CLICKED' | 'DELIVERED';
   error?: string | null;
   at: string;
   url?: string | null;
@@ -25,7 +25,10 @@ export type SendStatus = {
   senderEmail?: string | null;
   totalRecipients: number;
   sentCount: number;
+  /** ESP-confirmed delivery (not SMTP accept alone) */
+  deliveredCount?: number;
   failedCount: number;
+  bouncedCount?: number;
   pendingCount: number;
   openedCount?: number;
   clickedCount?: number;
@@ -34,9 +37,10 @@ export type SendStatus = {
   lastEmail?: string | null;
   recentSent?: Array<{ email: string; at?: string | null }>;
   recentFailures?: Array<{ email: string; error: string }>;
+  recentBounces?: Array<{ email: string; error: string }>;
   recentOpens?: Array<{ email: string; at: string }>;
   recentClicks?: Array<{ email: string; at: string; url?: string | null }>;
-  /** Send queue log — SENT / FAILED only */
+  /** Send queue log — SENT / FAILED / BOUNCED */
   activity?: SendActivity[];
   /** Verified opens/clicks — separate from send log */
   engagementActivity?: SendActivity[];

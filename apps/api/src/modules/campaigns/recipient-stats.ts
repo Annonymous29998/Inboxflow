@@ -1,13 +1,36 @@
 import type { EventType, Prisma } from '@prisma/client';
 
-/** Recipient rows that successfully left our SMTP (may later become OPENED/CLICKED). */
-export const DELIVERED_RECIPIENT_STATUSES: EventType[] = ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'];
+/**
+ * Left our SMTP successfully at some point (may later bounce or engage).
+ * Includes BOUNCED so progress/sent counts don't drop when ESP reports a rejection.
+ */
+export const DELIVERED_RECIPIENT_STATUSES: EventType[] = [
+  'SENT',
+  'DELIVERED',
+  'OPENED',
+  'CLICKED',
+  'BOUNCED',
+];
+
+/** Confirmed inbox delivery (ESP delivered webhook, or engagement that implies delivery). */
+export const INBOX_DELIVERED_STATUSES: EventType[] = ['DELIVERED', 'OPENED', 'CLICKED'];
 
 export function deliveredRecipientFilter(campaignId: string): Prisma.CampaignRecipientWhereInput {
   return { campaignId, status: { in: DELIVERED_RECIPIENT_STATUSES } };
 }
 
-/** Sum live recipient rows that left SMTP (includes OPENED/CLICKED). */
+/** True delivery — not merely SMTP accept (SENT). */
+export function inboxDeliveredFilter(campaignId: string): Prisma.CampaignRecipientWhereInput {
+  return {
+    campaignId,
+    OR: [
+      { deliveredAt: { not: null } },
+      { status: { in: INBOX_DELIVERED_STATUSES } },
+    ],
+  };
+}
+
+/** Sum live recipient rows that left SMTP (includes OPENED/CLICKED/BOUNCED). */
 export function sumDeliveredFromCounts(
   counts: Map<string, number>,
   campaignId: string,

@@ -81,6 +81,8 @@ function QueueCampaignColumn({
   const status = live?.status || row.status;
   const sent = live?.sentCount ?? row.sent ?? 0;
   const failed = live?.failedCount ?? row.failed ?? 0;
+  const bounced = live?.bouncedCount ?? 0;
+  const delivered = live?.deliveredCount ?? 0;
   const pending = live?.pendingCount ?? row.pending ?? 0;
   const opened = live?.openedCount ?? row.opened ?? 0;
   const clicked = live?.clickedCount ?? row.clicked ?? 0;
@@ -161,18 +163,22 @@ function QueueCampaignColumn({
           </p>
           <p className="text-xs text-accent">{heartbeat}</p>
 
-          <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-5">
+          <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
             <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Sent</div>
+              <div className="text-[10px] uppercase text-muted-foreground">Accepted</div>
               <div className="mt-1 text-lg tabular-nums text-primary">{sent}</div>
+            </div>
+            <div className="border border-border bg-muted/40 px-2 py-2">
+              <div className="text-[10px] uppercase text-muted-foreground">Delivered</div>
+              <div className="mt-1 text-lg tabular-nums text-success">{delivered}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
               <div className="text-[10px] uppercase text-muted-foreground">Failed</div>
               <div className="mt-1 text-lg tabular-nums text-destructive">{failed}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Pending</div>
-              <div className="mt-1 text-lg tabular-nums text-warning">{pending}</div>
+              <div className="text-[10px] uppercase text-muted-foreground">Bounced</div>
+              <div className="mt-1 text-lg tabular-nums text-destructive">{bounced}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
               <div className="text-[10px] uppercase text-muted-foreground">Opened</div>
@@ -230,7 +236,8 @@ function QueueCampaignColumn({
                             className={cn(
                               'shrink-0 font-semibold',
                               item.status === 'SENT' && 'text-primary',
-                              item.status === 'FAILED' && 'text-destructive',
+                              item.status === 'DELIVERED' && 'text-success',
+                              (item.status === 'FAILED' || item.status === 'BOUNCED') && 'text-destructive',
                             )}
                           >
                             [{item.status}]
