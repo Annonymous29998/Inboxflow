@@ -116,7 +116,11 @@ export async function campaignRoutes(app: FastifyInstance) {
       const [campaigns, total] = await Promise.all([
         prisma.campaign.findMany({
           where,
-          orderBy: { updatedAt: 'desc' },
+          // Prefer last send time so engagement recounts don't reshuffle the list.
+          orderBy: [
+            { sentAt: { sort: 'desc', nulls: 'last' } },
+            { createdAt: 'desc' },
+          ],
           skip: (page - 1) * limit,
           take: limit,
           select: {

@@ -57,13 +57,12 @@ export async function recountCampaignEngagement(campaignId: string) {
     if (e.contactId && !firstClick.has(e.contactId)) firstClick.set(e.contactId, e.createdAt);
   }
 
-  await prisma.campaign.update({
-    where: { id: campaignId },
-    data: {
-      openedCount: firstOpen.size,
-      clickedCount: firstClick.size,
-    },
-  });
+  // Raw update so @updatedAt is not bumped — list sort stays stable when recount runs.
+  await prisma.$executeRaw`
+    UPDATE "Campaign"
+    SET "openedCount" = ${firstOpen.size}, "clickedCount" = ${firstClick.size}
+    WHERE id = ${campaignId}
+  `;
 
   const recipients = await prisma.campaignRecipient.findMany({
     where: { campaignId },
