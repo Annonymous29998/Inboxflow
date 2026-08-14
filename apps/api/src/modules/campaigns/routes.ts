@@ -24,6 +24,30 @@ type SegmentRules = {
   match?: 'all' | 'any';
 };
 
+/** Queue console: active first, then newest send — without relying on updatedAt recount bumps. */
+function sortQueueCampaignRows<
+  T extends { status: string; sentAt?: Date | string | null; createdAt?: Date | string | null; updatedAt?: Date | string | null },
+>(rows: T[]): T[] {
+  const rank = (s: string) => {
+    if (s === 'SENDING') return 0;
+    if (s === 'PAUSED') return 1;
+    if (s === 'READY' || s === 'SCHEDULED') return 2;
+    return 3;
+  };
+  const ts = (v?: Date | string | null) => {
+    if (!v) return 0;
+    const n = v instanceof Date ? v.getTime() : Date.parse(String(v));
+    return Number.isFinite(n) ? n : 0;
+  };
+  return [...rows].sort((a, b) => {
+    const byStatus = rank(a.status) - rank(b.status);
+    if (byStatus !== 0) return byStatus;
+    const bySent = ts(b.sentAt) - ts(a.sentAt);
+    if (bySent !== 0) return bySent;
+    return ts(b.createdAt) - ts(a.createdAt) || ts(b.updatedAt) - ts(a.updatedAt);
+  });
+}
+
 async function resolveSegmentContacts(organizationId: string, rules: SegmentRules) {
   const contacts = await prisma.contact.findMany({
     where: { organizationId, status: 'SUBSCRIBED' },
@@ -300,6 +324,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           totalRecipients: true,
           sentAt: true,
           completedAt: true,
+          createdAt: true,
           updatedAt: true,
           queueSettings: true,
         },
@@ -308,21 +333,23 @@ export async function campaignRoutes(app: FastifyInstance) {
       const allIds = campaigns.map((c) => c.id);
       const liveById = await getCampaignsListStats(allIds);
 
-      const rows = campaigns.map((c) => {
-        const live = liveById.get(c.id);
-        const pending = live?.pendingCount ?? 0;
-        const sent = live?.sentCount ?? c.sentCount ?? 0;
-        const failed = live?.failedCount ?? 0;
-        return {
-          ...c,
-          pending,
-          sent,
-          failed,
-          opened: live?.openedCount ?? c.openedCount ?? 0,
-          clicked: live?.clickedCount ?? c.clickedCount ?? 0,
-          total: c.totalRecipients || pending + sent + failed,
-        };
-      });
+      const rows = sortQueueCampaignRows(
+        campaigns.map((c) => {
+          const live = liveById.get(c.id);
+          const pending = live?.pendingCount ?? 0;
+          const sent = live?.sentCount ?? c.sentCount ?? 0;
+          const failed = live?.failedCount ?? 0;
+          return {
+            ...c,
+            pending,
+            sent,
+            failed,
+            opened: live?.openedCount ?? c.openedCount ?? 0,
+            clicked: live?.clickedCount ?? c.clickedCount ?? 0,
+            total: c.totalRecipients || pending + sent + failed,
+          };
+        }),
+      );
 
       return reply.send({ campaigns: rows });
     } catch (error) {

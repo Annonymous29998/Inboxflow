@@ -53,6 +53,28 @@ function sectionKey(campaignId: string, section: string) {
   return `${campaignId}:${section}`;
 }
 
+/** Active sends first, then newest by send time (stable; does not reshuffle on open/click recount). */
+function sortQueueRows<T extends { status: string; sentAt?: string | null; updatedAt?: string }>(
+  rows: T[],
+): T[] {
+  const rank = (s: string) => {
+    if (s === 'SENDING') return 0;
+    if (s === 'PAUSED') return 1;
+    if (s === 'READY' || s === 'SCHEDULED') return 2;
+    return 3;
+  };
+  return [...rows].sort((a, b) => {
+    const byStatus = rank(a.status) - rank(b.status);
+    if (byStatus !== 0) return byStatus;
+    const sa = a.sentAt ? Date.parse(a.sentAt) : 0;
+    const sb = b.sentAt ? Date.parse(b.sentAt) : 0;
+    if (sb !== sa) return sb - sa;
+    const ua = a.updatedAt ? Date.parse(a.updatedAt) : 0;
+    const ub = b.updatedAt ? Date.parse(b.updatedAt) : 0;
+    return ub - ua;
+  });
+}
+
 /** Failed/Bounced first (Kestrel-style), then newest. */
 function sortProblemsFirst(items: SendActivity[]): SendActivity[] {
   return [...items].sort((a, b) => {
@@ -477,7 +499,7 @@ export function QueueConsolePage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get<{ campaigns: QueueRow[] }>('/api/campaigns/queue-console');
-      setRows(data.campaigns);
+      setRows(sortQueueRows(data.campaigns));
       setPanelOpen((prev) => {
         const next = { ...prev };
         for (const c of data.campaigns) {
