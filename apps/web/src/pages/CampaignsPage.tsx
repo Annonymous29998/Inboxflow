@@ -119,6 +119,8 @@ type Campaign = {
   openedCount?: number;
   clickedCount?: number;
   deliveredCount?: number;
+  failedCount?: number;
+  totalRecipients?: number;
   sentAt?: string | null;
 };
 
@@ -308,9 +310,15 @@ export function CampaignsPage() {
                 {['SENT', 'SENDING', 'PAUSED'].includes(c.status) && (c.sentCount ?? 0) > 0 ? (
                   <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-ink-muted">
                     <span>
-                      <span className="font-semibold text-success">{c.deliveredCount ?? 0}</span>
-                      /{c.sentCount} delivered
+                      <span className="font-semibold text-success">{c.sentCount ?? 0}</span>
+                      /
+                      {Math.max(c.totalRecipients ?? 0, c.sentCount ?? 0)} sent
                     </span>
+                    {(c.failedCount ?? 0) > 0 ? (
+                      <span>
+                        <span className="font-semibold text-destructive">{c.failedCount}</span> failed
+                      </span>
+                    ) : null}
                     <span>
                       <span className="font-semibold text-primary">{c.openedCount ?? 0}</span> opened
                       {c.sentCount

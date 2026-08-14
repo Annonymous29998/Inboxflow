@@ -152,8 +152,10 @@ export async function campaignRoutes(app: FastifyInstance) {
         if (!live) return c;
         return {
           ...c,
+          // List UI: sent = SMTP accepted. Keep deliveredCount in sync so clients
+          // never show webhook-only "1/247 delivered" while sentCount is 247.
           sentCount: live.sentCount,
-          deliveredCount: live.deliveredCount,
+          deliveredCount: live.sentCount,
           failedCount: live.failedCount,
           pendingCount: live.pendingCount,
           bouncedCount: live.bouncedCount || c.bouncedCount,

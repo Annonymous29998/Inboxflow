@@ -96,7 +96,8 @@ function QueueCampaignColumn({
   const sent = live?.sentCount ?? row.sent ?? 0;
   const failed = live?.failedCount ?? row.failed ?? 0;
   const bounced = live?.bouncedCount ?? 0;
-  const delivered = live?.deliveredCount ?? 0;
+  /** SMTP accepted — same figure as API sentCount (not rare ESP “delivered” webhooks). */
+  const delivered = sent;
   const pending = live?.pendingCount ?? row.pending ?? 0;
   const opened = live?.openedCount ?? row.opened ?? 0;
   const clicked = live?.clickedCount ?? row.clicked ?? 0;
@@ -230,11 +231,11 @@ function QueueCampaignColumn({
               <div className="mt-1 text-lg tabular-nums text-destructive">{bounced}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Accepted</div>
+              <div className="text-[10px] uppercase text-muted-foreground">Sent</div>
               <div className="mt-1 text-lg tabular-nums text-primary">{sent}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Delivered</div>
+              <div className="text-[10px] uppercase text-muted-foreground">SMTP OK</div>
               <div className="mt-1 text-lg tabular-nums text-success">{delivered}</div>
             </div>
             <div className="border border-border bg-muted/40 px-2 py-2">

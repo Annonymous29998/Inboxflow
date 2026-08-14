@@ -26,6 +26,7 @@ type Summary = {
   sent: number;
   accepted?: number;
   delivered: number;
+  inboxDelivered?: number;
   opened: number;
   clicked: number;
   failed?: number;
@@ -130,10 +131,11 @@ export function CampaignRecipientsPanel({
     return () => window.clearInterval(id);
   }, [shouldLivePoll, load]);
 
-  const openPct =
-    summary && summary.sent > 0 ? Math.round((summary.opened / summary.sent) * 100) : 0;
-  const clickPct =
-    summary && summary.sent > 0 ? Math.round((summary.clicked / summary.sent) * 100) : 0;
+  const sentBase = summary
+    ? Math.max(summary.accepted ?? 0, summary.delivered ?? 0, summary.sent ?? 0)
+    : 0;
+  const openPct = sentBase > 0 && summary ? Math.round((summary.opened / sentBase) * 100) : 0;
+  const clickPct = sentBase > 0 && summary ? Math.round((summary.clicked / sentBase) * 100) : 0;
 
   /** SMTP accepted (left the mail server) — same “Yes / Delivered” as the older campaign view. */
   const isDelivered = (r: Recipient) =>
@@ -168,12 +170,10 @@ export function CampaignRecipientsPanel({
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <span>
-              <span className="font-semibold text-foreground">{summary.accepted ?? summary.delivered}</span>
-              <span className="text-ink-muted"> accepted</span>
-            </span>
-            <span>
-              <span className="font-semibold text-success">{summary.delivered}</span>
-              <span className="text-ink-muted">/{summary.sent} delivered</span>
+              <span className="font-semibold text-success">
+                {summary.accepted ?? summary.delivered}
+              </span>
+              <span className="text-ink-muted">/{summary.sent} sent</span>
             </span>
             <span>
               <span className="font-semibold text-primary">{summary.opened}</span>
