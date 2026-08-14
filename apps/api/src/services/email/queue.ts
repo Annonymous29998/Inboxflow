@@ -15,6 +15,7 @@ import { analyzeCampaign } from '../../modules/deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, stripHtmlTags, isImageOnlyHtml } from '../../modules/deliverability/spam-scrubber.js';
 import { sendCampaignEmailToRecipient } from './campaign-send.js';
 import { deliveredRecipientFilter } from '../../modules/campaigns/recipient-stats.js';
+import { normalizeBatchSize } from './queue-settings.js';
 
 export type EmailJobData = {
   campaignId: string;
@@ -301,7 +302,11 @@ async function dispatchCampaign(campaignId: string) {
   const queueSettings = (campaign.queueSettings || {}) as {
     batchSize?: number;
   };
-  const batchSize = Math.max(1, Number(queueSettings.batchSize || 10));
+  const batchSize = normalizeBatchSize(queueSettings.batchSize);
+  await prisma.campaign.update({
+    where: { id: campaignId },
+    data: { queueSettings: { ...queueSettings, batchSize } },
+  });
 
   // Enqueue only recipients that still need sending. Never reset SENT back to QUEUED
   // (Retry failed / Resume used to re-dispatch the whole list and could duplicate sends).
@@ -385,7 +390,7 @@ async function processEmailJob(data: EmailJobData) {
   };
   const betweenEmailMs = Math.max(0, Number(qs.betweenEmailMs ?? 4_000));
   const batchPauseMs = Math.max(0, Number(qs.batchPauseMs ?? 30_000));
-  const batchSize = Math.max(1, Number(qs.batchSize || 10));
+  const batchSize = normalizeBatchSize(qs.batchSize);
   const jitter = (baseMs: number) => Math.max(250, Math.round(baseMs * (0.6 + Math.random() * 0.8)));
 
   const processedCount = await prisma.campaignRecipient.count({

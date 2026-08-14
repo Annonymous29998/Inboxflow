@@ -1,5 +1,14 @@
 /** Send this many emails, then pause before the next batch. */
 export const EMAIL_SEND_BATCH_SIZE = 10;
+export const EMAIL_SEND_BATCH_SIZE_MIN = 10;
+export const EMAIL_SEND_BATCH_SIZE_MAX = 20;
+
+export function normalizeBatchSize(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < EMAIL_SEND_BATCH_SIZE_MIN) return EMAIL_SEND_BATCH_SIZE;
+  if (n > EMAIL_SEND_BATCH_SIZE_MAX) return EMAIL_SEND_BATCH_SIZE_MAX;
+  return Math.round(n);
+}
 /** Pause between batches (human-like break after a short burst). */
 export const EMAIL_SEND_BATCH_PAUSE_MS = 30_000;
 /**

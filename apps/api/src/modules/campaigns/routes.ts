@@ -17,6 +17,7 @@ import {
 import { buildCampaignSendStatus } from './send-status-builder.js';
 import { recountCampaignEngagement } from '../../services/tracking/recount.js';
 import { getCampaignsListStats } from '../../services/campaigns/live-stats.js';
+import { normalizeBatchSize } from '../../services/email/queue-settings.js';
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -595,7 +596,17 @@ export async function campaignRoutes(app: FastifyInstance) {
       const data: Prisma.CampaignUpdateInput = {
         ...rest,
         editorJson: body.editorJson as object | undefined,
-        queueSettings: body.queueSettings === undefined ? undefined : (body.queueSettings as object),
+        queueSettings:
+          body.queueSettings === undefined
+            ? undefined
+            : body.queueSettings === null
+              ? Prisma.DbNull
+              : ({
+                  ...(body.queueSettings as object),
+                  batchSize: normalizeBatchSize(
+                    (body.queueSettings as { batchSize?: unknown }).batchSize,
+                  ),
+                } as object),
         subjectPool:
           subjectPool === undefined
             ? undefined

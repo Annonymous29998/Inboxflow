@@ -135,10 +135,10 @@ export function CampaignRecipientsPanel({
   const clickPct =
     summary && summary.sent > 0 ? Math.round((summary.clicked / summary.sent) * 100) : 0;
 
-  /** True inbox delivery — SMTP accept (SENT) alone is not enough. */
+  /** SMTP accepted (left the mail server) — same “Yes / Delivered” as the older campaign view. */
   const isDelivered = (r: Recipient) =>
     r.delivered ||
-    ['DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);
+    ['DELIVERED', 'OPENED', 'CLICKED', 'SENT'].includes(r.status);
 
   return (
     <div className="space-y-3">
@@ -232,7 +232,7 @@ export function CampaignRecipientsPanel({
               className="h-8 text-xs"
             >
               <option value="ALL">All statuses</option>
-              <option value="SENT">Accepted (SMTP)</option>
+              <option value="SENT">Delivered (no open)</option>
               <option value="DELIVERED">Delivered</option>
               <option value="OPENED">Opened</option>
               <option value="CLICKED">Clicked</option>
@@ -303,10 +303,6 @@ export function CampaignRecipientsPanel({
                         </span>
                       ) : r.status === 'FAILED' || r.status === 'BOUNCED' || r.bounced ? (
                         <span className="inline-flex items-center gap-1.5 text-destructive">No</span>
-                      ) : r.status === 'SENT' ? (
-                        <span className="text-ink-muted" title="Accepted by SMTP — waiting for ESP delivery confirmation">
-                          Pending
-                        </span>
                       ) : (
                         <span className="text-ink-muted">—</span>
                       )}
@@ -356,10 +352,6 @@ export function CampaignRecipientsPanel({
                         <span className="text-primary">Opened</span>
                       ) : isDelivered(r) ? (
                         <span className="text-success">Delivered</span>
-                      ) : r.status === 'SENT' ? (
-                        <span className="text-ink-muted" title="Accepted by SMTP">
-                          Accepted
-                        </span>
                       ) : (
                         <span className="text-ink-muted">{r.status}</span>
                       )}

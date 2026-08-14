@@ -2,6 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from './recipient-stats.js';
 import { isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
+import { normalizeBatchSize } from '../../services/email/queue-settings.js';
 
 function asFiniteNumber(value: unknown, fallback: number | null): number | null {
   const n = Number(value);
@@ -151,7 +152,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     asFiniteNumber(jobMeta.batchPauseMs, null) ?? asFiniteNumber(qs.batchPauseMs, null);
   const batchNumber = asFiniteNumber(jobMeta.batchNumber, null);
   const queueBatchSize =
-    asFiniteNumber(jobMeta.batchSize, null) ?? asFiniteNumber(qs.batchSize, 10) ?? 10;
+    normalizeBatchSize(asFiniteNumber(jobMeta.batchSize, null) ?? asFiniteNumber(qs.batchSize, 10));
 
   return {
     success: true,

@@ -4,8 +4,6 @@ import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from '../campaigns/recipient-stats.js';
 import {
-  countHumanClicks,
-  countHumanOpens,
   humanClickCountByContact,
   humanOpenCountByContact,
 } from '../../services/tracking/recount.js';
@@ -293,91 +291,112 @@ export async function analyticsRoutes(app: FastifyInstance) {
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
-      const statusFilter =
-        q.filter && q.filter !== 'ALL'
-          ? q.filter === 'DELIVERED'
-            ? inboxDeliveredFilter(id)
-            : q.filter === 'SENT'
-              ? { status: 'SENT' as never }
-              : { status: q.filter as never }
-          : {};
       const searchFilter = q.search
         ? { contact: { email: { contains: q.search, mode: 'insensitive' as const } } }
         : {};
+      const where = { campaignId: id, ...searchFilter };
+      const filter = (q.filter || 'ALL').toUpperCase();
 
-      const where =
-        q.filter === 'DELIVERED'
-          ? { ...statusFilter, ...searchFilter }
-          : { campaignId: id, ...statusFilter, ...searchFilter };
+      const [rows, failedLive, bouncedLive, smtpAccepted, inboxDelivered] = await Promise.all([
+        prisma.campaignRecipient.findMany({
+          where,
+          include: {
+            contact: { select: { email: true, firstName: true, lastName: true } },
+          },
+        }),
+        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
+        prisma.campaignRecipient.count({ where: { campaignId: id, status: 'BOUNCED' } }),
+        prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
+        prisma.campaignRecipient.count({ where: inboxDeliveredFilter(id) }),
+      ]);
 
-      const [recipients, total, failedLive, bouncedLive, smtpAccepted, inboxDelivered, humanOpened, humanClicked] =
-        await Promise.all([
-          prisma.campaignRecipient.findMany({
-            where,
-            include: {
-              contact: { select: { email: true, firstName: true, lastName: true } },
-            },
-            orderBy: [{ openedAt: 'desc' }, { clickedAt: 'desc' }, { sentAt: 'desc' }],
-            skip,
-            take: limit,
-          }),
-          prisma.campaignRecipient.count({ where }),
-          prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
-          prisma.campaignRecipient.count({ where: { campaignId: id, status: 'BOUNCED' } }),
-          prisma.campaignRecipient.count({ where: deliveredRecipientFilter(id) }),
-          prisma.campaignRecipient.count({ where: inboxDeliveredFilter(id) }),
-          countHumanOpens(id),
-          countHumanClicks(id),
-        ]);
-
-      const contactIds = recipients.map((r) => r.contactId).filter(Boolean);
+      const contactIds = rows.map((r) => r.contactId).filter(Boolean);
       const [openMap, clickMap] = await Promise.all([
         humanOpenCountByContact(id, contactIds),
         humanClickCountByContact(id, contactIds),
       ]);
 
-      return reply.send({
-        summary: {
-          /** Audience size for this campaign */
-          sent: campaign.totalRecipients || smtpAccepted || campaign.sentCount,
-          /** SMTP accepted (left our servers) */
-          accepted: smtpAccepted,
-          /** ESP-confirmed delivery or engagement — not mere SMTP accept */
-          delivered: inboxDelivered,
-          opened: humanOpened,
-          clicked: humanClicked,
-          failed: failedLive || campaign.failedCount || 0,
-          bounced: bouncedLive || campaign.bouncedCount || 0,
-        },
-        recipients: recipients.map((r) => {
-          const pixelOpens = openMap[r.contactId] ?? 0;
-          const clicks = clickMap[r.contactId] ?? 0;
-          const clicked = clicks > 0 || !!r.clickedAt || r.status === 'CLICKED';
-          const opened = pixelOpens > 0 || !!r.openedAt || clicked;
-          return {
+      const mapped = rows.map((r) => {
+        const pixelOpens = openMap[r.contactId] ?? 0;
+        const clicks = clickMap[r.contactId] ?? 0;
+        const clicked = clicks > 0 || !!r.clickedAt || r.status === 'CLICKED';
+        const opened = pixelOpens > 0 || !!r.openedAt || clicked;
+        const bounced = !!r.bouncedAt || r.status === 'BOUNCED';
+        const smtpAcceptedRow =
+          !!r.sentAt ||
+          ['SENT', 'DELIVERED', 'OPENED', 'CLICKED', 'BOUNCED'].includes(r.status);
+        return {
           id: r.id,
           email: r.contact.email,
           name: [r.contact.firstName, r.contact.lastName].filter(Boolean).join(' ') || null,
           status: r.status,
-          delivered:
-            !!r.deliveredAt ||
-            r.status === 'DELIVERED' ||
-            r.status === 'OPENED' ||
-            r.status === 'CLICKED',
+          delivered: smtpAcceptedRow && r.status !== 'FAILED',
           opened,
           clicked,
-          bounced: !!r.bouncedAt || r.status === 'BOUNCED',
+          bounced,
           openCount: pixelOpens > 0 ? pixelOpens : opened ? 1 : 0,
           clickCount: clicks > 0 ? clicks : clicked ? 1 : 0,
           sentAt: r.sentAt,
           openedAt: r.openedAt,
           clickedAt: r.clickedAt,
           error: r.error,
-          };
-        }),
+          _rank:
+            clicked || r.status === 'CLICKED'
+              ? 0
+              : opened || r.status === 'OPENED'
+                ? 1
+                : r.status === 'DELIVERED' || r.deliveredAt
+                  ? 2
+                  : r.status === 'SENT'
+                    ? 3
+                    : bounced
+                      ? 4
+                      : r.status === 'FAILED'
+                        ? 5
+                        : 6,
+          _sentMs: r.sentAt ? r.sentAt.getTime() : 0,
+        };
+      });
+
+      mapped.sort((a, b) => a._rank - b._rank || b._sentMs - a._sentMs);
+
+      const filtered =
+        filter === 'ALL'
+          ? mapped
+          : filter === 'CLICKED'
+            ? mapped.filter((r) => r.clicked)
+            : filter === 'OPENED'
+              ? mapped.filter((r) => r.opened)
+              : filter === 'DELIVERED'
+                ? mapped.filter((r) => r.delivered && !r.bounced && r.status !== 'FAILED')
+                : filter === 'SENT'
+                  ? mapped.filter((r) => r.status === 'SENT' && !r.opened && !r.clicked)
+                  : filter === 'BOUNCED'
+                    ? mapped.filter((r) => r.bounced)
+                    : filter === 'FAILED'
+                      ? mapped.filter((r) => r.status === 'FAILED')
+                      : mapped;
+
+      const total = filtered.length;
+      const pageRows = filtered.slice(skip, skip + limit).map(({ _rank, _sentMs, ...row }) => row);
+      const humanOpened = mapped.filter((r) => r.opened).length;
+      const humanClicked = mapped.filter((r) => r.clicked).length;
+
+      return reply.send({
+        summary: {
+          sent: campaign.totalRecipients || smtpAccepted || campaign.sentCount,
+          accepted: smtpAccepted,
+          delivered: smtpAccepted,
+          inboxDelivered,
+          opened: humanOpened,
+          clicked: humanClicked,
+          failed: failedLive || campaign.failedCount || 0,
+          bounced: bouncedLive || campaign.bouncedCount || 0,
+        },
+        recipients: pageRows,
         total,
         page,
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(total / limit) || 1,
       });
     } catch (error) {
       return sendError(reply, error);

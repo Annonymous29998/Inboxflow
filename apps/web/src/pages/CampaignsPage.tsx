@@ -40,6 +40,7 @@ import { formatSmtpPickLabel, SmtpHealthStrip } from '@/components/smtp/SmtpHeal
 import { toast } from '@/stores/toast';
 import { confirmDialog, promptDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
+import { EMAIL_SEND_BATCH_SIZE, normalizeBatchSize } from '@/lib/sequential-send';
 
 function flash(message: string, tone: 'success' | 'error' | 'warning' | 'info' = 'success') {
   if (!message) return;
@@ -406,7 +407,7 @@ export function CampaignEditorPage() {
   const [sendPaused, setSendPaused] = useState(false);
   const [sendError, setSendError] = useState('');
   const defaultQueueSettings = {
-    batchSize: 10,
+    batchSize: EMAIL_SEND_BATCH_SIZE,
     batchPauseMs: 30_000,
     betweenEmailMs: 4_000,
     maxPerMinute: 12,
@@ -415,7 +416,15 @@ export function CampaignEditorPage() {
   const [queueStage, setQueueStage] = useState<string>('sending');
   const [pauseUntil, setPauseUntil] = useState<string | null>(null);
   const [batchNumber, setBatchNumber] = useState<number | null>(null);
+  const [liveBatchSize, setLiveBatchSize] = useState<number>(EMAIL_SEND_BATCH_SIZE);
   const [queueSettings, setQueueSettings] = useDraft(`${draftKey}:queueSettings`, defaultQueueSettings);
+
+  useEffect(() => {
+    const next = normalizeBatchSize(queueSettings.batchSize);
+    if (next !== queueSettings.batchSize) {
+      setQueueSettings({ ...queueSettings, batchSize: next });
+    }
+  }, [queueSettings, setQueueSettings]);
   const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
@@ -511,7 +520,15 @@ export function CampaignEditorPage() {
           }
           if (d.campaign.analysisReport) setReport(d.campaign.analysisReport as DeliverabilityReport);
           if (d.campaign.queueSettings) {
-            setQueueSettings((q) => ({ ...q, ...d.campaign.queueSettings }));
+            setQueueSettings((q) => ({
+              ...q,
+              ...d.campaign.queueSettings,
+              batchSize: normalizeBatchSize(
+                d.campaign.queueSettings?.batchSize ?? q.batchSize,
+              ),
+            }));
+          } else {
+            setQueueSettings((q) => ({ ...q, batchSize: normalizeBatchSize(q.batchSize) }));
           }
           const subjects = Array.isArray(d.campaign.subjectPool) ? d.campaign.subjectPool : [];
           const names = Array.isArray(d.campaign.fromNamePool) ? d.campaign.fromNamePool : [];
@@ -654,7 +671,10 @@ export function CampaignEditorPage() {
         htmlContent: htmlForSave,
         plainTextContent,
         editorJson: { blocks },
-        queueSettings,
+        queueSettings: {
+          ...queueSettings,
+          batchSize: normalizeBatchSize(queueSettings.batchSize),
+        },
         providerId: campaign.providerId ?? null,
         listId: campaign.listId || null,
         templateId: campaign.templateId || null,
@@ -980,7 +1000,10 @@ export function CampaignEditorPage() {
         providerId: campaign.providerId,
         // Deliverability issues stay as warnings — do not hard-block the queue.
         force: true,
-        queueSettings,
+        queueSettings: {
+          ...queueSettings,
+          batchSize: normalizeBatchSize(queueSettings.batchSize),
+        },
       });
       setSendCount(result.totalRecipients ?? sendCount);
       setSentCount(0);
@@ -1012,6 +1035,7 @@ export function CampaignEditorPage() {
             if (typeof meta.pauseUntil === 'string') setPauseUntil(meta.pauseUntil);
             else if (meta.stage === 'sending' || meta.pauseUntil === null) setPauseUntil(null);
             if (typeof meta.batchNumber === 'number') setBatchNumber(meta.batchNumber);
+            if (typeof meta.batchSize === 'number') setLiveBatchSize(normalizeBatchSize(meta.batchSize));
             if (u.total && Number(u.total) > 0) {
               setSendCount((prev) => Math.max(prev, Number(u.total)));
             }
@@ -1227,6 +1251,7 @@ export function CampaignEditorPage() {
         setQueueStage(status.queueStage || 'sending');
         setPauseUntil(status.pauseUntil ?? null);
         if (status.batchNumber != null) setBatchNumber(status.batchNumber);
+        if (status.queueBatchSize != null) setLiveBatchSize(normalizeBatchSize(status.queueBatchSize));
         if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
 
         if (status.status === 'PAUSED') {
@@ -1374,7 +1399,7 @@ export function CampaignEditorPage() {
         lastEmail={lastEmail}
         errorMessage={sendError}
         fromLabel={fromLabel}
-        batchSize={queueSettings.batchSize}
+        batchSize={liveBatchSize || normalizeBatchSize(queueSettings.batchSize)}
         batchPauseSeconds={Math.max(1, Math.round(queueSettings.batchPauseMs / 1000))}
         betweenEmailMs={queueSettings.betweenEmailMs}
         queueStage={queueStage}
@@ -1668,12 +1693,17 @@ export function CampaignEditorPage() {
                 <Label>Emails per batch</Label>
                 <Input
                   type="number"
-                  value={queueSettings.batchSize}
+                  value={normalizeBatchSize(queueSettings.batchSize)}
+                  min={10}
+                  max={20}
                   onChange={(e) =>
-                    setQueueSettings({ ...queueSettings, batchSize: Number(e.target.value) || 10 })
+                    setQueueSettings({
+                      ...queueSettings,
+                      batchSize: normalizeBatchSize(Number(e.target.value) || EMAIL_SEND_BATCH_SIZE),
+                    })
                   }
                 />
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Default 10</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">10 per batch (min 10)</p>
               </div>
               <div>
                 <Label>Pause between batches</Label>
