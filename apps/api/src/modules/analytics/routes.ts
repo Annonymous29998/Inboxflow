@@ -307,7 +307,12 @@ export async function analyticsRoutes(app: FastifyInstance) {
           failed: failedLive || campaign.failedCount || 0,
           bounced: bouncedLive || campaign.bouncedCount || 0,
         },
-        recipients: recipients.map((r) => ({
+        recipients: recipients.map((r) => {
+          const pixelOpens = openMap[r.contactId] ?? 0;
+          const clicks = clickMap[r.contactId] ?? 0;
+          const clicked = clicks > 0 || !!r.clickedAt || r.status === 'CLICKED';
+          const opened = pixelOpens > 0 || !!r.openedAt || clicked;
+          return {
           id: r.id,
           email: r.contact.email,
           name: [r.contact.firstName, r.contact.lastName].filter(Boolean).join(' ') || null,
@@ -317,16 +322,17 @@ export async function analyticsRoutes(app: FastifyInstance) {
             r.status === 'DELIVERED' ||
             r.status === 'OPENED' ||
             r.status === 'CLICKED',
-          opened: (openMap[r.contactId] ?? 0) > 0,
-          clicked: (clickMap[r.contactId] ?? 0) > 0,
+          opened,
+          clicked,
           bounced: !!r.bouncedAt || r.status === 'BOUNCED',
-          openCount: openMap[r.contactId] ?? 0,
-          clickCount: clickMap[r.contactId] ?? 0,
+          openCount: pixelOpens > 0 ? pixelOpens : opened ? 1 : 0,
+          clickCount: clicks > 0 ? clicks : clicked ? 1 : 0,
           sentAt: r.sentAt,
           openedAt: r.openedAt,
           clickedAt: r.clickedAt,
           error: r.error,
-        })),
+          };
+        }),
         total,
         page,
         pages: Math.ceil(total / limit),

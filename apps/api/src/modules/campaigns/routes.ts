@@ -157,6 +157,8 @@ export async function campaignRoutes(app: FastifyInstance) {
           failedCount: live.failedCount,
           pendingCount: live.pendingCount,
           bouncedCount: live.bouncedCount || c.bouncedCount,
+          openedCount: live.openedCount,
+          clickedCount: live.clickedCount,
         };
       });
 

@@ -86,9 +86,20 @@ export async function recountCampaignEngagement(campaignId: string) {
   };
 }
 
+/** Unique contacts with a countable open pixel, or a countable click (implied open). */
 export async function countHumanOpens(campaignId: string): Promise<number> {
-  const events = await loadOpenEvents(campaignId);
-  return new Set(events.map((e) => e.contactId).filter(Boolean)).size;
+  const [openEvents, clickEvents] = await Promise.all([
+    loadOpenEvents(campaignId),
+    loadClickEvents(campaignId),
+  ]);
+  const people = new Set<string>();
+  for (const e of openEvents) {
+    if (e.contactId) people.add(e.contactId);
+  }
+  for (const e of clickEvents) {
+    if (e.contactId) people.add(e.contactId);
+  }
+  return people.size;
 }
 
 export async function countHumanClicks(campaignId: string): Promise<number> {
@@ -101,12 +112,21 @@ export async function humanOpenCountByContact(
   contactIds: string[],
 ): Promise<Record<string, number>> {
   if (!contactIds.length) return {};
-  const events = await loadOpenEvents(campaignId);
+  const [openEvents, clickEvents] = await Promise.all([
+    loadOpenEvents(campaignId),
+    loadClickEvents(campaignId),
+  ]);
   const out: Record<string, number> = {};
-  for (const e of events) {
+  for (const e of openEvents) {
     if (e.contactId && contactIds.includes(e.contactId)) {
       out[e.contactId] = (out[e.contactId] ?? 0) + 1;
     }
+  }
+  const clickers = new Set(
+    clickEvents.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
+  );
+  for (const id of contactIds) {
+    if ((out[id] ?? 0) === 0 && clickers.has(id)) out[id] = 1;
   }
   return out;
 }

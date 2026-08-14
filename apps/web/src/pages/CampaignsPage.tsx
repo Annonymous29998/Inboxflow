@@ -327,8 +327,12 @@ export function CampaignsPage() {
               </Link>
               <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 {c.deliverabilityScore != null && (
-                  <span className="text-sm font-semibold" style={{ color: scoreColor(c.deliverabilityScore) }}>
-                    {c.deliverabilityScore}/100
+                  <span
+                    className="text-sm font-semibold"
+                    style={{ color: scoreColor(c.deliverabilityScore) }}
+                    title="Inbox readiness score from the last analysis — not opens or clicks"
+                  >
+                    Inbox {c.deliverabilityScore}/100
                   </span>
                 )}
                 <Badge>{c.type}</Badge>
