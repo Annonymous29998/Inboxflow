@@ -201,12 +201,18 @@ export async function humanEngagementByContact(
 
 const recountedCampaigns = new Set<string>();
 
-/** Once per process after deploy so older campaigns get openedAt/clickedAt written back. */
-export function maybeRecountCampaignEngagement(campaignId: string): void {
+export async function recountCampaignEngagementOnce(campaignId: string): Promise<void> {
   if (recountedCampaigns.has(campaignId)) return;
   recountedCampaigns.add(campaignId);
-  void recountCampaignEngagement(campaignId).catch((err) => {
+  try {
+    await recountCampaignEngagement(campaignId);
+  } catch (err) {
     recountedCampaigns.delete(campaignId);
     console.error('recount engagement failed', campaignId, err);
-  });
+  }
+}
+
+/** Once per process after deploy so older campaigns get openedAt/clickedAt written back. */
+export function maybeRecountCampaignEngagement(campaignId: string): void {
+  void recountCampaignEngagementOnce(campaignId);
 }

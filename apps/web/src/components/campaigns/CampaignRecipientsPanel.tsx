@@ -138,7 +138,7 @@ export function CampaignRecipientsPanel({
   /** SMTP accepted (left the mail server) — same “Yes / Delivered” as the older campaign view. */
   const isDelivered = (r: Recipient) =>
     r.delivered ||
-    ['DELIVERED', 'OPENED', 'CLICKED', 'SENT'].includes(r.status);
+    ['DELIVERED', 'OPENED', 'CLICKED', 'SENT', 'UNSUBSCRIBED'].includes(r.status);
 
   return (
     <div className="space-y-3">

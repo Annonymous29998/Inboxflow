@@ -5,6 +5,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from '../campaigns/recipient-stats.js';
 import {
   humanEngagementByContact,
+  recountCampaignEngagementOnce,
 } from '../../services/tracking/recount.js';
 import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
@@ -302,6 +303,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
+      await recountCampaignEngagementOnce(id);
+
       const searchFilter = q.search
         ? { contact: { email: { contains: q.search, mode: 'insensitive' as const } } }
         : {};
@@ -334,7 +337,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
         const bounced = !!r.bouncedAt || r.status === 'BOUNCED';
         const smtpAcceptedRow =
           !!r.sentAt ||
-          ['SENT', 'DELIVERED', 'OPENED', 'CLICKED', 'BOUNCED'].includes(r.status);
+          ['SENT', 'DELIVERED', 'OPENED', 'CLICKED', 'BOUNCED', 'UNSUBSCRIBED'].includes(r.status);
         return {
           id: r.id,
           email: r.contact.email,
