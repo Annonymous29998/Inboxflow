@@ -284,7 +284,10 @@ export async function campaignRoutes(app: FastifyInstance) {
           organizationId: orgId,
           status: { in: ['SENDING', 'PAUSED', 'READY', 'SCHEDULED', 'CANCELLED', 'SENT', 'FAILED'] },
         },
-        orderBy: { updatedAt: 'desc' },
+        orderBy: [
+          { sentAt: { sort: 'desc', nulls: 'last' } },
+          { createdAt: 'desc' },
+        ],
         take: 40,
         select: {
           id: true,

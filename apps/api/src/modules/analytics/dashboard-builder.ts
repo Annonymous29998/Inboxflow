@@ -60,7 +60,10 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
     prisma.domain.findMany({ where: { organizationId } }),
     prisma.campaign.findMany({
       where: { organizationId },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [
+        { sentAt: { sort: 'desc', nulls: 'last' } },
+        { createdAt: 'desc' },
+      ],
       take: 8,
       select: {
         id: true,
@@ -83,7 +86,8 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
       return {
         ...c,
         sentCount: live.sentCount,
-        deliveredCount: live.deliveredCount,
+        // Match Campaigns list: SMTP accepted, not rare ESP delivery webhooks.
+        deliveredCount: live.sentCount,
         failedCount: live.failedCount,
         pendingCount: live.pendingCount,
         openedCount: live.openedCount,
