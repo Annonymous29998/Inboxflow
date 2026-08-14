@@ -192,7 +192,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
           where: {
             campaignId: id,
             createdAt: { gte: since },
-            type: { in: ['OPENED', 'CLICKED', 'SENT', 'DELIVERED'] },
+            type: { in: ['OPENED', 'CLICKED', 'SENT', 'DELIVERED', 'UNSUBSCRIBED'] },
           },
           select: {
             type: true,
@@ -226,6 +226,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       const countable = trackEvents.filter((e) => {
         if (e.type === 'OPENED') return isCountableOpen(e.userAgent, e.metadata);
         if (e.type === 'CLICKED') return humanClicks.includes(e);
+        if (e.type === 'UNSUBSCRIBED') return true;
         return e.type === 'SENT' || e.type === 'DELIVERED';
       });
 
@@ -234,8 +235,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
       for (const e of countable) {
         const day = e.createdAt.toISOString().slice(0, 10);
         if (!byDay[day]) byDay[day] = { opened: 0, clicked: 0, delivered: 0 };
-        if (e.type === 'OPENED') byDay[day].opened += 1;
-        if (e.type === 'CLICKED') byDay[day].clicked += 1;
+        if (e.type === 'OPENED' || e.type === 'UNSUBSCRIBED') byDay[day].opened += 1;
+        if (e.type === 'CLICKED' || e.type === 'UNSUBSCRIBED') byDay[day].clicked += 1;
       }
       for (const r of sentRows) {
         if (!r.sentAt) continue;
@@ -330,7 +331,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
       const mapped = rows.map((r) => {
         const pixelOpens = openMap[r.contactId] ?? 0;
         const clicks = clickMap[r.contactId] ?? 0;
-          const clicked = clicks > 0;
+        const unsubscribed = r.status === 'UNSUBSCRIBED';
+          const clicked = clicks > 0 || unsubscribed;
           const opened = pixelOpens > 0 || clicked;
         const bounced = !!r.bouncedAt || r.status === 'BOUNCED';
         const smtpAcceptedRow =

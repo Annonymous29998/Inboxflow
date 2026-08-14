@@ -131,8 +131,10 @@ export function isCountableOpen(
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
-  // Reject generic desktop browsers (spam filters mimic Chrome on Windows/Linux).
+  // Reject generic desktop browsers for the *pixel* (spam filters mimic Chrome).
+  // Real people still count via click / unsubscribe.
   if (isDesktopBotBrowser(ua)) return false;
+  if (/Macintosh|Mac OS X/i.test(ua)) return true;
   return false;
 }
 
@@ -144,11 +146,9 @@ export type CountableClickOpts = {
 };
 
 /**
- * Count a real click. Scanners (Safe Links, ATP) look like Chrome on Windows and
- * hit every link twice in a few seconds — those must not count as people.
- *
- * Windows/Linux Chrome is only trusted if this contact already had a mail-client open
- * (Gmail/Outlook/Yahoo proxy or mobile mail). Mac / phone browsers can count without that.
+ * Count a real click. Scanners (Safe Links, ATP) hit every link twice in a few
+ * seconds — those bursts are dropped. Known scanner UAs are dropped.
+ * A single browser click (including Windows Chrome / unsubscribe) is a person.
  */
 export function isCountableClick(
   userAgent: string | null | undefined,
@@ -174,14 +174,10 @@ export function isCountableClick(
   if (/Macintosh|Mac OS X/i.test(ua) && /Safari\/|Chrome\/|Firefox\/|Edg\//i.test(ua)) {
     return true;
   }
-  // Safe Links / ATP almost always spoof Chrome on Windows or Linux.
-  if (isDesktopBotBrowser(ua)) {
-    return Boolean(opts.hasVerifiedOpen);
-  }
   if (/Chrome\/|CriOS\/|Firefox\/|FxiOS\/|Edg\/|EdgiOS\/|Safari\//i.test(ua)) {
     return true;
   }
-  return false;
+  return Boolean(opts.hasVerifiedOpen);
 }
 
 type ClickLike = {

@@ -8,28 +8,42 @@ type TrackingRow = {
   metadata: unknown;
 };
 
-async function loadOpenEvents(campaignId: string) {
-  const rows = await prisma.trackingEvent.findMany({
-    where: { campaignId, type: 'OPENED', contactId: { not: null } },
+async function loadUnsubscribeEvents(campaignId: string) {
+  return prisma.trackingEvent.findMany({
+    where: { campaignId, type: 'UNSUBSCRIBED', contactId: { not: null } },
     select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.filter((e) => isCountableOpen(e.userAgent, e.metadata)) as TrackingRow[];
+}
+
+async function loadOpenEvents(campaignId: string) {
+  const [rows, unsubs] = await Promise.all([
+    prisma.trackingEvent.findMany({
+      where: { campaignId, type: 'OPENED', contactId: { not: null } },
+      select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
+      orderBy: { createdAt: 'asc' },
+    }),
+    loadUnsubscribeEvents(campaignId),
+  ]);
+  const countable = rows.filter((e) => isCountableOpen(e.userAgent, e.metadata));
+  return [...countable, ...unsubs] as TrackingRow[];
 }
 
 async function loadClickEvents(campaignId: string) {
-  const [rows, openEvents] = await Promise.all([
+  const [rows, openEvents, unsubs] = await Promise.all([
     prisma.trackingEvent.findMany({
       where: { campaignId, type: 'CLICKED', contactId: { not: null } },
       select: { contactId: true, createdAt: true, userAgent: true, metadata: true },
       orderBy: { createdAt: 'asc' },
     }),
     loadOpenEvents(campaignId),
+    loadUnsubscribeEvents(campaignId),
   ]);
   const verifiedOpens = new Set(
     openEvents.map((e) => e.contactId).filter((id): id is string => Boolean(id)),
   );
-  return filterCountableClicks(rows, verifiedOpens) as TrackingRow[];
+  const clicks = filterCountableClicks(rows, verifiedOpens) as TrackingRow[];
+  return [...clicks, ...(unsubs as TrackingRow[])];
 }
 
 /** Recompute campaign + recipient stats from verified human tracking only. */
@@ -69,7 +83,8 @@ export async function recountCampaignEngagement(campaignId: string) {
       r.sentAt != null || ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'].includes(r.status);
 
     let status = r.status;
-    if (clickedAt) status = 'CLICKED';
+    if (r.status === 'UNSUBSCRIBED') status = 'UNSUBSCRIBED';
+    else if (clickedAt) status = 'CLICKED';
     else if (effectiveOpenedAt) status = 'OPENED';
     else if (wasDelivered && ['OPENED', 'CLICKED'].includes(r.status)) status = 'SENT';
 

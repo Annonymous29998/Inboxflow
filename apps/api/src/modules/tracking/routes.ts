@@ -260,12 +260,39 @@ export async function trackingRoutes(app: FastifyInstance) {
             update: { reason: 'unsubscribe' },
           });
           if (q.cid) {
+            const recipient = await prisma.campaignRecipient.findFirst({
+              where: { campaignId: q.cid, contactId: contact.id },
+              select: { id: true, openedAt: true, clickedAt: true, deliveredAt: true },
+            });
+            const now = new Date();
             await prisma.campaign.update({
               where: { id: q.cid },
-              data: { unsubscribedCount: { increment: 1 } },
+              data: {
+                unsubscribedCount: { increment: 1 },
+                ...(!recipient?.openedAt ? { openedCount: { increment: 1 } } : {}),
+                ...(!recipient?.clickedAt ? { clickedCount: { increment: 1 } } : {}),
+                ...(!recipient?.deliveredAt ? { deliveredCount: { increment: 1 } } : {}),
+              },
             });
+            if (recipient) {
+              await prisma.campaignRecipient.update({
+                where: { id: recipient.id },
+                data: {
+                  status: 'UNSUBSCRIBED',
+                  clickedAt: recipient.clickedAt ?? now,
+                  openedAt: recipient.openedAt ?? now,
+                  deliveredAt: recipient.deliveredAt ?? now,
+                },
+              });
+            }
             await prisma.trackingEvent.create({
-              data: { type: 'UNSUBSCRIBED', campaignId: q.cid, contactId: contact.id },
+              data: {
+                type: 'UNSUBSCRIBED',
+                campaignId: q.cid,
+                contactId: contact.id,
+                userAgent: String(request.headers['user-agent'] || ''),
+                ipAddress: request.ip,
+              },
             });
           }
         }

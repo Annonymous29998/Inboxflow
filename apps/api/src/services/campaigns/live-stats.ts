@@ -78,7 +78,7 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
     prisma.trackingEvent.findMany({
       where: {
         campaignId: { in: campaignIds },
-        type: { in: ['OPENED', 'CLICKED'] },
+        type: { in: ['OPENED', 'CLICKED', 'UNSUBSCRIBED'] },
         contactId: { not: null },
       },
       select: {
@@ -128,6 +128,13 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
       eventClicked.get(campaignId)!.add(e.contactId);
       eventOpened.get(campaignId)!.add(e.contactId);
     }
+  }
+  for (const e of trackEvents) {
+    if (!e.contactId || !e.campaignId || e.type !== 'UNSUBSCRIBED') continue;
+    if (!eventOpened.has(e.campaignId)) eventOpened.set(e.campaignId, new Set());
+    if (!eventClicked.has(e.campaignId)) eventClicked.set(e.campaignId, new Set());
+    eventOpened.get(e.campaignId)!.add(e.contactId);
+    eventClicked.get(e.campaignId)!.add(e.contactId);
   }
 
   for (const id of campaignIds) {
