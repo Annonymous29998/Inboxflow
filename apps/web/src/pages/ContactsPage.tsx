@@ -5,6 +5,7 @@ import { Download, FileUp, Plus, Search, Upload, AlertTriangle, Trash2, ListPlus
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
+import { cleanImportEmail } from '@/lib/clean-import-email';
 
 type Contact = {
   id: string;
@@ -56,7 +57,6 @@ type Row = { email: string; firstName?: string; lastName?: string; phone?: strin
 function parseRows(text: string): Row[] {
   const rows: Row[] = [];
   if (!text || !text.length) return rows;
-  const looseEmailRegex = /[A-Za-z0-9._%+\-!#$&'*/=?^_`{|}~]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return rows;
   const header = lines[0].split(/[,\t;]/).map((s) => s.trim().toLowerCase());
@@ -69,7 +69,6 @@ function parseRows(text: string): Row[] {
     else if (h === 'phone' || h === 'mobile' || h === 'cell') mapCol.phone = i;
   });
   const startIdx = hasEmailHeader ? 1 : 0;
-  const strictEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const seen = new Set<string>();
   function pushIfUnique(row: Row) {
     if (!row?.email) return;
@@ -78,39 +77,35 @@ function parseRows(text: string): Row[] {
     seen.add(key);
     rows.push(row);
   }
+
+  const mostlyPlainList =
+    !hasEmailHeader &&
+    lines.length >= 3 &&
+    lines.filter((l) => l.includes('@')).length >= Math.ceil(lines.length * 0.6);
+
   for (let i = startIdx; i < lines.length; i++) {
     const rawLine = lines[i];
-    if (rawLine.includes(',') || rawLine.includes('\t') || rawLine.includes(';')) {
+    if (!mostlyPlainList && (rawLine.includes(',') || rawLine.includes('\t') || rawLine.includes(';'))) {
       const cols = rawLine.split(/[,\t;]/).map((s) => s.replace(/^"|"$/g, '').trim());
-      let email: string | undefined;
+      let email: string | null = null;
       if (mapCol.email !== undefined) {
-        const raw = cols[mapCol.email] || '';
-        const found = raw.match(looseEmailRegex)?.[0];
-        if (found) email = found.toLowerCase();
+        email = cleanImportEmail(cols[mapCol.email] || '');
       }
       if (!email) {
         for (const c of cols) {
-          const found = c.match(looseEmailRegex)?.[0];
-          if (found) { email = found.toLowerCase(); break; }
+          email = cleanImportEmail(c);
+          if (email) break;
         }
       }
-      if (!email || !strictEmail.test(email)) continue;
+      if (!email) continue;
       const firstName = mapCol.firstName !== undefined ? cols[mapCol.firstName] || undefined : undefined;
       const lastName = mapCol.lastName !== undefined ? cols[mapCol.lastName] || undefined : undefined;
       const phone = mapCol.phone !== undefined ? cols[mapCol.phone] || undefined : undefined;
       pushIfUnique({ email, firstName, lastName, phone });
     } else {
-      // Plain-text row. Try:
-      // 1) pure email             fct@nafdac.gov.ng
-      // 2) email + trailing count  fct@nafdac.gov.ng (75)
-      // 3) angle-bracket quoted    "John" <john@site.com>
-      // 4) any email inside line   Recipient: jane@doe.site  -> extract jane@doe.site
-      const cleaned = rawLine.replace(/\(\s*\d+\s*\)\s*$/, '').trim();
-      let foundEmail = cleaned.match(looseEmailRegex)?.[0];
-      if (!foundEmail) foundEmail = rawLine.match(looseEmailRegex)?.[0];
-      if (!foundEmail) continue;
-      const email = foundEmail.toLowerCase();
-      if (!strictEmail.test(email)) continue;
+      // Plain-text row: strip .Read / trailing dots / glued junk → email only
+      const email = cleanImportEmail(rawLine);
+      if (!email) continue;
       pushIfUnique({ email });
     }
   }
@@ -212,7 +207,13 @@ export function ContactsPage() {
     return grouped.filter((g) => g.id === activeListId);
   }, [grouped, activeListId]);
 
-  const parsedCount = useMemo(() => parseRows(importText || '').length, [importText]);
+  const parsedRows = useMemo(() => parseRows(importText || ''), [importText]);
+  const parsedCount = parsedRows.length;
+  const rawEmailLines = useMemo(() => {
+    const lines = (importText || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return lines.filter((l) => l.includes('@')).length;
+  }, [importText]);
+  const duplicatesRemoved = Math.max(0, rawEmailLines - parsedCount);
   const importDisabled = importing || parsedCount === 0;
 
   function toggle(listId: string) {
@@ -434,7 +435,7 @@ export function ContactsPage() {
   }
 
   async function runImport() {
-    const parsed = parseRows(importText);
+    const parsed = parsedRows;
     if (!parsed.length) {
       toast.error('No valid emails to import');
       return;
@@ -1028,7 +1029,8 @@ export function ContactsPage() {
               <div>
                 <h2 className="text-lg font-semibold">Import contacts</h2>
                 <p className="text-sm text-muted-foreground">
-                  Paste text, or upload a CSV / TXT file. Emails are deduplicated automatically.
+                  Paste text, or upload a CSV / TXT file. Trailing junk (like .Read) is cleaned and
+                  duplicate emails are imported only once.
                 </p>
               </div>
               <button onClick={() => setShowImport(false)} className="text-muted-foreground hover:text-foreground">
@@ -1121,7 +1123,15 @@ export function ContactsPage() {
                   <span className={'font-medium ' + (parsedCount === 0 ? 'text-red-400' : 'text-emerald-400')}>
                     {parsedCount}
                   </span>{' '}
-                  valid email rows
+                  unique email{parsedCount === 1 ? '' : 's'}
+                  {duplicatesRemoved > 0 ? (
+                    <>
+                      {' '}
+                      ·{' '}
+                      <span className="font-medium text-amber-400">{duplicatesRemoved}</span> duplicate
+                      {duplicatesRemoved === 1 ? '' : 's'} removed
+                    </>
+                  ) : null}
                 </p>
               )}
             </div>
