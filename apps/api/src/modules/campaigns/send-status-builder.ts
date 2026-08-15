@@ -15,7 +15,48 @@ export type SendActivityRow = {
   error: string | null;
   at: string;
   url?: string | null;
+  /** How many times this contact opened/clicked (campaign totals stay unique people). */
+  times?: number;
 };
+
+function aggregateEngagementRows(
+  events: Array<{
+    contactId: string | null;
+    createdAt: Date;
+    url?: string | null;
+    contact?: { email: string } | null;
+  }>,
+  status: 'OPENED' | 'CLICKED',
+  limit = 40,
+): SendActivityRow[] {
+  type Agg = { email: string; at: Date; times: number; url?: string | null };
+  const byContact = new Map<string, Agg>();
+  for (const e of events) {
+    const key = e.contactId || e.contact?.email || 'unknown';
+    const email = e.contact?.email || 'unknown';
+    const prev = byContact.get(key);
+    if (!prev) {
+      byContact.set(key, { email, at: e.createdAt, times: 1, url: e.url ?? null });
+      continue;
+    }
+    prev.times += 1;
+    if (e.createdAt > prev.at) {
+      prev.at = e.createdAt;
+      if (e.url) prev.url = e.url;
+    }
+  }
+  return [...byContact.values()]
+    .sort((a, b) => (a.at < b.at ? 1 : -1))
+    .slice(0, limit)
+    .map((r) => ({
+      email: r.email,
+      status,
+      error: null,
+      at: r.at.toISOString(),
+      url: r.url,
+      times: r.times,
+    }));
+}
 
 export async function buildCampaignSendStatus(organizationId: string, campaignId: string) {
   const campaign = await prisma.campaign.findFirst({
@@ -116,22 +157,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
 
   const engagementActivity: SendActivityRow[] = [
-    ...openEvents
-      .filter((e) => isCountableOpen(e.userAgent, e.metadata))
-      .slice(0, 40)
-      .map((e) => ({
-        email: e.contact?.email || 'unknown',
-        status: 'OPENED' as const,
-        error: null,
-        at: e.createdAt.toISOString(),
-      })),
-    ...countableClicks.slice(0, 40).map((e) => ({
-      email: e.contact?.email || 'unknown',
-      status: 'CLICKED' as const,
-      error: null,
-      at: e.createdAt.toISOString(),
-      url: e.url,
-    })),
+    ...aggregateEngagementRows(humanOpens, 'OPENED', 40),
+    ...aggregateEngagementRows(countableClicks, 'CLICKED', 40),
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
 
   const recentSent = recentDelivered.slice(0, 12).map((r) => ({

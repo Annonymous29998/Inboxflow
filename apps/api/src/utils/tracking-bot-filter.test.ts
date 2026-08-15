@@ -12,6 +12,13 @@ describe('isCountableOpen', () => {
     expect(isCountableOpen(GMAIL_PROXY, undefined)).toBe(true);
   });
 
+  it('counts Windows Chrome opens the same as clicks', () => {
+    expect(isCountableOpen(WINDOWS_CHROME, undefined)).toBe(true);
+    expect(
+      isCountableOpen(WINDOWS_CHROME, { source: 'automated', reason: 'non_mail_client' }),
+    ).toBe(true);
+  });
+
   it('does not count curl or empty UA', () => {
     expect(isCountableOpen(CURL, undefined)).toBe(false);
     expect(isCountableOpen('', undefined)).toBe(false);

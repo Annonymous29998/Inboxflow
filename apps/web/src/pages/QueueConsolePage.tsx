@@ -424,6 +424,9 @@ function QueueCampaignColumn({
                               <MousePointerClick className="mr-1 inline h-3 w-3" aria-hidden />
                             ) : null}
                             {item.email}
+                            {(item.times ?? 1) > 1 ? (
+                              <span className="ml-1 font-semibold text-primary">{item.times}×</span>
+                            ) : null}
                             {item.url ? <span className="text-muted-foreground"> → {item.url}</span> : null}
                           </span>
                         </li>

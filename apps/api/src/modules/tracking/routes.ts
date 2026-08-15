@@ -182,12 +182,27 @@ export async function trackingRoutes(app: FastifyInstance) {
             status: 'CLICKED',
             error: null,
           };
-          if (!recipient.openedAt) data.openedAt = new Date();
+          const firstOpenViaClick = !recipient.openedAt;
+          if (firstOpenViaClick) data.openedAt = new Date();
           if (!recipient.deliveredAt) data.deliveredAt = new Date();
           await prisma.campaignRecipient.update({
             where: { id: recipient.id },
             data,
           });
+          // Campaign openedCount = unique people. First click can count as the open.
+          if (firstOpenViaClick) {
+            const priorOpens = await prisma.trackingEvent.findMany({
+              where: { campaignId, contactId, type: 'OPENED' },
+              select: { userAgent: true, metadata: true },
+            });
+            const hadCountableOpen = priorOpens.some((e) => isCountableOpen(e.userAgent, e.metadata));
+            if (!hadCountableOpen) {
+              await prisma.campaign.update({
+                where: { id: campaignId },
+                data: { openedCount: { increment: 1 } },
+              });
+            }
+          }
           if (!recipient.deliveredAt) {
             await prisma.campaign.update({
               where: { id: campaignId },

@@ -15,6 +15,8 @@ export type SendActivity = {
   error?: string | null;
   at: string;
   url?: string | null;
+  /** Repeat opens/clicks for this contact (totals stay unique people). */
+  times?: number;
 };
 
 export type SendStatus = {

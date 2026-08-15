@@ -67,11 +67,6 @@ function isScannerChrome(ua: string): boolean {
   return version < 70;
 }
 
-/** Desktop Windows/Linux browsers are overwhelmingly spam-filter bots on bulk sends. */
-function isDesktopBotBrowser(ua: string): boolean {
-  return /Windows NT|X11; Linux/i.test(ua);
-}
-
 export type AutomatedTrackingReason =
   | 'esp_image_prefetch'
   | 'security_scanner'
@@ -114,8 +109,9 @@ export function classifyAutomatedTracking(userAgent: string | undefined | null):
 }
 
 /**
- * Count an open when a mail client loads the pixel, or a Mac/phone browser.
- * A click still counts as opened in the recipient table.
+ * Count an open from a real mail client or browser (same bar as clicks).
+ * Named bots stay out; multiples still count as 1 person on campaign totals
+ * (recipient / queue detail shows 2×, 3×).
  */
 export function isCountableOpen(
   userAgent: string | null | undefined,
@@ -123,16 +119,21 @@ export function isCountableOpen(
 ): boolean {
   if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
     const reason = (metadata as { reason?: string }).reason;
+    // Stale reasons from older strict filters — re-evaluate by UA.
     if (reason && !['no_verified_open', 'non_mail_client', 'scanner_burst'].includes(reason)) {
       return false;
     }
   }
   const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
+  if (isScannerChrome(ua)) return false;
   if (isLegitimateMailProxy(ua)) return true;
   if (isMobileMailClient(ua)) return true;
   if (/Macintosh|Mac OS X/i.test(ua)) return true;
-  if (isDesktopBotBrowser(ua)) return false;
+  // Match clicks: normal desktop browsers count (incl. Windows Chrome/Edge).
+  if (/Chrome\/|CriOS\/|Firefox\/|FxiOS\/|Edg\/|EdgiOS\/|Safari\//i.test(ua)) {
+    return true;
+  }
   return false;
 }
 
