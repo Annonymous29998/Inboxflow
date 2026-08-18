@@ -120,7 +120,47 @@ export async function providerRoutes(app: FastifyInstance) {
         where: { organizationId: orgId },
         orderBy: [{ isDefault: 'desc' }, { priority: 'desc' }, { createdAt: 'desc' }],
       });
-      return reply.send({ providers: await Promise.all(providers.map(mapProvider)) });
+      const mapped = await Promise.all(
+        providers.map(async (p) => {
+          try {
+            return await mapProvider(p);
+          } catch {
+            return {
+              id: p.id,
+              name: p.name,
+              label: p.label,
+              type: p.type,
+              isDefault: p.isDefault,
+              isActive: p.isActive,
+              priority: p.priority,
+              dailyLimit: p.dailyLimit,
+              hourlyLimit: p.hourlyLimit,
+              minuteLimit: p.minuteLimit,
+              notes: p.notes,
+              lastTestStatus: p.lastTestStatus || 'Pending',
+              lastTestAt: p.lastTestAt,
+              lastTestError: p.lastTestError,
+              sentToday: p.sentToday,
+              sentHour: 0,
+              sentMinute: 0,
+              successCount: p.successCount,
+              failCount: p.failCount,
+              successRate: 50,
+              createdAt: p.createdAt,
+              updatedAt: p.updatedAt,
+              fromEmail: '',
+              fromName: '',
+              replyTo: '',
+              host: '',
+              port: '',
+              encryption: 'STARTTLS',
+              user: '',
+              issues: ['Could not read stored SMTP config'],
+            };
+          }
+        }),
+      );
+      return reply.send({ providers: mapped });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -406,8 +446,16 @@ export async function providerRoutes(app: FastifyInstance) {
       });
       if (!existing) throw new AppError(404, 'Provider not found');
 
+      let connectedStatus = existing.lastTestStatus;
       if (body.isActive === true && existing.type === 'SMTP' && existing.lastTestStatus !== 'Connected') {
-        throw new AppError(400, 'Test Connection must succeed (Connected) before activating');
+        const live = await testSmtpConnection(parseProviderConfig(existing.config));
+        if (!live.success) {
+          throw new AppError(
+            400,
+            live.error || live.message || 'Test Connection must succeed (Connected) before activating',
+          );
+        }
+        connectedStatus = 'Connected';
       }
 
       if (body.isDefault) {
@@ -444,6 +492,9 @@ export async function providerRoutes(app: FastifyInstance) {
           minuteLimit: body.minuteLimit === null ? null : body.minuteLimit,
           notes: body.notes === undefined ? undefined : body.notes,
           config: nextConfig as object,
+          ...(connectedStatus === 'Connected' && existing.lastTestStatus !== 'Connected'
+            ? { lastTestStatus: 'Connected', lastTestAt: new Date(), lastTestError: null }
+            : {}),
         },
       });
 

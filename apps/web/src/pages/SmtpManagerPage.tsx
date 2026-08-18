@@ -133,8 +133,12 @@ export function SmtpManagerPage() {
   );
 
   async function load() {
-    const data = await smtpService.list();
-    setProviders(data);
+    try {
+      const data = await smtpService.list();
+      setProviders(data);
+    } catch (err) {
+      toast.error('Could not load SMTP profiles', err instanceof Error ? err.message : undefined);
+    }
   }
 
   async function loadRotation() {
@@ -412,7 +416,26 @@ export function SmtpManagerPage() {
         setEditingId(profileId);
       }
 
+      // Always refresh the sidebar so a newly saved profile is visible even if
+      // Activate fails (status stays Off / Pending).
+      await load();
+
       if (activate && profileId) {
+        // Persist Connected on the saved row, then activate. Anonymous tests
+        // before create never update lastTestStatus.
+        const persisted = await smtpService.testConnection({
+          providerId: profileId,
+          config: buildConfig(),
+        });
+        if (!persisted.success) {
+          setLastTestOk(false);
+          toast.error(
+            'SMTP saved as draft — activation failed',
+            persisted.error || persisted.message || 'Test Connection must succeed before activating',
+          );
+          return;
+        }
+        setLastTestOk(true);
         await smtpService.update(profileId, { isActive: true, isDefault: form.isDefault });
         if (warnings.length) {
           toast.warning(
@@ -436,12 +459,6 @@ export function SmtpManagerPage() {
         }
       }
       setLastTestOk(activate ? true : lastTestOk);
-      const clearDraft = useDraftStore.getState().clearDraft;
-      clearDraft('smtp:editingId');
-      clearDraft('smtp:form');
-      clearDraft('smtp:issues');
-      clearDraft('smtp:showPass');
-      clearDraft('smtp:lastTestOk');
       await load();
     } catch (err) {
       toast.error('Save failed', err instanceof Error ? err.message : undefined);
