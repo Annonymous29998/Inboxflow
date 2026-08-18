@@ -531,12 +531,20 @@ export function QueueConsolePage() {
     };
   }, [load, loadSmtp]);
 
-  // Live SSE for every campaign currently in the queue console (new send = new stream)
+  // Live SSE only for campaigns that are actually sending/paused.
+  // Opening a stream per finished campaign saturates Chrome's 6 connections
+  // per host (HTTP/1.1), so Pause/Resume POST never leaves the browser.
+  const liveStreamKey = rows
+    .filter((r) => r.status === 'SENDING' || r.status === 'PAUSED')
+    .map((r) => r.id)
+    .sort()
+    .join('|');
+
   useEffect(() => {
-    if (!rows.length) return;
+    if (!liveStreamKey) return;
+    const ids = liveStreamKey.split('|').filter(Boolean);
     const cancels: Array<() => void> = [];
-    for (const row of rows) {
-      const id = row.id;
+    for (const id of ids) {
       const sub = campaignSendService.streamSendStatus(id, {
         onUpdate: (status) => {
           setLiveById((prev) => ({ ...prev, [id]: status }));
@@ -576,7 +584,7 @@ export function QueueConsolePage() {
     return () => {
       for (const cancel of cancels) cancel();
     };
-  }, [rows.map((r) => r.id).join('|')]);
+  }, [liveStreamKey]);
 
   function togglePanel(id: string) {
     setPanelOpen((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
