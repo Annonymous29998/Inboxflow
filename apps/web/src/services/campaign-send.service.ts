@@ -1,6 +1,4 @@
 import { api } from '@/lib/api';
-import { edgeFunctionsEnabled } from '@/lib/supabase';
-import { invokeEdgeFunction } from '@/lib/invoke-edge';
 
 export type SendRecipient = {
   id: string;
@@ -83,17 +81,6 @@ export const campaignSendService = {
     campaignId: string,
     input: { providerId?: string | null; force?: boolean; scrub?: boolean },
   ): Promise<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }> {
-    try {
-      if (edgeFunctionsEnabled) {
-        return await invokeEdgeFunction<{ success: boolean; recipients: SendRecipient[]; totalRecipients?: number; jobId?: string | null }>(
-          'send-campaign-email',
-          { action: 'prepare', campaignId, ...input },
-        );
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     return api.post<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/prepare-send`,
       input,
@@ -108,18 +95,6 @@ export const campaignSendService = {
       queueSettings?: Record<string, unknown>;
     },
   ): Promise<{ success: boolean; totalRecipients: number; status: string; background?: boolean; jobId?: string | null }> {
-    try {
-      if (edgeFunctionsEnabled) {
-        return await invokeEdgeFunction('send-campaign-email', {
-          action: 'background-start',
-          campaignId,
-          ...input,
-        });
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     if (input.queueSettings) {
       await api.patch(`/api/campaigns/${campaignId}`, { queueSettings: input.queueSettings });
     }
@@ -159,17 +134,6 @@ export const campaignSendService = {
     campaignId: string,
     input: { recipientId: string; providerId?: string | null; jobId?: string },
   ) {
-    try {
-      if (edgeFunctionsEnabled) {
-        return await invokeEdgeFunction<{ success: boolean; messageId?: string; error?: string; jobId?: string | null }>(
-          'send-campaign-email',
-          { action: 'send-one', campaignId, ...input },
-        );
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     return api.post<{ success: boolean; messageId?: string; error?: string; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/send-one`,
       input,
@@ -177,17 +141,6 @@ export const campaignSendService = {
   },
 
   async finalizeSend(campaignId: string, input: { cancelled?: boolean; jobId?: string }) {
-    try {
-      if (edgeFunctionsEnabled) {
-        return await invokeEdgeFunction<{ success: boolean; sentCount: number; failedCount: number; pendingCount?: number; jobId?: string | null }>(
-          'send-campaign-email',
-          { action: 'finalize', campaignId, ...input },
-        );
-      }
-    } catch {
-      // Fall through — edge functions unreachable
-    }
-
     return api.post<{ sentCount: number; failedCount: number; pendingCount?: number; jobId?: string | null }>(
       `/api/campaigns/${campaignId}/finalize-send`,
       input,
@@ -209,13 +162,6 @@ export const campaignSendService = {
   },
 
   async retryFailed(campaignId: string): Promise<{ success: boolean; retried: number }> {
-    if (edgeFunctionsEnabled) {
-      try {
-        return await invokeEdgeFunction<{ success: boolean; retried: number }>('send-campaign-email', { action: 'retryFailed', campaignId });
-      } catch {
-        // fall through to API
-      }
-    }
     return api.post<{ success: boolean; retried: number }>(
       `/api/campaigns/${campaignId}/retry-failed`,
     );
