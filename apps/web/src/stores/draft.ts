@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { currentAccountId } from '@/lib/account-scope';
 
 type DraftState = {
   drafts: Record<string, unknown>;
@@ -16,15 +17,15 @@ export const useDraftStore = create<DraftState>()(
     (set, get) => ({
       drafts: {},
       setDraft: <T,>(key: string, value: T) =>
-        set((s) => ({ drafts: { ...s.drafts, [key]: value } })),
+        set((s) => ({ drafts: { ...s.drafts, [`${currentAccountId()}::${key}`]: value } })),
       getDraft: <T,>(key: string, fallback: T): T => {
-        const stored = get().drafts[key];
+        const stored = get().drafts[`${currentAccountId()}::${key}`];
         return (stored as T) ?? fallback;
       },
       clearDraft: (key: string) =>
         set((s) => {
           const next = { ...s.drafts };
-          delete next[key];
+          delete next[`${currentAccountId()}::${key}`];
           return { drafts: next };
         }),
       clearAllDrafts: () => set({ drafts: {} }),
@@ -42,12 +43,15 @@ export function useDraft<T>(key: string, fallback: T): [T, (v: T | ((prev: T) =>
   const setDraft = useDraftStore((s) => s.setDraft);
   const clearDraft = useDraftStore((s) => s.clearDraft);
 
-  const value = (drafts[key] as T) ?? fallback;
+  const scoped = `${currentAccountId()}::${key}`;
+  const value = (drafts[scoped] as T) ?? fallback;
 
   const update = (v: T | ((prev: T) => T)) => {
     if (typeof v === 'function') {
       const fn = v as (prev: T) => T;
-      setDraft<T>(key, fn(value));
+      const stored = useDraftStore.getState().drafts;
+      const latest = Object.prototype.hasOwnProperty.call(stored, scoped) ? (stored[scoped] as T) : value;
+      setDraft<T>(key, fn(latest ?? fallback));
     } else {
       setDraft<T>(key, v);
     }

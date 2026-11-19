@@ -1,0 +1,87 @@
+{
+  "name": "@inboxflow/desktop",
+  "version": "1.2.2",
+  "private": true,
+  "description": "Inbox Flow Windows desktop — connects to Lightsail",
+  "author": "Inbox Flow",
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win nsis zip --x64",
+    "verify:win": "node scripts/verify-installer.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "35.7.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "io.inboxflow.desktop",
+    "productName": "Inbox Flow",
+    "electronVersion": "35.7.5",
+    "copyright": "Copyright © Inbox Flow",
+    "compression": "normal",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "icon": "resources/icon.png",
+    "extraResources": [
+      {
+        "from": "resources/env.desktop.example",
+        "to": "env.desktop.example"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "icon": "resources/icon.ico",
+      "executableName": "InboxFlow",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "InboxFlow-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "unicode": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Inbox Flow",
+      "displayLanguageSelector": false,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "installerHeaderIcon": "resources/icon.ico",
+      "include": "resources/installer.nsh",
+      "warningsAsErrors": false
+    },
+    "mac": {
+      "icon": "resources/icon.png",
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.business"
+    }
+  }
+}

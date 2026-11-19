@@ -5,11 +5,16 @@ import { Prisma } from '@prisma/client';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { requireOrg } from '../../utils/org.js';
-import { drainCampaignJobs, enqueueCampaign, enqueueCampaignScheduled } from '../../services/email/queue.js';
-import { sendCampaignEmailToRecipient } from '../../services/email/campaign-send.js';
+import {
+  drainCampaignJobs,
+  enqueueCampaign,
+  enqueueCampaignScheduled,
+  resetCampaignForResend,
+} from '../../services/email/queue.js';
+import { sendCampaignEmailToRecipient, sendPlacementMessage } from '../../services/email/campaign-send.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
-import { upsertJobProgress } from '../jobs/progress.js';
+import { ensureCampaignSendJob, upsertJobProgress } from '../jobs/progress.js';
 import { writeSystemLog } from '../../services/system-log.js';
 import {
   deliveredRecipientFilter,
@@ -17,7 +22,21 @@ import {
 import { buildCampaignSendStatus } from './send-status-builder.js';
 import { recountCampaignEngagement } from '../../services/tracking/recount.js';
 import { getCampaignsListStats } from '../../services/campaigns/live-stats.js';
-import { normalizeBatchSize } from '../../services/email/queue-settings.js';
+import { maybeFinalizeCampaignSend } from '../../services/email/campaign-finalize.js';
+import { normalizeBatchSize, withRecommendedPacing } from '../../services/email/queue-settings.js';
+import { emailDomain, parseSmtpFromIdentities } from '../../services/email/mail-headers.js';
+import { guardRecipientAddress, prefetchMxForDomains } from '../../services/email/recipient-guard.js';
+import { removeContactsFromAudience } from '../contacts/audience-cleanup.js';
+
+async function domainIdForSender(organizationId: string, email?: string | null) {
+  const d = emailDomain(String(email || ''));
+  if (!d) return null;
+  const rows = await prisma.domain.findMany({
+    where: { organizationId, status: 'VERIFIED' },
+    select: { id: true, domain: true },
+  });
+  return rows.find((r) => d === r.domain || d.endsWith(`.${r.domain}`))?.id ?? null;
+}
 
 type SegmentRules = {
   conditions?: Array<{ field: string; operator: string; value: string }>;
@@ -82,7 +101,7 @@ async function resolveSegmentContacts(organizationId: string, rules: SegmentRule
   });
 }
 
-async function collectCampaignContacts(campaign: {
+async function loadAudienceContacts(campaign: {
   organizationId: string;
   listId: string | null;
   segmentId: string | null;
@@ -125,6 +144,32 @@ async function collectCampaignContacts(campaign: {
   return contacts.filter((c) => !suppressedSet.has(c.email.toLowerCase()));
 }
 
+async function inspectCampaignAudience(campaign: {
+  organizationId: string;
+  listId: string | null;
+  segmentId: string | null;
+}) {
+  const raw = await loadAudienceContacts(campaign);
+  const domains = [...new Set(raw.map((c) => emailDomain(c.email)).filter(Boolean))];
+  await prefetchMxForDomains(domains);
+  const skipped: Array<{ email: string; reason: string; code: string }> = [];
+  const ok: typeof raw = [];
+  for (const c of raw) {
+    const g = await guardRecipientAddress(c.email);
+    if (g.ok) ok.push(c);
+    else skipped.push({ email: c.email, reason: g.reason, code: g.code });
+  }
+  return { ok, skipped, total: raw.length };
+}
+
+async function collectCampaignContacts(campaign: {
+  organizationId: string;
+  listId: string | null;
+  segmentId: string | null;
+}) {
+  return (await inspectCampaignAudience(campaign)).ok;
+}
+
 export async function campaignRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
 
@@ -159,6 +204,7 @@ export async function campaignRoutes(app: FastifyInstance) {
             failedCount: true,
             openedCount: true,
             clickedCount: true,
+            utmCampaign: true,
             bouncedCount: true,
             totalRecipients: true,
             sentAt: true,
@@ -170,6 +216,18 @@ export async function campaignRoutes(app: FastifyInstance) {
         prisma.campaign.count({ where }),
       ]);
 
+      const sendingIds = campaigns.filter((c) => c.status === 'SENDING').map((c) => c.id);
+      if (sendingIds.length) {
+        await Promise.all(sendingIds.map((id) => maybeFinalizeCampaignSend(id)));
+      }
+      const flipped = sendingIds.length
+        ? await prisma.campaign.findMany({
+            where: { id: { in: sendingIds } },
+            select: { id: true, status: true },
+          })
+        : [];
+      const flippedById = new Map(flipped.map((c) => [c.id, c.status]));
+
       const liveIds = campaigns
         .filter((c) => ['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'].includes(c.status))
         .map((c) => c.id);
@@ -177,9 +235,11 @@ export async function campaignRoutes(app: FastifyInstance) {
 
       const enriched = campaigns.map((c) => {
         const live = liveById.get(c.id);
-        if (!live) return c;
+        const status = flippedById.get(c.id) ?? c.status;
+        if (!live) return status !== c.status ? { ...c, status } : c;
         return {
           ...c,
+          status,
           // List UI: sent = SMTP accepted. Keep deliveredCount in sync so clients
           // never show webhook-only "1/247 delivered" while sentCount is 247.
           sentCount: live.sentCount,
@@ -209,7 +269,7 @@ export async function campaignRoutes(app: FastifyInstance) {
 
       const body = z
         .object({
-          name: z.string().min(1),
+          name: z.string().optional().default(''),
           type: z.enum(['REGULAR', 'SCHEDULED', 'AUTOMATED', 'DRIP']).default('REGULAR'),
           subject: z.preprocess(emptyToUndef, z.string().optional()),
           previewText: z.preprocess(emptyToUndef, z.string().optional()),
@@ -236,7 +296,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       let htmlContent = body.htmlContent || null;
       let plainTextContent = body.plainTextContent || null;
       let editorJson = body.editorJson as object | undefined;
-      let resolvedName = body.name;
+      const resolvedName = String(body.name || '').trim();
       let templateId = body.templateId;
 
       if (templateId) {
@@ -255,9 +315,6 @@ export async function campaignRoutes(app: FastifyInstance) {
             };
           }
         }
-        if (resolvedName === 'Untitled campaign' && template.name) {
-          resolvedName = template.name;
-        }
       }
 
       const scrubbed = scrubCampaignContent({
@@ -266,6 +323,8 @@ export async function campaignRoutes(app: FastifyInstance) {
         htmlContent,
         plainTextContent,
       });
+
+      const linkedDomainId = await domainIdForSender(orgId, body.senderEmail || null);
 
       const campaign = await prisma.campaign.create({
         data: {
@@ -278,6 +337,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           previewText: scrubbed.previewText || null,
           senderName: body.senderName || null,
           senderEmail: body.senderEmail || null,
+          domainId: linkedDomainId,
           replyTo: body.replyTo || null,
           listId: body.listId || null,
           segmentId: body.segmentId || null,
@@ -291,6 +351,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           htmlContent: scrubbed.htmlContent || null,
           plainTextContent: scrubbed.plainTextContent || null,
           editorJson: editorJson ?? undefined,
+          queueSettings: withRecommendedPacing({}) as object,
         },
       });
 
@@ -341,6 +402,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           const failed = live?.failedCount ?? 0;
           return {
             ...c,
+            queueSettings: withRecommendedPacing(c.queueSettings),
             pending,
             sent,
             failed,
@@ -399,7 +461,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           plainTextContent: c.plainTextContent,
           trackOpens: c.trackOpens ?? true,
           trackClicks: c.trackClicks ?? true,
-          queueSettings: (c.queueSettings as object) ?? undefined,
+          queueSettings: withRecommendedPacing(c.queueSettings) as object,
           subjectPool: (c.subjectPool as object) ?? undefined,
           fromNamePool: (c.fromNamePool as object) ?? undefined,
           utmSource: c.utmSource,
@@ -438,11 +500,13 @@ export async function campaignRoutes(app: FastifyInstance) {
         },
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
+      const queueSettings = withRecommendedPacing(campaign.queueSettings);
       // Attach a lightweight summary count so the UI can still show "x recipients" without loading them all
       const totalRecipientsCount = await prisma.campaignRecipient.count({ where: { campaignId: id } });
       return reply.send({
         campaign: {
           ...campaign,
+          queueSettings,
           recipients: undefined, // remove field (kept for type compat; will serialize as `undefined` i.e. omitted)
           _meta: {
             recipientCount: totalRecipientsCount,
@@ -506,10 +570,11 @@ export async function campaignRoutes(app: FastifyInstance) {
               p.pendingCount,
               p.openedCount,
               p.clickedCount,
-              p.activity?.[0]?.at,
+              p.activity?.[p.activity.length - 1]?.at,
               p.activity?.length,
               p.queueStage,
               p.pauseUntil,
+              p.lastEmail,
             ].join('|')
           : '';
 
@@ -567,6 +632,48 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post('/:id/check-audience', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        select: { listId: true, segmentId: true, organizationId: true },
+      });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+      const { ok, skipped, total } = await inspectCampaignAudience(campaign);
+      return reply.send({
+        total,
+        sendable: ok.length,
+        skipped: skipped.length,
+        samples: skipped.slice(0, 40),
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/:id/remove-bounces', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        select: { id: true, listId: true },
+      });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+      const bounced = await prisma.campaignRecipient.findMany({
+        where: { campaignId: id, status: 'BOUNCED' },
+        select: { contactId: true },
+      });
+      const ids = [...new Set(bounced.map((r) => r.contactId))];
+      const result = await removeContactsFromAudience(orgId, ids);
+      return reply.send({ ...result, bounced: ids.length });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/:id/send-status', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
@@ -586,6 +693,7 @@ export async function campaignRoutes(app: FastifyInstance) {
       const body = z
         .object({
           name: z.string().optional(),
+          type: z.enum(['REGULAR', 'SCHEDULED', 'AUTOMATED', 'DRIP']).optional(),
           subject: z.string().optional().nullable(),
           previewText: z.string().optional().nullable(),
           senderName: z.string().optional().nullable(),
@@ -608,41 +716,53 @@ export async function campaignRoutes(app: FastifyInstance) {
           timezone: z.string().optional(),
           queueSettings: z
             .object({
-              batchSize: z.number().min(1).max(100).optional(),
-              batchPauseMs: z.number().min(0).max(120_000).optional(),
-              betweenEmailMs: z.number().min(0).max(10_000).optional(),
+              batchSize: z.number().min(1).max(500).optional(),
+              batchPauseMs: z.number().min(0).max(600_000).optional(),
+              betweenEmailMs: z.number().min(0).max(120_000).optional(),
               maxConcurrent: z.number().min(1).max(20).optional(),
               maxPerMinute: z.number().min(1).max(600).optional(),
               maxPerHour: z.number().min(1).max(50_000).optional(),
+              sendChannel: z.enum(['smtp', 'api']).optional(),
+              maxFailPercent: z.number().min(0).max(100).optional(),
+              maxFailMinProcessed: z.number().min(1).max(10_000).optional(),
             })
             .optional()
             .nullable(),
           subjectPool: z.array(z.string()).optional().nullable(),
           fromNamePool: z.array(z.string()).optional().nullable(),
+          templatePool: z.array(z.string()).optional().nullable(),
         })
         .parse(request.body);
 
       const existing = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
       if (!existing) throw new AppError(404, 'Campaign not found');
-      if (['SENDING', 'SENT'].includes(existing.status)) {
-        throw new AppError(400, 'Cannot edit a campaign that is sending or sent');
+      if (existing.status === 'SENDING') {
+        throw new AppError(400, 'Cannot edit a campaign while it is sending');
       }
 
-      const { subjectPool, fromNamePool, ...rest } = body;
+      const {
+        subjectPool,
+        fromNamePool,
+        templatePool,
+        templateId,
+        listId,
+        segmentId,
+        providerId,
+        domainId,
+        scheduledAt,
+        queueSettings,
+        editorJson,
+        ...scalars
+      } = body;
       const data: Prisma.CampaignUpdateInput = {
-        ...rest,
-        editorJson: body.editorJson as object | undefined,
+        ...scalars,
+        editorJson: editorJson as object | undefined,
         queueSettings:
-          body.queueSettings === undefined
+          queueSettings === undefined
             ? undefined
-            : body.queueSettings === null
+            : queueSettings === null
               ? Prisma.DbNull
-              : ({
-                  ...(body.queueSettings as object),
-                  batchSize: normalizeBatchSize(
-                    (body.queueSettings as { batchSize?: unknown }).batchSize,
-                  ),
-                } as object),
+              : (withRecommendedPacing(queueSettings) as object),
         subjectPool:
           subjectPool === undefined
             ? undefined
@@ -655,15 +775,63 @@ export async function campaignRoutes(app: FastifyInstance) {
             : fromNamePool === null
               ? Prisma.DbNull
               : (fromNamePool as Prisma.InputJsonValue),
-        scheduledAt: body.scheduledAt
-          ? new Date(body.scheduledAt)
-          : body.scheduledAt === null
-            ? null
-            : undefined,
+        templatePool:
+          templatePool === undefined
+            ? undefined
+            : templatePool === null
+              ? Prisma.DbNull
+              : (templatePool as Prisma.InputJsonValue),
+        template:
+          templateId === undefined
+            ? undefined
+            : templateId
+              ? { connect: { id: templateId } }
+              : { disconnect: true },
+        list:
+          listId === undefined ? undefined : listId ? { connect: { id: listId } } : { disconnect: true },
+        segment:
+          segmentId === undefined
+            ? undefined
+            : segmentId
+              ? { connect: { id: segmentId } }
+              : { disconnect: true },
+        provider:
+          providerId === undefined
+            ? undefined
+            : providerId && providerId !== 'rotate' && providerId !== 'auto'
+              ? { connect: { id: providerId } }
+              : { disconnect: true },
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : scheduledAt === null ? null : undefined,
       };
       // Edits reset draft campaigns; never downgrade an active send to DRAFT.
       if (!['SENDING', 'SENT', 'PAUSED', 'CANCELLED'].includes(existing.status)) {
         data.status = 'DRAFT';
+      }
+      const senderForLink =
+        body.senderEmail !== undefined ? body.senderEmail : existing.senderEmail;
+      if (domainId !== undefined) {
+        data.domain = domainId ? { connect: { id: domainId } } : { disconnect: true };
+      } else {
+        const linked = await domainIdForSender(orgId, senderForLink);
+        data.domain = linked ? { connect: { id: linked } } : { disconnect: true };
+      }
+      if (
+        body.subject !== undefined ||
+        body.previewText !== undefined ||
+        body.htmlContent !== undefined ||
+        body.plainTextContent !== undefined
+      ) {
+        const scrubbed = scrubCampaignContent({
+          subject: body.subject !== undefined ? body.subject : existing.subject,
+          previewText: body.previewText !== undefined ? body.previewText : existing.previewText,
+          htmlContent: body.htmlContent !== undefined ? body.htmlContent : existing.htmlContent,
+          plainTextContent:
+            body.plainTextContent !== undefined ? body.plainTextContent : existing.plainTextContent,
+        });
+        data.subject = scrubbed.subject;
+        data.previewText = scrubbed.previewText;
+        data.htmlContent = scrubbed.htmlContent;
+        data.plainTextContent = scrubbed.plainTextContent;
       }
       const campaign = await prisma.campaign.update({
         where: { id },
@@ -828,21 +996,27 @@ export async function campaignRoutes(app: FastifyInstance) {
       const contacts = await collectCampaignContacts(campaign);
       if (!contacts.length) throw new AppError(400, 'No eligible recipients');
 
-      const recipients = await Promise.all(
-        contacts.map((contact) =>
-          prisma.campaignRecipient.upsert({
-            where: {
-              campaignId_contactId: { campaignId: id, contactId: contact.id },
-            },
-            create: {
-              campaignId: id,
-              contactId: contact.id,
-              status: 'QUEUED',
-            },
-            update: { status: 'QUEUED', error: null, messageId: null, sentAt: null },
-          }),
-        ),
-      );
+      const recipients: Array<{ id: string; contactId: string }> = [];
+      const UPSERT_CHUNK = 50;
+      for (let i = 0; i < contacts.length; i += UPSERT_CHUNK) {
+        const slice = contacts.slice(i, i + UPSERT_CHUNK);
+        const chunk = await Promise.all(
+          slice.map((contact) =>
+            prisma.campaignRecipient.upsert({
+              where: {
+                campaignId_contactId: { campaignId: id, contactId: contact.id },
+              },
+              create: {
+                campaignId: id,
+                contactId: contact.id,
+                status: 'QUEUED',
+              },
+              update: { status: 'QUEUED', error: null, messageId: null, sentAt: null },
+            }),
+          ),
+        );
+        recipients.push(...chunk);
+      }
 
       const total = contacts.length;
 
@@ -883,14 +1057,17 @@ export async function campaignRoutes(app: FastifyInstance) {
         report,
         totalRecipients: total,
         jobId,
-        recipients: recipients.map((r, i) => ({
-          id: r.id,
-          contactId: contacts[i].id,
-          email: contacts[i].email,
-          displayName:
-            [contacts[i].firstName, contacts[i].lastName].filter(Boolean).join(' ') ||
-            contacts[i].email.split('@')[0],
-        })),
+        recipients:
+          total > 2_000
+            ? []
+            : recipients.map((r, i) => ({
+                id: r.id,
+                contactId: contacts[i]!.id,
+                email: contacts[i]!.email,
+                displayName:
+                  [contacts[i]!.firstName, contacts[i]!.lastName].filter(Boolean).join(' ') ||
+                  contacts[i]!.email.split('@')[0],
+              })),
       });
     } catch (error) {
       return sendError(reply, error);
@@ -1091,11 +1268,38 @@ export async function campaignRoutes(app: FastifyInstance) {
         });
       }
 
-      const report = analyzeCampaign({
+      const scrubbed = scrubCampaignContent({
         subject: campaign.subject,
         previewText: campaign.previewText,
         htmlContent: campaign.htmlContent,
         plainTextContent: campaign.plainTextContent,
+      });
+      const remainingSpam = findRemainingSpamPhrases(
+        `${scrubbed.subject}\n${scrubbed.previewText}\n${scrubbed.plainTextContent}\n${scrubbed.htmlContent}`,
+      );
+      if (remainingSpam.length && !body.force) {
+        return reply.status(400).send({
+          error: `Spam phrases remain after scrub: ${remainingSpam.join(', ')}. Fix content or pass force=true.`,
+          remaining: remainingSpam,
+        });
+      }
+      if (scrubbed.changed) {
+        await prisma.campaign.update({
+          where: { id },
+          data: {
+            subject: scrubbed.subject,
+            previewText: scrubbed.previewText,
+            htmlContent: scrubbed.htmlContent,
+            plainTextContent: scrubbed.plainTextContent,
+          },
+        });
+      }
+
+      const report = analyzeCampaign({
+        subject: scrubbed.subject,
+        previewText: scrubbed.previewText,
+        htmlContent: scrubbed.htmlContent,
+        plainTextContent: scrubbed.plainTextContent,
         physicalAddress: campaign.organization.physicalAddress,
         authStatus: campaign.domain
           ? {
@@ -1140,6 +1344,12 @@ export async function campaignRoutes(app: FastifyInstance) {
         return reply.send({ success: true, status: 'SCHEDULED', scheduledAt, report });
       }
 
+      const job = await ensureCampaignSendJob({
+        campaignId: id,
+        organizationId: orgId,
+        createdById: request.user?.id ?? null,
+        total: campaign.totalRecipients || 0,
+      });
       await prisma.campaign.update({
         where: { id },
         data: {
@@ -1150,7 +1360,15 @@ export async function campaignRoutes(app: FastifyInstance) {
         },
       });
       await enqueueCampaign(id);
-      return reply.send({ success: true, status: 'SENDING', mode: 'queue', report });
+      return reply.send({
+        success: true,
+        status: 'SENDING',
+        mode: 'queue',
+        background: true,
+        jobId: job.id,
+        totalRecipients: campaign.totalRecipients || 0,
+        report,
+      });
     } catch (error) {
       return sendError(reply, error);
     }
@@ -1176,7 +1394,6 @@ export async function campaignRoutes(app: FastifyInstance) {
         data: { status: 'PAUSED' },
       });
       await drainCampaignJobs(id);
-      const { writeSystemLog } = await import('../../services/system-log.js');
       await writeSystemLog({
         organizationId: orgId,
         level: 'WARNING',
@@ -1198,11 +1415,16 @@ export async function campaignRoutes(app: FastifyInstance) {
       if (campaign.status !== 'PAUSED') throw new AppError(400, 'Only paused campaigns can resume');
 
       await prisma.campaign.update({ where: { id }, data: { status: 'SENDING' } });
+      await ensureCampaignSendJob({
+        campaignId: id,
+        organizationId: orgId,
+        createdById: request.user?.id ?? null,
+        total: campaign.totalRecipients || 0,
+      });
       await enqueueCampaign(id);
       const queued = await prisma.campaignRecipient.count({
         where: { campaignId: id, status: 'QUEUED' },
       });
-      const { writeSystemLog } = await import('../../services/system-log.js');
       await writeSystemLog({
         organizationId: orgId,
         level: 'INFO',
@@ -1233,6 +1455,189 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post('/:id/resend', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const body = z
+        .object({
+          force: z.boolean().default(true),
+          providerId: z.string().optional().nullable(),
+          listId: z.string().optional().nullable(),
+        })
+        .parse(request.body ?? {});
+
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        include: { organization: true, domain: true },
+      });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+      if (campaign.status === 'SENDING') {
+        throw new AppError(400, 'This campaign is already sending');
+      }
+      if (!campaign.subject || !campaign.htmlContent) {
+        throw new AppError(400, 'Campaign needs subject and content before sending');
+      }
+
+      const listId = body.listId || campaign.listId;
+      const segmentId = listId ? null : campaign.segmentId;
+      if (!listId && !segmentId) {
+        throw new AppError(400, 'Select a list or segment');
+      }
+      let queuedEstimate = 0;
+      if (listId) {
+        const list = await prisma.contactList.findFirst({
+          where: { id: listId, organizationId: orgId },
+          select: { id: true },
+        });
+        if (!list) throw new AppError(400, 'Audience list not found');
+        queuedEstimate = await prisma.contactListMember.count({
+          where: { listId, contact: { status: 'SUBSCRIBED' } },
+        });
+        if (queuedEstimate < 1) {
+          throw new AppError(400, 'That list has no subscribed contacts to send to');
+        }
+      }
+
+      const report = analyzeCampaign({
+        subject: campaign.subject,
+        previewText: campaign.previewText,
+        htmlContent: campaign.htmlContent,
+        plainTextContent: campaign.plainTextContent,
+        physicalAddress: campaign.organization.physicalAddress,
+        authStatus: campaign.domain
+          ? {
+              spf: campaign.domain.spfValid,
+              dkim: campaign.domain.dkimValid,
+              dmarc: campaign.domain.dmarcValid,
+            }
+          : undefined,
+      });
+      if (report.rating === 'high_risk' && !body.force) {
+        return reply.status(400).send({
+          error: 'Deliverability score is high risk. Pass force=true to resend.',
+          report,
+        });
+      }
+
+      const baseName = (campaign.name || 'Campaign').replace(/\s·\sresend(?:\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2})?$/i, '').trim();
+      const sameAudience = Boolean(listId && campaign.listId && listId === campaign.listId);
+
+      if (sameAudience) {
+        const memberIds = (
+          await prisma.contactListMember.findMany({
+            where: { listId: listId!, contact: { status: 'SUBSCRIBED' } },
+            select: { contactId: true },
+          })
+        ).map((m) => m.contactId);
+        await resetCampaignForResend(id, memberIds);
+        await prisma.campaign.update({
+          where: { id },
+          data: {
+            status: 'SENDING',
+            completedAt: null,
+            sentCount: 0,
+            failedCount: 0,
+            totalRecipients: queuedEstimate,
+            providerId: body.providerId !== undefined ? body.providerId : campaign.providerId,
+            listId,
+            sentAt: campaign.sentAt ?? new Date(),
+            deliverabilityScore: report.score,
+            analysisReport: report as object,
+          },
+        });
+        await ensureCampaignSendJob({
+          campaignId: id,
+          organizationId: orgId,
+          createdById: request.user?.id ?? null,
+          total: queuedEstimate,
+        });
+        await enqueueCampaign(id);
+        await writeSystemLog({
+          organizationId: orgId,
+          level: 'INFO',
+          category: 'queue',
+          message: `Resend merged into ${id} (same list ${listId})`,
+        });
+        return reply.send({
+          success: true,
+          status: 'SENDING',
+          campaignId: id,
+          parentCampaignId: id,
+          merged: true,
+          name: campaign.name,
+          totalRecipients: queuedEstimate,
+          queued: queuedEstimate,
+          report,
+        });
+      }
+
+      const copy = await prisma.campaign.create({
+        data: {
+          organizationId: orgId,
+          createdById: request.user.id,
+          name: baseName || 'Campaign',
+          type: campaign.type,
+          subject: campaign.subject,
+          previewText: campaign.previewText,
+          senderName: campaign.senderName,
+          senderEmail: campaign.senderEmail,
+          replyTo: campaign.replyTo,
+          htmlContent: campaign.htmlContent,
+          plainTextContent: campaign.plainTextContent,
+          editorJson: campaign.editorJson ?? undefined,
+          listId,
+          segmentId,
+          templateId: campaign.templateId,
+          templatePool: campaign.templatePool ?? undefined,
+          subjectPool: campaign.subjectPool ?? undefined,
+          fromNamePool: campaign.fromNamePool ?? undefined,
+          queueSettings: campaign.queueSettings ?? undefined,
+          providerId: body.providerId !== undefined ? body.providerId : campaign.providerId,
+          domainId: campaign.domainId,
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+          utmSource: campaign.utmSource,
+          utmMedium: campaign.utmMedium,
+          utmCampaign: `resend-${id.slice(-8)}`,
+          status: 'SENDING',
+          sentAt: new Date(),
+          totalRecipients: queuedEstimate,
+          deliverabilityScore: report.score,
+          analysisReport: report as object,
+        },
+      });
+
+      await ensureCampaignSendJob({
+        campaignId: copy.id,
+        organizationId: orgId,
+        createdById: request.user?.id ?? null,
+        total: queuedEstimate,
+      });
+      await enqueueCampaign(copy.id);
+
+      await writeSystemLog({
+        organizationId: orgId,
+        level: 'INFO',
+        category: 'queue',
+        message: `Resend cloned ${id} → ${copy.id} (list ${listId || 'segment'})`,
+      });
+
+      return reply.send({
+        success: true,
+        status: 'SENDING',
+        campaignId: copy.id,
+        parentCampaignId: id,
+        name: copy.name,
+        totalRecipients: queuedEstimate,
+        queued: queuedEstimate,
+        report,
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.post('/:id/retry-failed', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
@@ -1248,9 +1653,14 @@ export async function campaignRoutes(app: FastifyInstance) {
         where: { id },
         data: { status: 'SENDING', completedAt: null },
       });
+      await ensureCampaignSendJob({
+        campaignId: id,
+        organizationId: orgId,
+        createdById: request.user?.id ?? null,
+        total: campaign.totalRecipients || reset.count,
+      });
       await enqueueCampaign(id);
 
-      const { writeSystemLog } = await import('../../services/system-log.js');
       await writeSystemLog({
         organizationId: orgId,
         level: 'INFO',
@@ -1337,6 +1747,12 @@ export async function campaignRoutes(app: FastifyInstance) {
           fromNames: z.array(z.string()).max(8).optional(),
           /** Placement tests: omit [TEST] prefix for a more realistic message. */
           noSubjectPrefix: z.boolean().optional(),
+          templateIds: z.array(z.string().min(1)).max(12).optional(),
+          htmlByTemplateId: z.record(z.string()).optional(),
+          /** One placement message per From saved on the SMTP (not used for live campaigns). */
+          allFromIdentities: z.boolean().optional(),
+          /** Ticked SMTPs on the campaign SMTP/Proxy tab. */
+          providerIds: z.array(z.string().min(1)).max(40).optional(),
         })
         .parse(request.body);
 
@@ -1346,106 +1762,164 @@ export async function campaignRoutes(app: FastifyInstance) {
       });
       if (!campaign) throw new AppError(404, 'Campaign not found');
 
-      const { parseProviderConfig, sendViaProvider } = await import('../../services/email/providers.js');
-      const { resolveSmtpFromEmail } = await import('../../services/email/mail-headers.js');
+      const { parseProviderConfig } = await import('../../services/email/providers.js');
       const { resolveRotatedProviders, parseRotationSettings } = await import(
         '../../services/email/smtp-rotation.js'
       );
-      const { decrypt } = await import('../../utils/crypto.js');
 
       const rotation = parseRotationSettings(campaign.organization.sendSettings);
-      const providers = await resolveRotatedProviders({
+      const qs = (campaign.queueSettings || {}) as {
+        sendChannel?: 'smtp' | 'api';
+        providerIds?: string[];
+      };
+      const sendChannel = qs.sendChannel === 'api' || qs.sendChannel === 'smtp' ? qs.sendChannel : null;
+      const pool = await resolveRotatedProviders({
         organizationId: orgId,
         preferredProviderId: campaign.providerId,
         rotation: { ...rotation, enabled: false },
+        sendChannel,
       });
-      const provider = providers[0];
-      if (!provider) throw new AppError(400, 'No active SMTP provider');
+      const wantedIds = [
+        ...new Set(
+          (body.providerIds?.length
+            ? body.providerIds
+            : Array.isArray(qs.providerIds) && qs.providerIds.length
+              ? qs.providerIds
+              : campaign.providerId
+                ? [campaign.providerId]
+                : []
+          ).map((x) => String(x)),
+        ),
+      ];
+      const byId = new Map(pool.map((p) => [p.id, p]));
+      const providers = (wantedIds.length ? wantedIds.map((pid) => byId.get(pid)).filter(Boolean) : pool) as typeof pool;
+      if (!providers.length) throw new AppError(400, 'No active SMTP or API provider');
 
-      const cfg = parseProviderConfig(provider.config);
-      const fromEmail = resolveSmtpFromEmail(campaign.senderEmail || undefined, cfg).from;
-      if (!fromEmail) throw new AppError(400, 'Sender email is required');
+      let fromEmail = String(campaign.senderEmail || '').trim();
+      const defaultFromName = body.fromNames?.find((n) => n.trim()) || campaign.senderName || '';
 
-      const fromNames =
-        body.fromNames?.filter((n) => n.trim()).length
-          ? body.fromNames.filter((n) => n.trim())
-          : [campaign.senderName || cfg.fromName || ''];
-
-      let dkim:
-        | { domainName: string; keySelector: string; privateKey: string }
-        | undefined;
-      if (campaign.domain?.dkimPrivateKeyEnc && campaign.domain.dkimSelector) {
-        try {
-          dkim = {
-            domainName: campaign.domain.domain,
-            keySelector: campaign.domain.dkimSelector,
-            privateKey: decrypt(campaign.domain.dkimPrivateKeyEnc),
-          };
-        } catch {
-          /* skip */
-        }
-      }
+      const poolFromCampaign = [
+        ...(Array.isArray(campaign.templatePool)
+          ? campaign.templatePool.map((x) => String(x || '').trim()).filter(Boolean)
+          : []),
+        ...(campaign.templateId ? [campaign.templateId] : []),
+      ];
+      const requestedIds = (body.templateIds || []).map((x) => String(x).trim()).filter(Boolean);
+      const templateIds = [...new Set(requestedIds.length ? requestedIds : poolFromCampaign)];
+      const templates = templateIds.length
+        ? await prisma.template.findMany({
+            where: {
+              id: { in: templateIds },
+              OR: [{ organizationId: orgId }, { isPublic: true }],
+            },
+            select: { id: true, name: true, htmlContent: true, plainText: true },
+          })
+        : [];
+      const templateById = new Map(templates.map((t) => [t.id, t]));
+      const variants: Array<{ id: string | null; name: string | null; html: string; text: string }> =
+        templateIds.length
+          ? templateIds.map((tid) => {
+              const override = body.htmlByTemplateId?.[tid]?.trim();
+              const tpl = templateById.get(tid);
+              return {
+                id: tid,
+                name: tpl?.name || null,
+                html: override || tpl?.htmlContent?.trim() || campaign.htmlContent || '<p>Test matrix message</p>',
+                text: tpl?.plainText || campaign.plainTextContent || 'Test matrix message',
+              };
+            })
+          : [
+              {
+                id: campaign.templateId || null,
+                name: null,
+                html: campaign.htmlContent || '<p>Test matrix message</p>',
+                text: campaign.plainTextContent || 'Test matrix message',
+              },
+            ];
 
       const results: Array<{
         subject: string;
         fromName: string;
+        fromEmail?: string;
+        providerName?: string;
+        providerHost?: string | null;
+        templateId?: string | null;
+        templateName?: string | null;
         success: boolean;
         messageId?: string;
+        smtpResponse?: string;
         error?: string;
       }> = [];
 
-      for (const subject of body.subjects) {
-        for (const fromName of fromNames) {
-          const hardened = hardenOutboundMime({
-            subject: body.noSubjectPrefix ? subject : `[TEST] ${subject}`,
-            previewText: campaign.previewText,
-            html: campaign.htmlContent || '<p>Test matrix message</p>',
-            text: campaign.plainTextContent || 'Test matrix message',
-          });
-          const result = await sendViaProvider(
-            provider.type,
-            provider.config,
-            {
-              to: body.to,
-              from: fromEmail,
-              fromName: fromName.trim() || undefined,
-              replyTo: campaign.replyTo || cfg.replyTo || undefined,
-              subject: hardened.subject,
-              html: hardened.html,
-              text: hardened.text,
-              headers: {
-                'List-Unsubscribe': `<mailto:unsubscribe@${fromEmail.split('@')[1] || 'example.com'}>`,
-                ...(hardened.previewText
-                  ? { 'X-Preview-Text': hardened.previewText.slice(0, 150) }
-                  : {}),
-              },
-              dkim,
-            },
-            { portFailover: provider.isDefault && provider.type === 'SMTP' },
-          );
-          results.push({
-            subject,
-            fromName: fromName.trim() || '(email only)',
-            success: result.success,
-            messageId: result.messageId,
-            error: result.error,
-          });
+      let first = true;
+      for (const provider of providers) {
+        const cfg = parseProviderConfig(provider.config);
+        const smtpHost = String(cfg.host || '').trim().toLowerCase();
+        if (provider.type === 'SMTP' && (smtpHost === 'json' || smtpHost === 'dev' || smtpHost === 'console')) {
+          throw new AppError(400, 'SMTP is in mock mode — no mail is delivered. Save a real SMTP host first.');
+        }
+        const smtpFroms = body.allFromIdentities ? parseSmtpFromIdentities(cfg) : [];
+        const fromSlots =
+          smtpFroms.length > 0
+            ? smtpFroms.map((ident) => ({
+                email: ident.email,
+                name: ident.name || defaultFromName || cfg.fromName || '',
+              }))
+            : [{ email: String(cfg.fromEmail || '').trim(), name: defaultFromName || cfg.fromName || '' }];
+
+        for (const variant of variants) {
+          for (const subject of body.subjects) {
+            for (const slot of fromSlots) {
+              if (!first) {
+                await new Promise((r) => setTimeout(r, 700));
+              }
+              first = false;
+              const result = await sendPlacementMessage({
+                campaignId: id,
+                to: body.to,
+                subject: body.noSubjectPrefix ? subject : `[TEST] ${subject}`,
+                html: variant.html,
+                text: variant.text,
+                fromName: slot.name.trim() || undefined,
+                fromEmail: slot.email || undefined,
+                preferredProviderId: provider.id,
+                extraHeaders: variant.name
+                  ? { 'X-InboxFlow-Template': variant.name.slice(0, 80) }
+                  : undefined,
+              });
+              if (result.fromEmail) fromEmail = result.fromEmail;
+              results.push({
+                subject,
+                fromName: slot.name.trim() || '(email only)',
+                fromEmail: result.fromEmail || slot.email || undefined,
+                providerName: provider.name,
+                providerHost: cfg.host || null,
+                templateId: variant.id,
+                templateName: variant.name,
+                success: result.success,
+                messageId: result.messageId,
+                smtpResponse: result.smtpResponse,
+                error: result.error,
+              });
+            }
+          }
         }
       }
 
       const sent = results.filter((r) => r.success).length;
+      const firstProvider = providers[0]!;
+      const firstCfg = parseProviderConfig(firstProvider.config);
       await writeSystemLog({
         organizationId: orgId,
         level: sent > 0 ? 'SUCCESS' : 'ERROR',
         category: 'smtp',
         message:
           sent > 0
-            ? `Placement test sent via ${provider.name} (${cfg.host || provider.type}) From ${fromEmail} → ${body.to}`
-            : `Placement test failed via ${provider.name} (${cfg.host || provider.type}) From ${fromEmail} → ${body.to}: ${results[0]?.error || 'send failed'}`,
+            ? `Placement test sent via ${providers.length} SMTP(s) From ${fromEmail} → ${body.to}`
+            : `Placement test failed via ${firstProvider.name} (${firstCfg.host || firstProvider.type}) From ${fromEmail} → ${body.to}: ${results[0]?.error || 'send failed'}`,
         meta: {
           campaignId: id,
-          providerId: provider.id,
-          host: cfg.host,
+          providerIds: providers.map((p) => p.id),
           fromEmail,
           to: body.to,
           results,
@@ -1456,8 +1930,8 @@ export async function campaignRoutes(app: FastifyInstance) {
         success: results.every((r) => r.success),
         sent,
         total: results.length,
-        providerName: provider.name,
-        providerHost: cfg.host || null,
+        providerName: firstProvider.name,
+        providerHost: firstCfg.host || null,
         fromEmail,
         results,
       });
@@ -1490,6 +1964,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           queueSettings: campaign.queueSettings,
           subjectPool: campaign.subjectPool,
           fromNamePool: campaign.fromNamePool,
+          templatePool: campaign.templatePool,
           utmSource: campaign.utmSource,
           utmMedium: campaign.utmMedium,
           utmCampaign: campaign.utmCampaign,
@@ -1511,6 +1986,18 @@ export async function campaignRoutes(app: FastifyInstance) {
       }
 
       await drainCampaignJobs(id);
+      const { getCampaignLiveStats } = await import('../../services/campaigns/live-stats.js');
+      const { addOrgLifetimeStats } = await import('../../services/org-lifetime-stats.js');
+      const live = await getCampaignLiveStats(id, campaign.totalRecipients);
+      await addOrgLifetimeStats(orgId, {
+        sent: Math.max(live.sentCount, campaign.sentCount),
+        delivered: Math.max(live.deliveredCount, campaign.deliveredCount, live.sentCount, campaign.sentCount),
+        failed: Math.max(live.failedCount, campaign.failedCount),
+        opened: Math.max(live.openedCount, campaign.openedCount),
+        clicked: Math.max(live.clickedCount, campaign.clickedCount),
+        bounced: Math.max(live.bouncedCount, campaign.bouncedCount),
+        complained: campaign.complainedCount,
+      });
       await prisma.$transaction([
         prisma.dripStep.updateMany({ where: { campaignId: id }, data: { campaignId: null } }),
         prisma.campaign.delete({ where: { id } }),
@@ -1546,6 +2033,7 @@ export async function campaignRoutes(app: FastifyInstance) {
           listId: source.listId,
           segmentId: source.segmentId,
           templateId: source.templateId,
+          templatePool: source.templatePool ?? undefined,
           providerId: source.providerId,
           trackOpens: source.trackOpens,
           trackClicks: source.trackClicks,

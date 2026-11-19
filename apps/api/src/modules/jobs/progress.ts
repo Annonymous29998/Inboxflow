@@ -68,6 +68,58 @@ export type UpsertJobInput = {
   finishedAt?: Date | null;
 };
 
+/** Stable Job row so SMTP results can stream live (operator + tenant). */
+export async function ensureCampaignSendJob(input: {
+  campaignId: string;
+  organizationId: string;
+  createdById?: string | null;
+  total?: number;
+}) {
+  const id = `send_${input.campaignId}`;
+  const existing = await prisma.job.findFirst({
+    where: {
+      OR: [{ id }, { campaignId: input.campaignId, type: 'CAMPAIGN_SEND' }],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing && (existing.status === 'RUNNING' || existing.status === 'PAUSED' || existing.status === 'PENDING')) {
+    if (input.total && input.total > (existing.total || 0)) {
+      return upsertJobProgress({
+        id: existing.id,
+        type: 'CAMPAIGN_SEND',
+        organizationId: existing.organizationId,
+        campaignId: input.campaignId,
+        status: existing.status === 'PAUSED' ? 'RUNNING' : existing.status,
+        total: input.total,
+        processed: existing.processed,
+        meta: existing.meta as Prisma.InputJsonValue,
+      });
+    }
+    emitJobUpdate(existing);
+    return existing;
+  }
+  return upsertJobProgress({
+    id,
+    type: 'CAMPAIGN_SEND',
+    organizationId: input.organizationId,
+    createdById: input.createdById ?? null,
+    campaignId: input.campaignId,
+    status: 'RUNNING',
+    total: input.total ?? 0,
+    processed: 0,
+    startedAt: new Date(),
+    finishedAt: null,
+    error: null,
+    meta: {
+      stage: 'sending',
+      sent: 0,
+      failed: 0,
+      pending: input.total ?? 0,
+      lastEmail: null,
+    },
+  });
+}
+
 export async function upsertJobProgress(input: UpsertJobInput) {
   const now = new Date();
   const data: Prisma.JobUpdateInput & Prisma.JobCreateInput = {

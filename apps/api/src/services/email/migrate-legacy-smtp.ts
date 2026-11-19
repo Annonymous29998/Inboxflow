@@ -2,6 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
 import { encrypt } from '../../utils/crypto.js';
 import { parseProviderConfig } from './providers.js';
+import { parseSmtpFromIdentities } from './mail-headers.js';
 
 function normalizeConfig(config: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -47,6 +48,32 @@ export async function migrateLegacySmtpBranding(organizationId: string) {
 
     const fromEmail = String(config.fromEmail || config.user || '');
     const fromName = String(config.fromName || '');
+    const identities = parseSmtpFromIdentities(config);
+    const rawIdent =
+      typeof config.fromIdentities === 'string' && config.fromIdentities.trim()
+        ? config.fromIdentities
+        : '';
+    let rawCount = identities.length;
+    try {
+      const parsed = rawIdent ? (JSON.parse(rawIdent) as unknown) : [];
+      if (Array.isArray(parsed)) rawCount = parsed.length;
+    } catch {
+      rawCount = identities.length;
+    }
+    if (rawIdent && identities.length < rawCount) {
+      next.fromIdentities = JSON.stringify(identities);
+      if (
+        identities[0]?.email &&
+        String(next.fromEmail || '').toLowerCase() === String(config.user || '').toLowerCase()
+      ) {
+        next.fromEmail = identities[0].email;
+        next.fromName = identities[0].name || next.fromName;
+      }
+      changed = true;
+      console.log(
+        `Removed auto-added SMTP-login From on "${provider.name}" (${rawCount} → ${identities.length})`,
+      );
+    }
 
     if (/i-coffee\.ng/i.test(fromEmail)) {
       next.fromEmail = defaultFrom;

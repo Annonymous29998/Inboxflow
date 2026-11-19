@@ -53,7 +53,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       }
 
       const response = await buildDashboardPayload(orgId);
-      if (!skipCache) setCached(cacheKey, response, 5_000);
+      if (!skipCache) setCached(cacheKey, response, 30_000);
       return reply.send(response);
     } catch (error) {
       return sendError(reply, error);
@@ -64,7 +64,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const SSE_KEEPALIVE_MS = 15_000;
-      const SSE_POLL_MS = 2000;
+      const SSE_POLL_MS = 8_000;
 
       reply.raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
       reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -98,7 +98,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
         }
       };
 
-      const initial = await buildDashboardPayload(orgId);
+      const cacheKey = `dash:${orgId}`;
+      const cached = getCached<Awaited<ReturnType<typeof buildDashboardPayload>>>(cacheKey);
+      const initial = cached ?? (await buildDashboardPayload(orgId));
+      if (!cached) setCached(cacheKey, initial, 30_000);
       lastKey = dashboardFingerprint(initial);
       send('dashboard', initial as unknown as Record<string, unknown>);
 

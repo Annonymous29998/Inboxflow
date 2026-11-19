@@ -11,18 +11,31 @@ export type EmailTemplateSummary = {
 export type EmailTemplate = EmailTemplateSummary & {
   htmlContent?: string | null;
   plainText?: string | null;
-  editorJson?: { blocks?: Array<{ id: string; type: string; content: string }> } | null;
+  editorJson?: {
+    blocks?: Array<{ id: string; type: string; content: string }>;
+    placeholderMap?: Record<string, string>;
+  } | null;
 };
 
 export const templateService = {
   async list(): Promise<EmailTemplateSummary[]> {
     const data = await api.get<{ templates: EmailTemplateSummary[] }>('/api/templates');
-    return data.templates;
+    return Array.isArray(data.templates) ? data.templates : [];
   },
 
   async get(id: string): Promise<EmailTemplate> {
     const data = await api.get<{ template: EmailTemplate }>(`/api/templates/${id}`);
-    return data.template;
+    const template = data.template;
+    const raw = template?.editorJson as unknown;
+    let editorJson: EmailTemplate['editorJson'] = template?.editorJson ?? null;
+    if (typeof raw === 'string') {
+      try {
+        editorJson = (JSON.parse(raw) as EmailTemplate['editorJson']) ?? null;
+      } catch {
+        editorJson = null;
+      }
+    }
+    return { ...template, editorJson: editorJson ?? null };
   },
 
   async update(

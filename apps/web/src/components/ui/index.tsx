@@ -1,5 +1,5 @@
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
-import { Loader2 } from 'lucide-react';
+import { forwardRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function Button({
@@ -74,6 +74,43 @@ export function Card({
       )}
     >
       {children}
+    </div>
+  );
+}
+
+/** Blue Bounce-style fold: heading always visible, body collapsed until opened. */
+export function EditorFold({
+  title,
+  hint,
+  defaultOpen = false,
+  children,
+  className,
+}: {
+  title: string;
+  hint?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={cn('rounded-none border border-border bg-card text-card-foreground', className)}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-primary/5"
+      >
+        <span className="min-w-0">
+          <span className="block font-medium text-xs uppercase tracking-wider text-accent">{title}</span>
+          {hint ? (
+            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{hint}</span>
+          ) : null}
+        </span>
+        <ChevronDown
+          className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
+        />
+      </button>
+      {open ? <div className="space-y-3 border-t border-border px-4 py-3">{children}</div> : null}
     </div>
   );
 }

@@ -19,6 +19,8 @@ import {
   writeSystemLog,
 } from '../../services/system-log.js';
 import { isBlockedSmtpHost } from '../../utils/signed-urls.js';
+import { parseSmtpFromIdentities } from '../../services/email/mail-headers.js';
+import { assertOutboundPathAllowed, orgAllowsDirectSmtp } from '../../services/email/smtp-outbound.js';
 import {
   detectTlsFromPort,
   getHourlySent,
@@ -26,6 +28,30 @@ import {
   providerSuccessRate,
 } from '../../services/email/smtp-rotation.js';
 import type { EmailProvider } from '@prisma/client';
+import type { FastifyRequest } from 'fastify';
+
+async function requestAllowsDirect(request: FastifyRequest) {
+  const orgId = request.user?.organizationId;
+  const org = orgId
+    ? await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { sendSettings: true },
+      })
+    : null;
+  return orgAllowsDirectSmtp({
+    sendSettings: org?.sendSettings,
+    role: request.user?.role,
+    email: request.user?.email,
+  });
+}
+
+function requireOutboundAllowed(config: Record<string, string>, allowDirect: boolean) {
+  try {
+    assertOutboundPathAllowed(config, allowDirect);
+  } catch (err) {
+    throw new AppError(403, err instanceof Error ? err.message : 'Outbound path not allowed');
+  }
+}
 
 function normalizeConfig(config: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -85,11 +111,23 @@ async function mapProvider(p: EmailProvider) {
     updatedAt: p.updatedAt,
     fromEmail: config.fromEmail || config.user || '',
     fromName: config.fromName || '',
+    fromIdentities: parseSmtpFromIdentities(config),
     replyTo: config.replyTo || '',
     host: config.host || '',
     port: config.port || '',
     encryption: config.encryption || (config.secure === 'true' ? 'SSL' : 'STARTTLS'),
     user: config.user || '',
+    outboundPath: config.outboundPath || 'direct',
+    bindIp: config.bindIp || '',
+    socksHost: config.socksHost || '',
+    socksPort: config.socksPort || '1080',
+    socksUser: config.socksUser || '',
+    hasSocksPass: Boolean(config.socksPass),
+    sshHost: config.sshHost || '',
+    sshPort: config.sshPort || '22',
+    sshUser: config.sshUser || '',
+    remoteIp: config.remoteIp || '',
+    viaApiKey: config.viaApiKey === 'true',
     issues: detectSmtpConfigIssues(config),
   };
 }
@@ -108,7 +146,19 @@ export async function providerRoutes(app: FastifyInstance) {
     ignoreTLS: z.union([z.boolean(), z.string()]).optional(),
     fromEmail: z.string().optional(),
     fromName: z.string().optional(),
+    fromIdentities: z.string().optional(),
     replyTo: z.string().optional(),
+    outboundPath: z.string().optional(),
+    bindIp: z.string().optional(),
+    socksHost: z.string().optional(),
+    socksPort: z.union([z.string(), z.number()]).optional(),
+    socksUser: z.string().optional(),
+    socksPass: z.string().optional(),
+    sshHost: z.string().optional(),
+    sshPort: z.union([z.string(), z.number()]).optional(),
+    sshUser: z.string().optional(),
+    sshPass: z.string().optional(),
+    remoteIp: z.string().optional(),
   });
 
   app.get('/', async (request, reply) => {
@@ -150,6 +200,7 @@ export async function providerRoutes(app: FastifyInstance) {
               updatedAt: p.updatedAt,
               fromEmail: '',
               fromName: '',
+              fromIdentities: [],
               replyTo: '',
               host: '',
               port: '',
@@ -209,6 +260,7 @@ export async function providerRoutes(app: FastifyInstance) {
           user: config.user || '',
           fromEmail: config.fromEmail || '',
           fromName: config.fromName || '',
+          fromIdentities: parseSmtpFromIdentities(config),
           replyTo: config.replyTo || '',
           dailyLimit: p.dailyLimit,
           hourlyLimit: p.hourlyLimit,
@@ -245,6 +297,7 @@ export async function providerRoutes(app: FastifyInstance) {
               pass: z.string().optional(),
               fromEmail: z.string().optional(),
               fromName: z.string().optional(),
+              fromIdentities: z.array(z.object({ email: z.string(), name: z.string().optional() })).optional(),
               replyTo: z.string().optional(),
               dailyLimit: z.number().optional().nullable(),
               hourlyLimit: z.number().optional().nullable(),
@@ -267,6 +320,9 @@ export async function providerRoutes(app: FastifyInstance) {
           pass: profile.pass || '',
           fromEmail: profile.fromEmail || '',
           fromName: profile.fromName || '',
+          ...(profile.fromIdentities?.length
+            ? { fromIdentities: JSON.stringify(profile.fromIdentities) }
+            : {}),
           replyTo: profile.replyTo || '',
         });
         if (isBlockedSmtpHost(config.host)) continue;
@@ -319,6 +375,7 @@ export async function providerRoutes(app: FastifyInstance) {
       const safeConfig = {
         ...config,
         pass: config.pass ? '••••••••' : '',
+        socksPass: config.socksPass ? '••••••••' : '',
         apiKey: config.apiKey ? '••••••••' : '',
         serverToken: config.serverToken ? '••••••••' : '',
         secretAccessKey: config.secretAccessKey ? '••••••••' : '',
@@ -354,12 +411,29 @@ export async function providerRoutes(app: FastifyInstance) {
         })
         .parse(request.body);
 
+      if (body.type === 'SENDGRID' && !body.config.apiKey) {
+        throw new AppError(400, 'SendGrid requires an API key');
+      }
+      if (body.type === 'POSTMARK' && !body.config.serverToken) {
+        throw new AppError(400, 'Postmark requires a server token');
+      }
+      if (body.type === 'MAILGUN' && (!body.config.apiKey || !body.config.domain)) {
+        throw new AppError(400, 'Mailgun requires an API key and domain');
+      }
+      if (body.type === 'SES' && (!body.config.accessKeyId || !body.config.secretAccessKey)) {
+        throw new AppError(400, 'Amazon SES requires access key ID and secret');
+      }
+      if (['SENDGRID', 'MAILGUN', 'POSTMARK', 'SES'].includes(body.type) && !body.config.fromEmail) {
+        throw new AppError(400, 'Sender email is required for API sending');
+      }
+
       if (body.type === 'SMTP') {
         const smtp = smtpConfigSchema.safeParse(body.config);
         if (!smtp.success) throw new AppError(400, 'SMTP requires at least a host');
         if (body.config.host && isBlockedSmtpHost(body.config.host)) {
           throw new AppError(400, 'SMTP host is not allowed');
         }
+        requireOutboundAllowed(body.config, await requestAllowsDirect(request));
         // ignoreTLS is allowed (e.g. relays that present a mismatched cert like Bulko → slipjar.app).
         // UI should warn; do not use for untrusted hosts.
         const issues = detectSmtpConfigIssues(body.config);
@@ -471,11 +545,12 @@ export async function providerRoutes(app: FastifyInstance) {
         const merged = { ...current };
         for (const [key, value] of Object.entries(body.config)) {
           if (value === '••••••••') continue;
-          if (value === '' && ['pass', 'apiKey', 'serverToken', 'secretAccessKey'].includes(key) && current[key]) {
+          if (value === '' && ['pass', 'socksPass', 'apiKey', 'serverToken', 'secretAccessKey'].includes(key) && current[key]) {
             continue;
           }
           merged[key] = value;
         }
+        requireOutboundAllowed(merged, await requestAllowsDirect(request));
         nextConfig = { encrypted: encrypt(JSON.stringify(normalizeConfig(merged))) };
       }
 
@@ -563,6 +638,8 @@ export async function providerRoutes(app: FastifyInstance) {
       if (body.type === 'SMTP' && config.host && isBlockedSmtpHost(config.host)) {
         throw new AppError(400, 'SMTP host is not allowed');
       }
+      const allowDirect = await requestAllowsDirect(request);
+      if (body.type === 'SMTP') requireOutboundAllowed(config, allowDirect);
       // ignoreTLS allowed for broken relay certs (e.g. Bulko presenting slipjar.app)
       const issues = body.type === 'SMTP' ? detectSmtpConfigIssues(config) : [];
       const deliverabilityWarnings =
@@ -577,11 +654,14 @@ export async function providerRoutes(app: FastifyInstance) {
         };
       } else if (body.type === 'SMTP' && body.sendTestEmail) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
-        result = await sendSmtpTestEmail(config, body.testEmailTo, { notes: body.notes });
+        result = await sendSmtpTestEmail(config, body.testEmailTo, {
+          notes: body.notes,
+          allowDirect,
+        });
       } else {
         result =
           body.type === 'SMTP'
-            ? await testSmtpConnection(config)
+            ? await testSmtpConnection(config, { allowDirect })
             : await testProviderConnection(body.type, config);
       }
 
@@ -632,13 +712,15 @@ export async function providerRoutes(app: FastifyInstance) {
       const config = { ...stored };
       for (const [key, value] of Object.entries(overrides)) {
         if (value === '••••••••') continue;
-        if (!value && ['pass', 'apiKey', 'serverToken', 'secretAccessKey'].includes(key)) continue;
+        if (!value && ['pass', 'socksPass', 'apiKey', 'serverToken', 'secretAccessKey'].includes(key)) continue;
         config[key] = value;
       }
 
       const issues = provider.type === 'SMTP' ? detectSmtpConfigIssues(config) : [];
       const deliverabilityWarnings =
         provider.type === 'SMTP' ? detectSmtpDeliverabilityWarnings(config) : [];
+      const allowDirect = await requestAllowsDirect(request);
+      if (provider.type === 'SMTP') requireOutboundAllowed(config, allowDirect);
 
       let result;
       if (body.skipLiveVerify && !body.sendTestEmail) {
@@ -651,9 +733,10 @@ export async function providerRoutes(app: FastifyInstance) {
         if (!body.testEmailTo) throw new AppError(400, 'testEmailTo is required when sendTestEmail is true');
         result = await sendSmtpTestEmail(config, body.testEmailTo, {
           notes: body.notes ?? (typeof provider.notes === 'string' ? provider.notes : null),
+          allowDirect,
         });
       } else {
-        result = await testProviderConnection(provider.type, config);
+        result = await testProviderConnection(provider.type, config, { allowDirect });
       }
 
       const updated = await prisma.emailProvider.update({

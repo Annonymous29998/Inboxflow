@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -13,14 +13,18 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '@/lib/api';
-import { Button, Card, PageLoading, Select } from '@/components/ui';
+import { Button, PageLoading, Select } from '@/components/ui';
 import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
+import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
 
 export function AnalyticsPage() {
-  const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string }>>([]);
+  const [searchParams] = useSearchParams();
+  const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string }>>(
+    () => uiCacheGet('analytics:campaigns') ?? [],
+  );
   const [selectedId, setSelectedId] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'recipients'>('overview');
-  const [loadingList, setLoadingList] = useState(true);
+  const [loadingList, setLoadingList] = useState(() => !(uiCacheGet('analytics:campaigns') as unknown[] | null)?.length);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detail, setDetail] = useState<{
     campaign: {
@@ -40,23 +44,39 @@ export function AnalyticsPage() {
   } | null>(null);
 
   useEffect(() => {
-    setLoadingList(true);
+    if (!campaigns.length) setLoadingList(true);
     api
       .get<{ campaigns: Array<{ id: string; name: string }> }>('/api/campaigns')
       .then((d) => {
         setCampaigns(d.campaigns);
-        if (d.campaigns[0]) setSelectedId((prev) => prev || d.campaigns[0]!.id);
+        uiCacheSet('analytics:campaigns', d.campaigns);
+        const fromQuery = searchParams.get('campaign') || '';
+        const pick =
+          (fromQuery && d.campaigns.some((c) => c.id === fromQuery) && fromQuery) ||
+          d.campaigns[0]?.id ||
+          '';
+        setSelectedId((prev) => (fromQuery && d.campaigns.some((c) => c.id === fromQuery) ? fromQuery : prev || pick));
       })
       .catch(console.error)
       .finally(() => setLoadingList(false));
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!selectedId) return;
-    setLoadingDetail(true);
+    type Detail = NonNullable<typeof detail>;
+    const cachedDetail = uiCacheGet<Detail>(`analytics:${selectedId}`);
+    if (cachedDetail) {
+      setDetail(cachedDetail);
+      setLoadingDetail(false);
+    } else {
+      setLoadingDetail(true);
+    }
     api
-      .get<typeof detail>(`/api/analytics/campaigns/${selectedId}`)
-      .then(setDetail)
+      .get<Detail>(`/api/analytics/campaigns/${selectedId}`)
+      .then((d) => {
+        setDetail(d);
+        uiCacheSet(`analytics:${selectedId}`, d);
+      })
       .catch(console.error)
       .finally(() => setLoadingDetail(false));
   }, [selectedId]);
@@ -78,10 +98,13 @@ export function AnalyticsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="mailer-root page-root space-y-4">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="page-title">Analytics</h1>
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            deliverability · analytics
+          </p>
+          <h1 className="page-title text-primary">Analytics</h1>
           <p className="page-sub">Opens, clicks, devices, and deliverability trends</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -110,33 +133,30 @@ export function AnalyticsPage() {
       {loadingList ? <PageLoading label="Loading analytics…" /> : null}
 
       {!loadingList && !campaigns.length ? (
-        <Card className="py-10 text-center">
-          <p className="mb-4 text-sm text-ink-muted">Send a campaign first to unlock analytics.</p>
-          <Link
-            to="/app/campaigns/new"
-            className="inline-flex items-center justify-center bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110"
-          >
-            New campaign
-          </Link>
-        </Card>
+        <div className="mailer-panel">
+          <div className="mailer-pad py-10 text-center">
+            <p className="mailer-hint" style={{ marginTop: 0 }}>
+              Send a campaign first to unlock analytics.
+            </p>
+            <Link to="/app/campaigns/new" className="mt-3 inline-flex text-primary underline">
+              New campaign
+            </Link>
+          </div>
+        </div>
       ) : null}
 
       {loadingDetail && selectedId ? <PageLoading label="Loading campaign stats…" /> : null}
 
       {detail && !loadingDetail && (
-        <div className="flex gap-1 border-b border-border">
+        <div className="mailer-tabs">
           {(['overview', 'recipients'] as const).map((tab) => (
             <button
               key={tab}
+              type="button"
               onClick={() => setActiveTab(tab)}
-              className={[
-                'px-4 py-2 text-sm font-medium capitalize transition-colors',
-                activeTab === tab
-                  ? 'border-b-2 border-primary text-primary'
-                  : 'text-ink-muted hover:text-foreground',
-              ].join(' ')}
+              className={activeTab === tab ? 'on' : undefined}
             >
-              {tab === 'recipients' ? `Recipients (${detail.campaign.sentCount})` : tab}
+              {tab === 'recipients' ? `Recipients (${detail.campaign.sentCount})` : 'Overview'}
             </button>
           ))}
         </div>
@@ -154,23 +174,23 @@ export function AnalyticsPage() {
 
       {detail && !loadingDetail && activeTab === 'overview' && (
         <>
-          <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
+          <div className="mailer-statgrid">
             {[
               ['Sent', detail.campaign.sentCount],
               ['Opened', detail.campaign.openedCount],
               ['Clicked', detail.campaign.clickedCount],
               ['Bounced', detail.campaign.bouncedCount],
-              ['Deliverability', detail.campaign.deliverabilityScore ?? '—'],
             ].map(([label, value]) => (
-              <Card key={String(label)}>
-                <div className="text-xs text-ink-muted uppercase">{label}</div>
-                <div className="text-2xl font-semibold mt-1">{value}</div>
-              </Card>
+              <div key={String(label)} className="mailer-stat">
+                <b>{value}</b>
+                <span>{label}</span>
+              </div>
             ))}
           </div>
 
-          <Card>
-            <h2 className="font-display text-xl mb-4">Engagement over time</h2>
+          <div className="mailer-panel">
+            <div className="mailer-pad">
+            <h2 className="mb-4 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Engagement over time</h2>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={detail.timeline}>
@@ -185,11 +205,13 @@ export function AnalyticsPage() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
-          </Card>
+            </div>
+          </div>
 
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <h2 className="font-display text-xl mb-4">Top devices</h2>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="mailer-panel">
+              <div className="mailer-pad">
+              <h2 className="mb-4 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Top devices</h2>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={detail.devices}>
@@ -201,9 +223,11 @@ export function AnalyticsPage() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-            </Card>
-            <Card>
-              <h2 className="font-display text-xl mb-4">Email clients</h2>
+              </div>
+            </div>
+            <div className="mailer-panel">
+              <div className="mailer-pad">
+              <h2 className="mb-4 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Email clients</h2>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={detail.emailClients}>
@@ -215,11 +239,13 @@ export function AnalyticsPage() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-            </Card>
+              </div>
+            </div>
           </div>
 
-          <Card>
-            <h2 className="font-display text-xl mb-4">Top links (heatmap proxy)</h2>
+          <div className="mailer-panel">
+            <div className="mailer-pad">
+            <h2 className="mb-4 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Top links</h2>
             <div className="space-y-2">
               {detail.topLinks.map((link) => {
                 const max = Math.max(...detail.topLinks.map((l) => l.clicks), 1);
@@ -238,9 +264,10 @@ export function AnalyticsPage() {
                   </div>
                 );
               })}
-              {!detail.topLinks.length && <p className="text-sm text-ink-muted">No click data yet.</p>}
+              {!detail.topLinks.length && <p className="mailer-hint" style={{ marginTop: 0 }}>No click data yet.</p>}
             </div>
-          </Card>
+            </div>
+          </div>
         </>
       )}
     </div>

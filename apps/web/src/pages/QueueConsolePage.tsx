@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { Loader2, Pause, Play, RefreshCw, RotateCcw, Eye, MousePointerClick, ChevronDown, ChevronRight } from 'lucide-react';
+import { Loader2, Pause, Play, RefreshCw, RotateCcw, Eye, MousePointerClick, X } from 'lucide-react';
 import { api } from '@/lib/api';
-import { Badge, Button } from '@/components/ui';
+import { Button } from '@/components/ui';
 import { toast } from '@/stores/toast';
 import { cn } from '@/lib/utils';
 import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
 import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
-import { CampaignRecipientsPanel } from '@/components/campaigns/CampaignRecipientsPanel';
 import { SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
 import { smtpService, type SmtpProfile } from '@/services/smtp.service';
 
@@ -25,14 +25,6 @@ type QueueRow = {
   updatedAt: string;
   sentAt?: string | null;
 };
-
-function statusTone(status: string) {
-  if (status === 'SENDING') return 'success' as const;
-  if (status === 'PAUSED') return 'warning' as const;
-  if (status === 'FAILED' || status === 'CANCELLED') return 'danger' as const;
-  if (status === 'SENT') return 'info' as const;
-  return undefined;
-}
 
 function asciiBar(percent: number, width = 24): string {
   const clamped = Math.max(0, Math.min(100, percent));
@@ -89,7 +81,8 @@ type CampaignColumnProps = {
   row: QueueRow;
   live: SendStatus | null;
   panelOpen: boolean;
-  onTogglePanel: () => void;
+  onOpen: () => void;
+  onClose: () => void;
   expanded: Record<string, boolean>;
   onToggleSection: (key: string) => void;
   sectionOpen: (key: string, defaultOpen?: boolean) => boolean;
@@ -103,7 +96,8 @@ function QueueCampaignColumn({
   row,
   live,
   panelOpen,
-  onTogglePanel,
+  onOpen,
+  onClose,
   expanded,
   onToggleSection,
   sectionOpen,
@@ -130,8 +124,6 @@ function QueueCampaignColumn({
   const sendLogDefaultOpen = status === 'SENDING' || status === 'PAUSED' || finished < 20;
   const problemsDefaultOpen = problems > 0;
   const engagementCount = live?.engagementActivity?.length ?? 0;
-  const canShowRecipientList =
-    total > 0 || ['SENDING', 'SENT', 'PAUSED', 'CANCELLED', 'FAILED', 'READY'].includes(status);
 
   const activitySorted = useMemo(
     () => (live?.activity?.length ? sortProblemsFirst(live.activity) : []),
@@ -176,59 +168,38 @@ function QueueCampaignColumn({
     now: tick,
   });
 
-  return (
-    <div id={`queue-col-${row.id}`} className="tui-box min-w-0 overflow-hidden">
-      <button
-        type="button"
-        onClick={onTogglePanel}
-        aria-expanded={panelOpen}
-        className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-      >
-        {panelOpen ? (
-          <ChevronDown className="h-4 w-4 flex-none text-primary" />
-        ) : (
-          <ChevronRight className="h-4 w-4 flex-none text-primary" />
-        )}
-        <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-accent">
-          Live send · {row.name}
-        </span>
-        <Badge tone={isBatchPause ? 'warning' : statusTone(status)}>
-          {isBatchPause ? 'BATCH PAUSE' : status}
-        </Badge>
-        <Badge tone="neutral">
-          {finished}/{total}
-        </Badge>
-        <span className="hidden shrink-0 text-[10px] uppercase text-muted-foreground sm:inline">
-          {panelOpen ? 'Collapse' : 'Expand'}
-        </span>
-      </button>
+  useEffect(() => {
+    if (!panelOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [panelOpen, onClose]);
 
-      {panelOpen ? (
-        <div className="space-y-3 border-t border-border p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="min-w-0">
-              <span className="text-[11px] text-muted-foreground">{live?.subject || row.subject}</span>
-              {live?.senderEmail ? (
-                <p className="mt-1 text-[11px] text-muted-foreground">From {live.senderEmail}</p>
-              ) : null}
-            </div>
-            <Link to={`/app/campaigns/${row.id}`} className="text-[11px] text-primary hover:underline">
-              Open campaign →
-            </Link>
-          </div>
-
-          <p className="text-lg tracking-widest text-primary" aria-hidden="true">
-            {asciiBar(percent)}
+  const detail = (
+          <div className="mailer-pad space-y-3">
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            {live?.senderEmail ? `From ${live.senderEmail} · ` : ''}
+            {heartbeat}
           </p>
-          <p className="text-xl font-semibold tabular-nums">
+
+          <p className="break-all text-base tracking-widest text-primary sm:text-lg" aria-hidden="true">
+            {asciiBar(percent, 16)}
+          </p>
+          <p className="text-lg font-semibold tabular-nums sm:text-xl">
             <span className="text-primary">{finished.toLocaleString()}</span>
             <span className="text-muted-foreground"> / </span>
             <span>{total.toLocaleString()}</span>
-            <span className="ml-2 text-xs font-normal uppercase text-muted-foreground">
+            <span className="ml-2 text-[10px] font-normal uppercase text-muted-foreground sm:text-xs">
               processed · {percent}%
             </span>
           </p>
-          <p className={cn('text-xs', isBatchPause ? 'text-warning' : 'text-accent')}>{heartbeat}</p>
           {isBatchPause ? (
             <div className="border border-warning/40 bg-warning/10 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wide text-warning">Waiting before next batch</p>
@@ -243,239 +214,215 @@ function QueueCampaignColumn({
             </div>
           ) : null}
 
-          <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Failed</div>
-              <div className="mt-1 text-lg tabular-nums text-destructive">{failed}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Bounced</div>
-              <div className="mt-1 text-lg tabular-nums text-destructive">{bounced}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Sent</div>
-              <div className="mt-1 text-lg tabular-nums text-primary">{sent}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">SMTP OK</div>
-              <div className="mt-1 text-lg tabular-nums text-success">{delivered}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Opened</div>
-              <div className="mt-1 text-lg tabular-nums text-primary">{opened}</div>
-            </div>
-            <div className="border border-border bg-muted/40 px-2 py-2">
-              <div className="text-[10px] uppercase text-muted-foreground">Clicked</div>
-              <div className="mt-1 text-lg tabular-nums text-primary">{clicked}</div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-1">
-            {status === 'SENDING' ? (
-              <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onPause(row.id)}>
-                <Pause className="h-3 w-3" /> Pause
-              </Button>
-            ) : null}
-            {status === 'PAUSED' ? (
-              <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onResume(row.id)}>
-                <Play className="h-3 w-3" /> Resume
-              </Button>
-            ) : null}
-            {failed > 0 ? (
-              <Button size="sm" variant="secondary" disabled={busyId === row.id} onClick={() => onRetryFailed(row.id)}>
-                <RotateCcw className="h-3 w-3" /> Retry failed
-              </Button>
-            ) : null}
+          <div className="mailer-statgrid">
+            {[
+              ['Failed', failed, 'mailer-err'],
+              ['Bounced', bounced, 'mailer-err'],
+              ['Sent', sent, ''],
+              ['SMTP OK', delivered, ''],
+              ['Opened', opened, ''],
+              ['Clicked', clicked, ''],
+            ].map(([label, value, tone]) => (
+              <div key={String(label)} className="mailer-stat">
+                <b className={cn(tone === 'mailer-err' && 'text-destructive')}>{value}</b>
+                <span>{label}</span>
+              </div>
+            ))}
           </div>
 
           <div className="space-y-2">
-            <div className="overflow-hidden border border-border">
-              <button
-                type="button"
-                onClick={() => onToggleSection(sectionKey(row.id, 'problems'))}
-                className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-              >
-                {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
-                  <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+            <button
+              type="button"
+              className="mailer-hint w-full text-left"
+              style={{ marginTop: 0 }}
+              onClick={() => onToggleSection(sectionKey(row.id, 'problems'))}
+            >
+              {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? '▾' : '▸'} Failed &amp; bounced · {problems}
+            </button>
+            {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
+              <div className="mailer-logs max-h-40 border border-[var(--mailer-stroke)] sm:max-h-56">
+                {problemLines.length ? (
+                  problemLines.map((item, i) => (
+                    <div key={`prob-${item.status}-${item.email}-${i}`} className="mailer-err break-all">
+                      {item.at ? `[${formatTime(item.at)}] ` : ''}[{item.status}] {item.email}
+                      {item.error ? ` — ${item.error}` : ''}
+                    </div>
+                  ))
                 ) : (
-                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                  <p className="mailer-hint" style={{ marginTop: 0 }}>
+                    No SMTP rejects or ESP bounces yet.
+                  </p>
                 )}
-                <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-destructive">
-                  Failed & bounced
-                </span>
-                <Badge tone={problems > 0 ? 'danger' : 'neutral'}>{problems}</Badge>
-              </button>
-              {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
-                <div className="max-h-40 overflow-auto border-t border-border bg-destructive/5">
-                  {problemLines.length ? (
-                    <ul className="divide-y divide-border/50 text-[11px]">
-                      {problemLines.map((item, i) => (
-                        <li key={`prob-${item.status}-${item.email}-${i}`} className="flex gap-2 px-3 py-1.5">
-                          {item.at ? (
-                            <span className="shrink-0 tabular-nums text-muted-foreground">
-                              {formatTime(item.at)}
-                            </span>
-                          ) : null}
-                          <span className="shrink-0 font-semibold text-destructive">[{item.status}]</span>
-                          <span className="min-w-0 break-all">
-                            {item.email}
-                            {item.error ? (
-                              <span className="text-muted-foreground"> — {item.error}</span>
-                            ) : null}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="px-3 py-5 text-center text-[11px] text-muted-foreground">
-                      No SMTP rejects or ESP bounces yet.
-                    </p>
-                  )}
-                </div>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
-            <div className="overflow-hidden border border-border">
-              <button
-                type="button"
-                onClick={() => onToggleSection(sectionKey(row.id, 'sendLog'))}
-                className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-              >
-                {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? (
-                  <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+            <button
+              type="button"
+              className="mailer-hint w-full text-left"
+              style={{ marginTop: 0 }}
+              onClick={() => onToggleSection(sectionKey(row.id, 'sendLog'))}
+            >
+              {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? '▾' : '▸'} Send log ·{' '}
+              {live?.activity?.length ?? sent + failed}
+            </button>
+            {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? (
+              <div className="mailer-logs max-h-[min(50vh,360px)] border border-[var(--mailer-stroke)] sm:max-h-[min(70vh,520px)]">
+                {activitySorted.length ? (
+                  activitySorted.map((item, i) => (
+                    <div
+                      key={`${item.status}-${item.email}-${item.at}-${i}`}
+                      className={cn(
+                        'break-all',
+                        item.status === 'SENT' && 'mailer-ok',
+                        item.status === 'DELIVERED' && 'mailer-ok',
+                        (item.status === 'FAILED' || item.status === 'BOUNCED') && 'mailer-err',
+                      )}
+                    >
+                      [{formatTime(item.at)}] [{item.status}] {item.email}
+                      {item.error ? ` — ${item.error}` : ''}
+                    </div>
+                  ))
                 ) : (
-                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                  <p className="mailer-hint" style={{ marginTop: 0 }}>
+                    {pending > 0 && finished === 0
+                      ? 'Waiting for first email to leave SMTP…'
+                      : 'No sent/failed lines yet.'}
+                  </p>
                 )}
-                <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-accent">
-                  Send log
-                </span>
-                <Badge tone="neutral">{live?.activity?.length ?? sent + failed}</Badge>
-              </button>
-              {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? (
-                <div className="max-h-56 overflow-auto border-t border-border bg-muted/20">
-                  {activitySorted.length ? (
-                    <ul className="divide-y divide-border/50 text-[11px]">
-                      {activitySorted.map((item, i) => (
-                        <li key={`${item.status}-${item.email}-${item.at}-${i}`} className="flex gap-2 px-3 py-1.5">
-                          <span className="shrink-0 tabular-nums text-muted-foreground">{formatTime(item.at)}</span>
-                          <span
-                            className={cn(
-                              'shrink-0 font-semibold',
-                              item.status === 'SENT' && 'text-primary',
-                              item.status === 'DELIVERED' && 'text-success',
-                              (item.status === 'FAILED' || item.status === 'BOUNCED') && 'text-destructive',
-                            )}
-                          >
-                            [{item.status}]
-                          </span>
-                          <span className="min-w-0 break-all">
-                            {item.email}
-                            {item.error ? <span className="text-muted-foreground"> — {item.error}</span> : null}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-                      {pending > 0 && finished === 0
-                        ? 'Waiting for first email to leave SMTP…'
-                        : 'No sent/failed lines yet.'}
-                    </p>
-                  )}
-                </div>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
-            <div className="overflow-hidden border border-border">
-              <button
-                type="button"
-                onClick={() => onToggleSection(sectionKey(row.id, 'engagement'))}
-                className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-              >
-                {sectionOpen(sectionKey(row.id, 'engagement'), engagementCount > 0) ? (
-                  <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
+            <button
+              type="button"
+              className="mailer-hint w-full text-left"
+              style={{ marginTop: 0 }}
+              onClick={() => onToggleSection(sectionKey(row.id, 'engagement'))}
+            >
+              {sectionOpen(sectionKey(row.id, 'engagement'), engagementCount > 0) ? '▾' : '▸'} Opens &amp; clicks ·{' '}
+              {engagementCount}
+            </button>
+            {sectionOpen(sectionKey(row.id, 'engagement'), engagementCount > 0) ? (
+              <div className="mailer-logs max-h-40 border border-[var(--mailer-stroke)] sm:max-h-56">
+                {engagementCount > 0 ? (
+                  live!.engagementActivity!.map((item, i) => (
+                    <div
+                      key={`eng-${item.status}-${item.email}-${item.at}-${i}`}
+                      className={cn(
+                        'break-all',
+                        item.status === 'OPENED' && 'mailer-warn',
+                        item.status === 'CLICKED' && 'mailer-ok',
+                      )}
+                    >
+                      {item.status === 'OPENED' ? <Eye className="mr-1 inline h-3 w-3" aria-hidden /> : null}
+                      {item.status === 'CLICKED' ? (
+                        <MousePointerClick className="mr-1 inline h-3 w-3" aria-hidden />
+                      ) : null}
+                      [{formatTime(item.at)}] [{item.status}] {item.email}
+                      {(item.times ?? 1) > 1 ? ` ${item.times}×` : ''}
+                      {item.url ? ` → ${item.url}` : ''}
+                    </div>
+                  ))
                 ) : (
-                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                  <p className="mailer-hint" style={{ marginTop: 0 }}>
+                    No verified opens or clicks yet.
+                  </p>
                 )}
-                <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-accent">
-                  Opens & clicks
-                </span>
-                <Badge tone="neutral">{engagementCount}</Badge>
-              </button>
-              {sectionOpen(sectionKey(row.id, 'engagement'), engagementCount > 0) ? (
-                <div className="max-h-40 overflow-auto border-t border-border bg-muted/20">
-                  {engagementCount > 0 ? (
-                    <ul className="divide-y divide-border/50 text-[11px]">
-                      {live!.engagementActivity!.map((item, i) => (
-                        <li key={`eng-${item.status}-${item.email}-${item.at}-${i}`} className="flex gap-2 px-3 py-1.5">
-                          <span className="shrink-0 tabular-nums text-muted-foreground">{formatTime(item.at)}</span>
-                          <span
-                            className={cn(
-                              'shrink-0 font-semibold',
-                              item.status === 'OPENED' && 'text-accent',
-                              item.status === 'CLICKED' && 'text-primary',
-                            )}
-                          >
-                            [{item.status}]
-                          </span>
-                          <span className="min-w-0 break-all">
-                            {item.status === 'OPENED' ? <Eye className="mr-1 inline h-3 w-3" aria-hidden /> : null}
-                            {item.status === 'CLICKED' ? (
-                              <MousePointerClick className="mr-1 inline h-3 w-3" aria-hidden />
-                            ) : null}
-                            {item.email}
-                            {(item.times ?? 1) > 1 ? (
-                              <span className="ml-1 font-semibold text-primary">{item.times}×</span>
-                            ) : null}
-                            {item.url ? <span className="text-muted-foreground"> → {item.url}</span> : null}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-                      No verified opens or clicks yet.
-                    </p>
-                  )}
-                </div>
-              ) : null}
-            </div>
-
-            {canShowRecipientList ? (
-              <div className="overflow-hidden border border-border">
-                <button
-                  type="button"
-                  onClick={() => onToggleSection(sectionKey(row.id, 'recipients'))}
-                  className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-                >
-                  {sectionOpen(sectionKey(row.id, 'recipients')) ? (
-                    <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
-                  )}
-                  <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-accent">
-                    All recipients
-                  </span>
-                  <Badge tone="neutral">{total}</Badge>
-                </button>
-                {sectionOpen(sectionKey(row.id, 'recipients')) ? (
-                  <div className="border-t border-border bg-muted/20 p-3">
-                    <CampaignRecipientsPanel
-                      campaignId={row.id}
-                      campaignName={live?.subject || row.subject || row.name}
-                      sentAt={row.sentAt}
-                      campaignStatus={status}
-                      compact
-                      contactsPagination
-                      livePoll={status === 'SENDING' || status === 'PAUSED'}
-                    />
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </div>
+          </div>
+  );
+
+  return (
+    <div id={`queue-col-${row.id}`} className="min-w-0">
+      <div className="camp-row">
+        <button type="button" className="camp-row-main text-left" onClick={onOpen}>
+          <strong>{row.name}</strong>
+          <div className="meta">
+            {live?.subject || row.subject || 'No subject'}
+            {` · ${finished}/${total} · ${isBatchPause ? 'BATCH PAUSE' : status}`}
+          </div>
+        </button>
+        <div className="camp-row-actions">
+          {status === 'SENDING' ? (
+            <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onPause(row.id)}>
+              <Pause className="h-3 w-3" /> Pause
+            </Button>
+          ) : null}
+          {status === 'PAUSED' ? (
+            <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onResume(row.id)}>
+              <Play className="h-3 w-3" /> Resume
+            </Button>
+          ) : null}
+          {failed > 0 ? (
+            <Button size="sm" variant="secondary" disabled={busyId === row.id} onClick={() => onRetryFailed(row.id)}>
+              <RotateCcw className="h-3 w-3" /> Retry
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" onClick={onOpen}>
+            Details
+          </Button>
         </div>
-      ) : null}
+      </div>
+
+      {panelOpen
+        ? createPortal(
+            <div className="mailer-root fixed inset-0 z-[90] flex items-end justify-center p-0 sm:items-center sm:p-4">
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/75"
+                aria-label="Close campaign details"
+                onClick={onClose}
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={`queue-modal-title-${row.id}`}
+                className="mailer-panel relative z-10 flex max-h-[92dvh] w-full max-w-3xl flex-col overflow-hidden sm:max-h-[88dvh]"
+              >
+                <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--mailer-stroke)] px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="mailer-hint" style={{ marginTop: 0 }}>
+                      queue · campaign
+                    </p>
+                    <h2 id={`queue-modal-title-${row.id}`} className="truncate text-base font-semibold text-primary">
+                      {row.name}
+                    </h2>
+                    <p className="mt-1 truncate text-xs text-accent">{live?.subject || row.subject || 'No subject'}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {status === 'SENDING' ? (
+                      <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onPause(row.id)}>
+                        <Pause className="h-3 w-3" /> Pause
+                      </Button>
+                    ) : null}
+                    {status === 'PAUSED' ? (
+                      <Button size="sm" variant="outline" disabled={busyId === row.id} onClick={() => onResume(row.id)}>
+                        <Play className="h-3 w-3" /> Resume
+                      </Button>
+                    ) : null}
+                    <Link
+                      to={`/app/campaigns/${row.id}?tab=logs`}
+                      className="inline-flex h-8 items-center border border-border px-2.5 text-[11px] uppercase tracking-wide text-primary hover:bg-muted/40"
+                    >
+                      Editor
+                    </Link>
+                    <button
+                      type="button"
+                      className="inline-flex h-8 w-8 items-center justify-center border border-border text-muted-foreground hover:text-primary"
+                      onClick={onClose}
+                      aria-label="Close"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">{detail}</div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -485,9 +432,8 @@ export function QueueConsolePage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [liveById, setLiveById] = useState<Record<string, SendStatus>>({});
-  const [panelOpen, setPanelOpen] = useState<Record<string, boolean>>({});
+  const [openId, setOpenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [campaignsOpen, setCampaignsOpen] = useState(true);
   const [smtpProfiles, setSmtpProfiles] = useState<SmtpProfile[]>([]);
 
   const loadSmtp = useCallback(async () => {
@@ -502,17 +448,7 @@ export function QueueConsolePage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get<{ campaigns: QueueRow[] }>('/api/campaigns/queue-console');
-      setRows(sortQueueRows(data.campaigns));
-      setPanelOpen((prev) => {
-        const next = { ...prev };
-        for (const c of data.campaigns) {
-          if (next[c.id] === undefined) {
-            // Only auto-expand while actively sending; finished campaigns start collapsed
-            next[c.id] = c.status === 'SENDING' || c.status === 'PAUSED';
-          }
-        }
-        return next;
-      });
+      setRows(sortQueueRows(Array.isArray(data.campaigns) ? data.campaigns : []));
     } catch (err) {
       toast.error('Could not load queue', err instanceof Error ? err.message : undefined);
     } finally {
@@ -568,10 +504,7 @@ export function QueueConsolePage() {
                 : r,
             ),
           );
-          // Auto-open a newly sending campaign column
-          if (status.status === 'SENDING' || status.status === 'PAUSED') {
-            setPanelOpen((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
-          }
+          /* Keep the list compact — details open in a modal on click. */
         },
         onError: () => {
           void campaignSendService.getSendStatus(id).then((status) => {
@@ -586,8 +519,11 @@ export function QueueConsolePage() {
     };
   }, [liveStreamKey]);
 
-  function togglePanel(id: string) {
-    setPanelOpen((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
+  function openCampaign(id: string) {
+    setOpenId(id);
+    void campaignSendService.getSendStatus(id).then((status) => {
+      setLiveById((p) => ({ ...p, [id]: status }));
+    });
   }
 
   function toggleSection(key: string) {
@@ -598,10 +534,8 @@ export function QueueConsolePage() {
     return expanded[key] ?? defaultOpen;
   }
 
-  const activeQueueCount = useMemo(
-    () => rows.filter((r) => r.status === 'SENDING' || r.status === 'PAUSED').length,
-    [rows],
-  );
+  const sendingCount = useMemo(() => rows.filter((r) => r.status === 'SENDING').length, [rows]);
+  const pausedCount = useMemo(() => rows.filter((r) => r.status === 'PAUSED').length, [rows]);
 
   async function pause(id: string) {
     setBusyId(id);
@@ -643,14 +577,15 @@ export function QueueConsolePage() {
   }
 
   return (
-    <div className="space-y-4 font-mono">
+    <div className="mailer-root queue-root space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-accent">ops · queue</p>
-          <h1 className="page-title text-primary">Queue Console</h1>
-          <p className="page-sub max-w-2xl">
-            Each campaign gets its own collapsible column. Start another send and a new column appears
-            beside (or under) the others — all live, all independent.
+        <div className="min-w-0">
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            ops · queue
+          </p>
+          <h1 className="page-title text-primary">Queue</h1>
+          <p className="page-sub">
+            {sendingCount} sending · {pausedCount} paused · {rows.length} campaign{rows.length === 1 ? '' : 's'}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => { void load(); void loadSmtp(); }} disabled={loading}>
@@ -659,17 +594,18 @@ export function QueueConsolePage() {
         </Button>
       </div>
 
-      <SmtpHealthStrip providers={smtpProfiles} compact />
+      <SmtpHealthStrip providers={smtpProfiles} />
 
       {rows.length ? (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="space-y-3">
           {rows.map((row) => (
             <QueueCampaignColumn
               key={row.id}
               row={row}
               live={liveById[row.id] ?? null}
-              panelOpen={panelOpen[row.id] ?? false}
-              onTogglePanel={() => togglePanel(row.id)}
+              panelOpen={openId === row.id}
+              onOpen={() => openCampaign(row.id)}
+              onClose={() => setOpenId(null)}
               expanded={expanded}
               onToggleSection={toggleSection}
               sectionOpen={sectionOpen}
@@ -681,135 +617,14 @@ export function QueueConsolePage() {
           ))}
         </div>
       ) : !loading ? (
-        <div className="tui-box p-6 text-center text-sm text-muted-foreground">
-          No queue campaigns yet. Start a send and a live column will open here.
+        <div className="mailer-panel">
+          <div className="mailer-pad">
+            <p className="mailer-hint" style={{ marginTop: 0 }}>
+              No queue campaigns yet. Start a send and a live row will open here.
+            </p>
+          </div>
         </div>
       ) : null}
-
-      <div className="tui-box overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setCampaignsOpen((v) => !v)}
-          className="flex w-full items-center gap-2 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
-        >
-          {campaignsOpen ? (
-            <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
-          )}
-          <span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-accent">Campaigns</span>
-          <Badge tone="neutral">{rows.length}</Badge>
-          {activeQueueCount > 0 ? <Badge tone="success">{activeQueueCount} active</Badge> : null}
-        </button>
-        {campaignsOpen ? (
-          <div className="overflow-x-auto border-t border-border">
-            <table className="w-full min-w-180 text-left text-xs">
-              <thead className="border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">Campaign</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium tabular-nums">Pending</th>
-                  <th className="px-3 py-2 font-medium tabular-nums">Sent</th>
-                  <th className="px-3 py-2 font-medium tabular-nums">Opened</th>
-                  <th className="px-3 py-2 font-medium tabular-nums">Clicked</th>
-                  <th className="px-3 py-2 font-medium tabular-nums">Failed</th>
-                  <th className="px-3 py-2 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const live = liveById[row.id];
-                  const opened = live?.openedCount ?? row.opened ?? 0;
-                  const clicked = live?.clickedCount ?? row.clicked ?? 0;
-                  return (
-                  <tr
-                    key={row.id}
-                    className={cn(
-                      'cursor-pointer border-b border-border/60 hover:bg-muted/30',
-                      panelOpen[row.id] && 'bg-primary/10',
-                    )}
-                    onClick={() => {
-                      setPanelOpen((prev) => ({ ...prev, [row.id]: true }));
-                      try {
-                        sessionStorage.setItem('inboxflow:watchingCampaignId', row.id);
-                      } catch {
-                        /* ignore */
-                      }
-                      document
-                        .getElementById(`queue-col-${row.id}`)
-                        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                    }}
-                  >
-                    <td className="px-3 py-2">
-                      <Link
-                        to={`/app/campaigns/${row.id}`}
-                        className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {row.name}
-                      </Link>
-                      {row.subject ? (
-                        <div className="truncate text-[10px] text-muted-foreground">{row.subject}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Badge tone={statusTone(row.status)}>{row.status}</Badge>
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-warning">{row.pending}</td>
-                    <td className="px-3 py-2 tabular-nums text-primary">{row.sent}</td>
-                    <td className="px-3 py-2 tabular-nums text-primary">{opened}</td>
-                    <td className="px-3 py-2 tabular-nums text-primary">{clicked}</td>
-                    <td className="px-3 py-2 tabular-nums text-destructive">{row.failed}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
-                        {row.status === 'SENDING' ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busyId === row.id}
-                            onClick={() => void pause(row.id)}
-                          >
-                            <Pause className="h-3 w-3" /> Pause
-                          </Button>
-                        ) : null}
-                        {row.status === 'PAUSED' ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busyId === row.id}
-                            onClick={() => void resume(row.id)}
-                          >
-                            <Play className="h-3 w-3" /> Resume
-                          </Button>
-                        ) : null}
-                        {row.failed > 0 ? (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={busyId === row.id}
-                            onClick={() => void retryFailed(row.id)}
-                            className={cn(row.status === 'SENDING' && 'opacity-90')}
-                          >
-                            <RotateCcw className="h-3 w-3" /> Retry failed
-                          </Button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                  );
-                })}
-                {!rows.length && !loading ? (
-                  <tr>
-                    <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
-                      No active or recent queue campaigns.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </div>
     </div>
   );
 }

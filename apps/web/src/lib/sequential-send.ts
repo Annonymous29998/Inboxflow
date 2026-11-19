@@ -1,7 +1,7 @@
 /** Send this many emails, then pause before the next batch. */
-export const EMAIL_SEND_BATCH_SIZE = 10;
-export const EMAIL_SEND_BATCH_SIZE_MIN = 10;
-export const EMAIL_SEND_BATCH_SIZE_MAX = 20;
+export const EMAIL_SEND_BATCH_SIZE = 20;
+export const EMAIL_SEND_BATCH_SIZE_MIN = 1;
+export const EMAIL_SEND_BATCH_SIZE_MAX = 500;
 
 export function normalizeBatchSize(raw: unknown): number {
   const n = Number(raw);
@@ -9,19 +9,34 @@ export function normalizeBatchSize(raw: unknown): number {
   if (n > EMAIL_SEND_BATCH_SIZE_MAX) return EMAIL_SEND_BATCH_SIZE_MAX;
   return Math.round(n);
 }
-/** Pause between batches (human-like break after a short burst). */
-export const EMAIL_SEND_BATCH_PAUSE_MS = 30_000;
-/**
- * Base gap between each email. Actual wait uses ±40% jitter so timing
- * doesn't look like a bot metronome (closer to one-by-one human sending).
- */
-export const EMAIL_SEND_BETWEEN_MS = 4_000;
+/** Pause between batches. */
+export const EMAIL_SEND_BATCH_PAUSE_MS = 2_000;
+/** Gap between each email in a batch. */
+export const EMAIL_SEND_BETWEEN_MS = 200;
+export const EMAIL_SEND_MAX_PER_MINUTE = 80;
+export const EMAIL_SEND_MAX_PER_HOUR = 4_800;
 
-/** Apply light random jitter around a base delay (never goes negative). */
+export function recommendedQueuePacing<T extends Record<string, unknown>>(extra?: T) {
+  return {
+    ...(extra || ({} as T)),
+    batchSize: EMAIL_SEND_BATCH_SIZE,
+    batchPauseMs: EMAIL_SEND_BATCH_PAUSE_MS,
+    betweenEmailMs: EMAIL_SEND_BETWEEN_MS,
+    maxPerMinute: EMAIL_SEND_MAX_PER_MINUTE,
+    maxPerHour: EMAIL_SEND_MAX_PER_HOUR,
+  } as T & {
+    batchSize: number;
+    batchPauseMs: number;
+    betweenEmailMs: number;
+    maxPerMinute: number;
+    maxPerHour: number;
+  };
+}
+
+/** Keep the named helper so callers stay stable; delays are exact. */
 export function humanDelayMs(baseMs: number): number {
   if (baseMs <= 0) return 0;
-  const factor = 0.6 + Math.random() * 0.8; // 60%–140% of base
-  return Math.max(250, Math.round(baseMs * factor));
+  return Math.round(baseMs);
 }
 
 export type SendRecipient = {

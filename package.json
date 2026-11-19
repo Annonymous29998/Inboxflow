@@ -8,9 +8,16 @@
   ],
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @inboxflow/api\" \"npm run dev -w @inboxflow/web\"",
+    "dev:live": "node scripts/dev-proxy-5000.mjs",
     "dev:api": "npm run dev -w @inboxflow/api",
     "dev:web": "npm run dev -w @inboxflow/web",
     "build": "npm run build -w @inboxflow/api && npm run build -w @inboxflow/web",
+    "desktop:prepare": "npm run build && node apps/desktop/scripts/prepare-resources.mjs",
+    "desktop:dev": "npm run build && electron apps/desktop",
+    "desktop:node:win": "node apps/desktop/scripts/download-node-win.mjs",
+    "desktop:dist:win": "npm run dist:win -w @inboxflow/desktop",
+    "desktop:verify:win": "npm run verify:win -w @inboxflow/desktop",
+    "desktop:dist:win:local": "npm run desktop:node:win && npm run desktop:prepare && npm run dist:win -w @inboxflow/desktop",
     "test": "npm run test -w @inboxflow/api",
     "smoke": "bash scripts/smoke-test.sh",
     "db:generate": "npm run db:generate -w @inboxflow/api",
@@ -33,5 +40,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "socks": "^2.8.10"
   }
 }

@@ -1,5 +1,5 @@
 import { prisma } from '../../config/prisma.js';
-import { getCampaignLiveStats, getOrgLiveEngagement } from '../../services/campaigns/live-stats.js';
+import { getCampaignsListStats, getOrgLiveEngagement } from '../../services/campaigns/live-stats.js';
 
 export type DashboardPayload = {
   stats: {
@@ -71,6 +71,9 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
         status: true,
         subject: true,
         totalRecipients: true,
+        sentCount: true,
+        openedCount: true,
+        clickedCount: true,
         bouncedCount: true,
         deliverabilityScore: true,
         sentAt: true,
@@ -80,22 +83,20 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
     getOrgLiveEngagement(organizationId),
   ]);
 
-  const recentCampaigns = await Promise.all(
-    recentCampaignsRaw.map(async (c) => {
-      const live = await getCampaignLiveStats(c.id, c.totalRecipients);
-      return {
-        ...c,
-        sentCount: live.sentCount,
-        // Match Campaigns list: SMTP accepted, not rare ESP delivery webhooks.
-        deliveredCount: live.sentCount,
-        failedCount: live.failedCount,
-        pendingCount: live.pendingCount,
-        openedCount: live.openedCount,
-        clickedCount: live.clickedCount,
-        bouncedCount: live.bouncedCount || c.bouncedCount,
-      };
-    }),
-  );
+  const liveById = await getCampaignsListStats(recentCampaignsRaw.map((c) => c.id));
+  const recentCampaigns = recentCampaignsRaw.map((c) => {
+    const live = liveById.get(c.id);
+    return {
+      ...c,
+      sentCount: live?.sentCount ?? c.sentCount ?? 0,
+      deliveredCount: live?.sentCount ?? c.sentCount ?? 0,
+      failedCount: live?.failedCount ?? 0,
+      pendingCount: live?.pendingCount ?? 0,
+      openedCount: live?.openedCount ?? c.openedCount ?? 0,
+      clickedCount: live?.clickedCount ?? c.clickedCount ?? 0,
+      bouncedCount: live?.bouncedCount || c.bouncedCount,
+    };
+  });
 
   const totals = {
     sent: liveTotals.sent,

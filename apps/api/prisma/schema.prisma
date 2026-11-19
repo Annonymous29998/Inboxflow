@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -221,6 +222,7 @@ model Organization {
   campaigns         Campaign[]
   templates         Template[]
   domains           Domain[]
+  domainSmtpCredentials DomainSmtpCredential[]
   providers         EmailProvider[]
   suppressionLists  SuppressionList[]
   subscription      Subscription?
@@ -416,6 +418,8 @@ model Campaign {
   subjectPool      Json?
   /// Optional from-name variants tied to verified SMTP (string[])
   fromNamePool     Json?
+  /// Optional HTML template ids rotated per recipient (string[])
+  templatePool     Json?
 
   // Stats denormalized for dashboard
   totalRecipients  Int            @default(0)
@@ -469,6 +473,8 @@ model CampaignRecipient {
   clickedAt   DateTime?
   bouncedAt   DateTime?
   error       String?
+  /// Last SMTP 250/4xx/5xx (or nodemailer) line from the host for this send.
+  smtpResponse String?
   createdAt   DateTime  @default(now())
 
   @@unique([campaignId, contactId])
@@ -549,9 +555,35 @@ model Domain {
 
   dnsRecords        DnsRecord[]
   campaigns         Campaign[]
+  smtpCredentials   DomainSmtpCredential[]
 
   @@unique([organizationId, domain])
   @@index([domain])
+}
+
+/// SMTP logins Inbox Flow issues after a domain is verified. Used only when
+/// the user pastes them into SMTP Manager — existing campaigns are unchanged.
+model DomainSmtpCredential {
+  id             String   @id @default(cuid())
+  username       String   @unique
+  passwordHash   String
+  host           String   @default("smtp.inboxflow.io")
+  port           Int      @default(2525)
+  encryption     String   @default("STARTTLS")
+  dailyLimit     Int      @default(1000)
+  sentToday      Int      @default(0)
+  sentDay        String   @default("")
+  isActive       Boolean  @default(true)
+  lastUsedAt     DateTime?
+  domainId       String
+  domain         Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([domainId])
 }
 
 model DnsRecord {

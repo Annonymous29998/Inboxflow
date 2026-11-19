@@ -27,3 +27,12 @@ deploy/vercel.env
 # Supabase CLI runtime temp metadata (DO NOT commit)
 supabase/.temp/
 supabase/**/.temp/
+
+# Desktop / Electron build artifacts
+apps/desktop/release/
+apps/desktop/.stage-api/
+apps/desktop/.cache/
+apps/desktop/resources/node/
+
+# Prisma SQLite client for on-device tenant workspaces
+apps/api/src/generated/

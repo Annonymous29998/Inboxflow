@@ -675,14 +675,13 @@ Deno.serve(async (req) => {
         if (!html.includes(pixel)) html += pixel;
       }
 
-      if (campaign.trackClicks) {
-        html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_m, url: string) => {
-          const sig = signClickRedirect(campaignId, contactId, url);
-          const tracked =
-            `${trackBase}?action=click&campaignId=${campaignId}&contactId=${contactId}&u=${encodeURIComponent(url)}&s=${sig}`;
-          return `href="${tracked}"`;
-        });
-      }
+      html = html.replace(/\bhref\s*=\s*(["'])(https?:\/\/[\s\S]*?)\1/gi, (full, q: string, url: string) => {
+        if (/\/api\/t\/|action=click|action=unsubscribe|mailto:/i.test(url)) return full;
+        const sig = signClickRedirect(campaignId, contactId, url);
+        const tracked =
+          `${trackBase}?action=click&campaignId=${campaignId}&contactId=${contactId}&u=${encodeURIComponent(url)}&s=${sig}`;
+        return `href=${q}${tracked}${q}`;
+      });
 
       try {
         const result = await sendViaSmtp(

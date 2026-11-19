@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth';
+import { isMailerTenant } from '@/lib/roles';
 
 type CommandItem = {
   id: string;
@@ -20,29 +22,42 @@ export function CommandPalette({
   extra?: CommandItem[];
 }) {
   const navigate = useNavigate();
+  const role = useAuthStore((s) => s.user?.role);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
 
   const items = useMemo(() => {
-    const base: CommandItem[] = [
-      { id: 'dash', label: 'Go to Dashboard', hint: '1', run: () => navigate('/app') },
-      { id: 'camp', label: 'Go to Campaigns', hint: '2', run: () => navigate('/app/campaigns') },
-      { id: 'queue', label: 'Open Queue Console', hint: 'Q', run: () => navigate('/app/queue') },
-      { id: 'templates', label: 'Go to Templates', hint: '3', run: () => navigate('/app/templates') },
-      { id: 'ai', label: 'Go to AI Assistant', hint: '4', run: () => navigate('/app/ai') },
-      { id: 'contacts', label: 'Go to Contacts', hint: '5', run: () => navigate('/app/contacts') },
-      { id: 'domains', label: 'Go to Domains', hint: '6', run: () => navigate('/app/domains') },
-      { id: 'analytics', label: 'Go to Analytics', hint: '7', run: () => navigate('/app/analytics') },
-      { id: 'smtp', label: 'Open SMTP Manager', hint: 'S', run: () => navigate('/app/smtp') },
-      { id: 'settings', label: 'Open Settings', hint: '8', run: () => navigate('/app/settings') },
-      { id: 'admin', label: 'Open Admin', hint: '9', run: () => navigate('/app/admin') },
-      { id: 'new-camp', label: 'New campaign', run: () => navigate('/app/campaigns/new') },
-      ...extra,
-    ];
+    const mailer = isMailerTenant(role);
+    const base: CommandItem[] = mailer
+      ? [
+          { id: 'camp', label: 'Go to Campaigns', hint: '1', run: () => navigate('/app/campaigns') },
+          { id: 'queue', label: 'Open Queue Console', hint: 'Q', run: () => navigate('/app/queue') },
+          { id: 'templates', label: 'Go to Templates', hint: '2', run: () => navigate('/app/templates') },
+          { id: 'contacts', label: 'Go to Contacts', hint: '3', run: () => navigate('/app/contacts') },
+          { id: 'smtp', label: 'Open SMTP Manager', hint: 'S', run: () => navigate('/app/smtp') },
+          { id: 'settings', label: 'Open Settings', hint: '4', run: () => navigate('/app/settings') },
+          { id: 'new-camp', label: 'New campaign', run: () => navigate('/app/campaigns/new') },
+          ...extra,
+        ]
+      : [
+          { id: 'dash', label: 'Go to Dashboard', hint: '1', run: () => navigate('/app') },
+          { id: 'camp', label: 'Go to Campaigns', hint: '2', run: () => navigate('/app/campaigns') },
+          { id: 'queue', label: 'Open Queue Console', hint: 'Q', run: () => navigate('/app/queue') },
+          { id: 'templates', label: 'Go to Templates', hint: '3', run: () => navigate('/app/templates') },
+          { id: 'ai', label: 'Go to AI Assistant', hint: '4', run: () => navigate('/app/ai') },
+          { id: 'contacts', label: 'Go to Contacts', hint: '5', run: () => navigate('/app/contacts') },
+          { id: 'domains', label: 'Go to Domains', hint: '6', run: () => navigate('/app/domains') },
+          { id: 'analytics', label: 'Go to Analytics', hint: '7', run: () => navigate('/app/analytics') },
+          { id: 'smtp', label: 'Open SMTP Manager', hint: 'S', run: () => navigate('/app/smtp') },
+          { id: 'settings', label: 'Open Settings', hint: '8', run: () => navigate('/app/settings') },
+          { id: 'admin', label: 'Open Admin', hint: '9', run: () => navigate('/admin') },
+          { id: 'new-camp', label: 'New campaign', run: () => navigate('/app/campaigns/new') },
+          ...extra,
+        ];
     const query = q.trim().toLowerCase();
     if (!query) return base;
     return base.filter((i) => i.label.toLowerCase().includes(query));
-  }, [navigate, q, extra]);
+  }, [navigate, q, extra, role]);
 
   useEffect(() => {
     if (!open) {

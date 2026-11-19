@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -24,10 +24,10 @@ import {
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { isMailerTenant } from '@/lib/roles';
+import { reportWorkspacePulse } from '@/lib/operator-pulse';
 import { TerminalPanel } from '@/components/layout/TerminalPanel';
 import { CommandPalette } from '@/components/layout/CommandPalette';
-import { Toaster } from '@/components/ui/Toaster';
-import { ConfirmViewport } from '@/components/ui/ConfirmViewport';
 
 const LG = '(min-width: 1024px)';
 
@@ -66,12 +66,42 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { to: '/app/smtp', label: 'SMTP Manager', icon: Server, key: 'S' },
       { to: '/app/settings', label: 'Settings', icon: Settings, key: '8' },
-      { to: '/app/admin', label: 'Admin', icon: Shield, key: '9' },
     ],
   },
 ];
 
-const flatNav = navGroups.flatMap((g) => g.items);
+function navForRole(role?: string | null) {
+  if (isMailerTenant(role)) {
+    return [
+      {
+        label: 'MAILER',
+        items: [
+          { to: '/app/campaigns', label: 'Campaigns', icon: Mail, key: '1' },
+          { to: '/app/queue', label: 'Queue', icon: ListOrdered, key: 'Q' },
+          { to: '/app/templates', label: 'Templates', icon: FileText, key: '2' },
+        ],
+      },
+      {
+        label: 'AUDIENCE',
+        items: [{ to: '/app/contacts', label: 'Contacts', icon: Users, key: '3' }],
+      },
+      {
+        label: 'SYSTEM',
+        items: [
+          { to: '/app/smtp', label: 'SMTP Manager', icon: Server, key: 'S' },
+          { to: '/app/settings', label: 'Settings', icon: Settings, key: '4' },
+        ],
+      },
+    ];
+  }
+  return navGroups.map((g) => {
+    if (g.label !== 'SYSTEM') return g;
+    return {
+      ...g,
+      items: [...g.items, { to: '/admin', label: 'Admin', icon: Shield, key: '9' }],
+    };
+  });
+}
 
 type NotifLog = {
   id: string;
@@ -101,10 +131,39 @@ export function AppLayout() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifs, setNotifs] = useState<NotifLog[]>([]);
   const [hoverTip, setHoverTip] = useState<{ label: string; top: number } | null>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const visibleNav = useMemo(() => navForRole(user?.role), [user?.role]);
+  const flatNav = useMemo(() => visibleNav.flatMap((g) => g.items), [visibleNav]);
+  const isMailer = isMailerTenant(user?.role);
+
+  // Client-side navigation keeps the <main> overflow scroll. Reset so a new
+  // screen (e.g. campaign editor) opens at the top, not where the list was.
+  useLayoutEffect(() => {
+    mainRef.current?.scrollTo(0, 0);
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
 
   useEffect(() => {
     document.documentElement.classList.add('dark');
+    document.documentElement.dataset.shell = 'mailer';
+    document.documentElement.style.colorScheme = 'dark';
   }, []);
+
+  useEffect(() => {
+    if (!isMailerTenant(user?.role)) return;
+    void reportWorkspacePulse(user?.role);
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void reportWorkspacePulse(user?.role);
+    }, 25_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void reportWorkspacePulse(user?.role);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [user?.role]);
 
   useEffect(() => {
     const mq = window.matchMedia(LG);
@@ -151,12 +210,12 @@ export function AppLayout() {
           target.isContentEditable);
 
       const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.key.toLowerCase() === 'k') {
+      if (!isMailerTenant(user?.role) && meta && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen((v) => !v);
         return;
       }
-      if (meta && e.key.toLowerCase() === 'j') {
+      if (!isMailerTenant(user?.role) && meta && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         setTerminalOpen((v) => !v);
         return;
@@ -185,15 +244,15 @@ export function AppLayout() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mobileOpen, notifOpen, navigate]);
+  }, [mobileOpen, notifOpen, navigate, flatNav, user?.role]);
 
   const tabTitle = useMemo(() => {
     const path = location.pathname;
     const match = flatNav.find((item) =>
       item.end ? path === item.to : path === item.to || path.startsWith(`${item.to}/`),
     );
-    return match?.label || 'Dashboard';
-  }, [location.pathname]);
+    return match?.label || (isMailerTenant(user?.role) ? 'Campaigns' : 'Dashboard');
+  }, [location.pathname, flatNav, user?.role]);
 
   async function signOut() {
     await logout();
@@ -243,7 +302,12 @@ export function AppLayout() {
         >
           <div className={cn('min-w-0', desktopCollapsed && 'lg:hidden')}>
             <p className="truncate text-xs font-bold tracking-widest text-primary">INBOX FLOW</p>
-            <p className="truncate text-[10px] text-accent">inboxflow.io</p>
+            <p className="truncate text-[10px] text-accent">
+              {typeof window !== 'undefined' &&
+              (window as Window & { inboxflowDesktop?: { isDesktop?: boolean } }).inboxflowDesktop?.isDesktop
+                ? 'desktop · local'
+                : 'inboxflow.io'}
+            </p>
           </div>
           <button
             type="button"
@@ -270,7 +334,7 @@ export function AppLayout() {
         </div>
 
         <nav className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-2">
-          {navGroups.map((group) => (
+          {visibleNav.map((group) => (
             <div key={group.label}>
               <p
                 className={cn(
@@ -332,6 +396,9 @@ export function AppLayout() {
           <div className={cn('truncate text-xs', desktopCollapsed && 'lg:hidden')}>
             {user?.firstName} {user?.lastName}
           </div>
+          <div className={cn('truncate text-[10px] text-primary', desktopCollapsed && 'lg:hidden')}>
+            {user?.organization?.name || 'Workspace'}
+          </div>
           <div className={cn('truncate text-[10px] text-muted-foreground', desktopCollapsed && 'lg:hidden')}>
             {user?.email}
           </div>
@@ -383,67 +450,87 @@ export function AppLayout() {
               {tabTitle}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
-            <button
-              type="button"
-              title="Notifications"
-              aria-label="Notifications"
-              onClick={() => {
-                setNotifOpen((v) => !v);
-                setTerminalOpen(false);
-              }}
-              className={cn(
-                'relative inline-flex h-9 w-9 items-center justify-center border border-border text-muted-foreground hover:text-primary',
-                notifOpen && 'border-primary/40 text-primary',
-              )}
-            >
-              <Bell className="h-3.5 w-3.5" />
-              {notifs.some((n) => n.level === 'ERROR' || n.level === 'WARNING') ? (
-                <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-destructive" />
-              ) : null}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPaletteOpen(true)}
-              className="inline-flex h-9 items-center gap-1 border border-border px-2 text-[10px] text-muted-foreground hover:text-primary"
-            >
-              <Command className="h-3 w-3" />
-              <span className="hidden sm:inline">K</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTerminalOpen((v) => !v);
-                setNotifOpen(false);
-              }}
-              className={cn(
-                'inline-flex h-9 items-center gap-1 border border-border px-2 text-[10px] text-muted-foreground hover:text-primary',
-                terminalOpen && 'border-primary/40 text-primary',
-              )}
-            >
-              <TerminalSquare className="h-3 w-3" />
-              <span className="hidden sm:inline">Terminal</span>
-            </button>
-          </div>
+          {!isMailer ? (
+            <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
+              <button
+                type="button"
+                title="Notifications"
+                aria-label="Notifications"
+                onClick={() => {
+                  setNotifOpen((v) => !v);
+                  setTerminalOpen(false);
+                }}
+                className={cn(
+                  'relative inline-flex h-9 w-9 items-center justify-center border border-border text-muted-foreground hover:text-primary',
+                  notifOpen && 'border-primary/40 text-primary',
+                )}
+              >
+                <Bell className="h-3.5 w-3.5" />
+                {notifs.some((n) => n.level === 'ERROR' || n.level === 'WARNING') ? (
+                  <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-destructive" />
+                ) : null}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(true)}
+                className="inline-flex h-9 items-center gap-1 border border-border px-2 text-[10px] text-muted-foreground hover:text-primary"
+              >
+                <Command className="h-3 w-3" />
+                <span className="hidden sm:inline">K</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTerminalOpen((v) => !v);
+                  setNotifOpen(false);
+                }}
+                className={cn(
+                  'inline-flex h-9 items-center gap-1 border border-border px-2 text-[10px] text-muted-foreground hover:text-primary',
+                  terminalOpen && 'border-primary/40 text-primary',
+                )}
+              >
+                <TerminalSquare className="h-3 w-3" />
+                <span className="hidden sm:inline">Terminal</span>
+              </button>
+            </div>
+          ) : null}
         </header>
 
-        <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          <div className="animate-fade-in w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6 lg:py-6">
-            <Outlet />
-          </div>
+        <main
+          ref={mainRef}
+          className={cn(
+            'min-h-0 flex-1 overflow-x-hidden',
+            /^\/app\/campaigns(\/|$)/.test(location.pathname)
+              ? 'overflow-hidden'
+              : 'overflow-y-auto',
+          )}
+        >
+          {/^\/app\/campaigns(\/|$)/.test(location.pathname) ? (
+            <div className="flex h-full min-h-0 flex-col">
+              <Outlet />
+            </div>
+          ) : (
+            <div className="animate-fade-in w-full px-3 py-4 sm:px-4 sm:py-5 lg:px-6 lg:py-6">
+              <Outlet />
+            </div>
+          )}
         </main>
 
-        <TerminalPanel open={terminalOpen} onClose={() => setTerminalOpen(false)} />
+        {!isMailer ? <TerminalPanel open={terminalOpen} onClose={() => setTerminalOpen(false)} /> : null}
 
         <footer className="tui-footer">
-          <span className="hidden sm:inline">
-            <span className="text-primary">⌘K</span> command
-          </span>
-          <span className="hidden text-muted-foreground sm:inline">·</span>
-          <span>
-            <span className="text-primary">⌘J</span> terminal
-          </span>
-          <span className="text-muted-foreground">·</span>
+          {!isMailer ? (
+            <>
+              <span className="hidden sm:inline">
+                <span className="text-primary">⌘K</span> command
+              </span>
+              <span className="hidden text-muted-foreground sm:inline">·</span>
+              <span>
+                <span className="text-primary">⌘J</span> terminal
+              </span>
+              <span className="text-muted-foreground">·</span>
+            </>
+          ) : null}
           <span>
             <span className="text-primary">⌘B</span> menu
           </span>
@@ -453,6 +540,7 @@ export function AppLayout() {
         </footer>
       </div>
 
+      {!isMailer ? (
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -488,8 +576,9 @@ export function AppLayout() {
           },
         ]}
       />
+      ) : null}
 
-      {notifOpen ? (
+      {!isMailer && notifOpen ? (
         <div className="absolute right-2 top-14 z-50 w-[min(20rem,calc(100vw-1rem))] border border-border bg-card shadow-xl sm:right-4 lg:right-6">
           <div className="flex items-center justify-between border-b border-border px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-accent">Notifications</div>
@@ -533,8 +622,6 @@ export function AppLayout() {
           </div>
         </div>
       ) : null}
-      <Toaster />
-      <ConfirmViewport />
     </div>
   );
 }

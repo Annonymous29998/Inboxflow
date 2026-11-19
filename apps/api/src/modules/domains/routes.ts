@@ -3,9 +3,16 @@ import { z } from 'zod';
 import { createPublicKey, generateKeyPairSync } from 'crypto';
 import { resolveTxt, resolveCname } from 'dns/promises';
 import { prisma } from '../../config/prisma.js';
+import { env } from '../../config/env.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
+import bcrypt from 'bcryptjs';
 import { encrypt, generateToken } from '../../utils/crypto.js';
+import {
+  INBOXFLOW_SMTP_DAILY_LIMIT,
+  INBOXFLOW_SMTP_HOSTNAME,
+  INBOXFLOW_SMTP_LISTEN_PORT,
+} from '../../services/email/inboxflow-smtp.js';
 import { requireOrg } from '../../utils/org.js';
 import { parseProviderConfig } from '../../services/email/providers.js';
 import {
@@ -27,6 +34,10 @@ async function orgSmtpHosts(organizationId: string): Promise<string[]> {
       /* skip bad config */
     }
   }
+  // Inbox Flow SMTP relays through the server mail account — SPF must list that host.
+  if (env.SMTP_HOST && !['json', 'dev', 'console'].includes(env.SMTP_HOST.toLowerCase())) {
+    hosts.push(env.SMTP_HOST);
+  }
   return hosts;
 }
 
@@ -47,16 +58,35 @@ export async function domainRoutes(app: FastifyInstance) {
       const orgId = requireOrg(request.user.organizationId);
       const domains = await prisma.domain.findMany({
         where: { organizationId: orgId },
-        include: { dnsRecords: true },
+        include: { dnsRecords: true, smtpCredentials: true },
         orderBy: { createdAt: 'desc' },
       });
+      const smtpHosts = await orgSmtpHosts(orgId);
       return reply.send({
+        smtpHosts,
         domains: domains.map((d) => ({
           ...d,
           dkimPrivateKeyEnc: undefined,
           hasDkimPrivateKey: Boolean(d.dkimPrivateKeyEnc),
           dkimSelector: d.dkimSelector,
+          smtpCredentials: d.smtpCredentials.map((c) => ({
+            id: c.id,
+            username: c.username,
+            host: c.host,
+            port: c.port,
+            encryption: c.encryption,
+            dailyLimit: c.dailyLimit,
+            sentToday: c.sentDay === new Date().toISOString().slice(0, 10) ? c.sentToday : 0,
+            isActive: c.isActive,
+            createdAt: c.createdAt,
+          })),
         })),
+        smtp: {
+          host: INBOXFLOW_SMTP_HOSTNAME,
+          port: INBOXFLOW_SMTP_LISTEN_PORT,
+          encryption: 'STARTTLS',
+          dailyLimit: INBOXFLOW_SMTP_DAILY_LIMIT,
+        },
       });
     } catch (error) {
       return sendError(reply, error);
@@ -360,16 +390,126 @@ export async function domainRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete('/:id', async (request, reply) => {
+  app.get('/:id/smtp-credentials', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      await prisma.domain.deleteMany({ where: { id, organizationId: orgId } });
+      const domain = await prisma.domain.findFirst({
+        where: { id, organizationId: orgId },
+        include: { smtpCredentials: { orderBy: { createdAt: 'desc' } } },
+      });
+      if (!domain) throw new AppError(404, 'Domain not found');
+      return reply.send({
+        host: INBOXFLOW_SMTP_HOSTNAME,
+        port: INBOXFLOW_SMTP_LISTEN_PORT,
+        encryption: 'STARTTLS',
+        dailyLimit: INBOXFLOW_SMTP_DAILY_LIMIT,
+        credentials: domain.smtpCredentials.map((c) => ({
+          id: c.id,
+          username: c.username,
+          host: c.host,
+          port: c.port,
+          encryption: c.encryption,
+          dailyLimit: c.dailyLimit,
+          sentToday: c.sentDay === new Date().toISOString().slice(0, 10) ? c.sentToday : 0,
+          isActive: c.isActive,
+          createdAt: c.createdAt,
+          lastUsedAt: c.lastUsedAt,
+        })),
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/:id/smtp-credentials', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const domain = await prisma.domain.findFirst({
+        where: { id, organizationId: orgId },
+      });
+      if (!domain) throw new AppError(404, 'Domain not found');
+      if (domain.status !== 'VERIFIED') {
+        throw new AppError(400, 'Verify SPF, DKIM, and DMARC before generating SMTP credentials');
+      }
+
+      const password = generateToken(18);
+      const username = `if.${domain.domain.replace(/[^a-z0-9.-]/gi, '')}.${generateToken(4)}@${INBOXFLOW_SMTP_HOSTNAME}`;
+      const passwordHash = await bcrypt.hash(password, 10);
+      const cred = await prisma.domainSmtpCredential.create({
+        data: {
+          organizationId: orgId,
+          domainId: id,
+          username,
+          passwordHash,
+          host: INBOXFLOW_SMTP_HOSTNAME,
+          port: INBOXFLOW_SMTP_LISTEN_PORT,
+          encryption: 'STARTTLS',
+          dailyLimit: INBOXFLOW_SMTP_DAILY_LIMIT,
+          sentDay: '',
+        },
+      });
+
+      return reply.status(201).send({
+        note: 'Add these in SMTP Manager. Leave running campaigns on their current SMTP — this does not switch them.',
+        passwordOnce: password,
+        credential: {
+          id: cred.id,
+          host: cred.host,
+          port: cred.port,
+          encryption: cred.encryption,
+          username: cred.username,
+          fromExample: `hello@${domain.domain}`,
+          dailyLimit: cred.dailyLimit,
+        },
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.delete('/:id/smtp-credentials/:credId', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id, credId } = request.params as { id: string; credId: string };
+      const deleted = await prisma.domainSmtpCredential.deleteMany({
+        where: { id: credId, domainId: id, organizationId: orgId },
+      });
+      if (!deleted.count) throw new AppError(404, 'Credential not found');
       return reply.send({ success: true });
     } catch (error) {
       return sendError(reply, error);
     }
   });
+
+  app.delete('/:id', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const deleted = await prisma.domain.deleteMany({ where: { id, organizationId: orgId } });
+      if (!deleted.count) throw new AppError(404, 'Domain not found');
+      return reply.send({ success: true });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+}
+
+function dnsKind(type: string): 'TXT' | 'CNAME' {
+  return type === 'TRACKING' || type === 'RETURN_PATH' ? 'CNAME' : 'TXT';
+}
+
+function withDnsMeta(
+  domain: string,
+  record: { type: string; host: string; value: string; status: string } | undefined,
+) {
+  if (!record) return undefined;
+  return {
+    ...record,
+    dnsType: dnsKind(record.type),
+    fqdn: record.host === '@' ? domain : `${record.host}.${domain}`,
+  };
 }
 
 function getSetupInstructions(
@@ -387,44 +527,60 @@ function getSetupInstructions(
     ? { ...spfRecord, value: recommended.record }
     : { type: 'SPF', host: '@', value: recommended.record, status: 'PENDING' };
   const dkimExtra = recommended.hints.map((h) => h.dkimHint).filter(Boolean).join(' ');
+  const verify = records.find((r) => r.type === 'CUSTOM');
+  const tableSource = [shownSpf, ...records.filter((r) => r.type !== 'SPF')];
 
   return {
     title: `Authenticate ${domain}`,
+    smtpHosts,
+    sending:
+      `Add the 3 TXT records (SPF, DKIM, DMARC) Inbox Flow generated, wait 10–30 minutes, then Verify DNS. Then Generate SMTP and paste host smtp.inboxflow.io into SMTP Manager. Tracking / bounce CNAMEs are optional.`,
+    dnsRecords: tableSource.map((r) => withDnsMeta(domain, r)),
     steps: [
       {
         step: 1,
         title: 'Add SPF record',
         description:
           `Authorize ${providerNames} to send for this domain. Merge into one SPF TXT (do not create a second v=spf1). For Brevo that means include:spf.brevo.com — not the SMTP Provider IP 136.243.17.45 unless that SMTP is also active.`,
-        record: shownSpf,
+        record: withDnsMeta(domain, shownSpf),
       },
       {
         step: 2,
         title: 'Add DKIM record',
         description:
           dkimExtra ||
-          'Publish the DKIM public key so providers can verify message signatures.',
-        record: records.find((r) => r.type === 'DKIM'),
+          'Publish this TXT at your DNS host (Cloudflare, Namecheap, GoDaddy, …) so receivers can verify the signature.',
+        record: withDnsMeta(domain, records.find((r) => r.type === 'DKIM')),
       },
       {
         step: 3,
         title: 'Add DMARC record',
         description: 'Start with p=none to monitor, then tighten policy.',
-        record: records.find((r) => r.type === 'DMARC'),
+        record: withDnsMeta(domain, records.find((r) => r.type === 'DMARC')),
       },
       {
         step: 4,
         title: 'Custom tracking domain (recommended)',
         description: 'Improves link reputation by using your own domain for click tracking.',
-        record: records.find((r) => r.type === 'TRACKING'),
+        record: withDnsMeta(domain, records.find((r) => r.type === 'TRACKING')),
       },
       {
         step: 5,
         title: 'Return-Path / Bounce domain',
         description: 'Routes bounce processing through a domain you control.',
-        record: records.find((r) => r.type === 'RETURN_PATH'),
+        record: withDnsMeta(domain, records.find((r) => r.type === 'RETURN_PATH')),
       },
+      ...(verify
+        ? [
+            {
+              step: 6,
+              title: 'Ownership TXT (optional)',
+              description: 'Some registrars need this extra TXT. Not required for sending once SPF/DKIM/DMARC pass.',
+              record: withDnsMeta(domain, verify),
+            },
+          ]
+        : []),
     ],
-    tip: `You must own this domain’s DNS. If you send with Brevo, Gmail checks SPF against include:spf.brevo.com on the From domain (and on client.${domain} if you From that host). The SMTP Provider IP 136.243.17.45 is only for akoneseo, not Brevo. Wait 10–30 minutes after DNS changes, then placement-test and open Gmail → Show original → SPF: PASS.`,
+    tip: `In your DNS panel (Cloudflare, Namecheap, GoDaddy) add Type + Host + Value exactly as shown. Host is the short name (@ not ${domain}). Only SPF + DKIM + DMARC are required for Inbox Flow SMTP.`,
   };
 }

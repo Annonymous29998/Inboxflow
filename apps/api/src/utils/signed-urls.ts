@@ -30,8 +30,68 @@ export function verifyClickRedirect(
   return safeEqual(signClickRedirect(campaignId, contactId, url), signature);
 }
 
+/** Opaque ticket: destination is encoded + HMAC so attackers cannot swap the CTA URL. */
+export function encodeClickTicket(campaignId: string, contactId: string, url: string): string {
+  const body = Buffer.from(
+    JSON.stringify({ u: url, c: campaignId, k: contactId }),
+    'utf8',
+  ).toString('base64url');
+  return `${body}.${hmac(`click-t|${body}`)}`;
+}
+
+export function decodeClickTicket(
+  campaignId: string,
+  contactId: string,
+  ticket: string | undefined,
+): string | null {
+  const raw = String(ticket || '');
+  const dot = raw.lastIndexOf('.');
+  if (dot < 1) return null;
+  const body = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  if (!sig || !safeEqual(hmac(`click-t|${body}`), sig)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
+      u?: string;
+      c?: string;
+      k?: string;
+    };
+    if (parsed.c !== campaignId || parsed.k !== contactId) return null;
+    const dest = String(parsed.u || '');
+    if (!dest || !isSafeRedirectUrl(dest)) return null;
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveClickDest(
+  campaignId: string,
+  contactId: string,
+  q: { t?: string; u?: string; s?: string },
+): string | null {
+  const fromTicket = decodeClickTicket(campaignId, contactId, q.t);
+  if (fromTicket) return fromTicket;
+  const url = String(q.u || '');
+  if (url && isSafeRedirectUrl(url) && verifyClickRedirect(campaignId, contactId, url, q.s)) return url;
+  return null;
+}
+
 export function signUnsubscribe(contactId: string, campaignId?: string | null): string {
   return hmac(`unsub|${contactId}|${campaignId || ''}`);
+}
+
+export function signOpen(contactId: string, campaignId: string): string {
+  return hmac(`open|${contactId}|${campaignId}`);
+}
+
+export function verifyOpen(
+  contactId: string,
+  campaignId: string,
+  signature: string | undefined,
+): boolean {
+  if (!signature || !contactId || !campaignId) return false;
+  return safeEqual(signOpen(contactId, campaignId), signature);
 }
 
 export function verifyUnsubscribe(

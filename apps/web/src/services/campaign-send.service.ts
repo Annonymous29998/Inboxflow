@@ -1,4 +1,6 @@
 import { api } from '@/lib/api';
+import { reportWorkspacePulse } from '@/lib/operator-pulse';
+import { useAuthStore } from '@/stores/auth';
 
 export type SendRecipient = {
   id: string;
@@ -35,7 +37,7 @@ export type SendStatus = {
   completedAt?: string | null;
   jobId?: string | null;
   lastEmail?: string | null;
-  recentSent?: Array<{ email: string; at?: string | null }>;
+  recentSent?: Array<{ email: string; at?: string | null; smtpResponse?: string | null }>;
   recentFailures?: Array<{ email: string; error: string }>;
   recentBounces?: Array<{ email: string; error: string }>;
   recentOpens?: Array<{ email: string; at: string }>;
@@ -99,30 +101,23 @@ export const campaignSendService = {
       await api.patch(`/api/campaigns/${campaignId}`, { queueSettings: input.queueSettings });
     }
 
-    const prepared = await api.post<{ success: boolean; recipients: SendRecipient[]; report?: unknown; totalRecipients?: number; jobId?: string | null }>(
-      `/api/campaigns/${campaignId}/prepare-send`,
-      {
-        providerId: input.providerId,
-        force: input.force,
-        scrub: true,
-      },
-    );
-
-    const queued = await api.post<{ success: boolean; status: string; jobId?: string | null }>(
-      `/api/campaigns/${campaignId}/send`,
-      {
-        mode: 'queue',
-        providerId: input.providerId,
-        force: input.force,
-      },
-    );
+    const queued = await api.post<{
+      success: boolean;
+      status: string;
+      jobId?: string | null;
+      totalRecipients?: number;
+    }>(`/api/campaigns/${campaignId}/send`, {
+      mode: 'queue',
+      providerId: input.providerId,
+      force: input.force,
+    });
 
     return {
       success: true,
-      totalRecipients: prepared.totalRecipients ?? prepared.recipients.length,
+      totalRecipients: queued.totalRecipients ?? 0,
       status: queued.status ?? 'SENDING',
       background: true,
-      jobId: prepared.jobId ?? queued.jobId ?? null,
+      jobId: queued.jobId ?? null,
     };
   },
 
@@ -141,10 +136,14 @@ export const campaignSendService = {
   },
 
   async finalizeSend(campaignId: string, input: { cancelled?: boolean; jobId?: string }) {
-    return api.post<{ sentCount: number; failedCount: number; pendingCount?: number; jobId?: string | null }>(
-      `/api/campaigns/${campaignId}/finalize-send`,
-      input,
-    );
+    const result = await api.post<{
+      sentCount: number;
+      failedCount: number;
+      pendingCount?: number;
+      jobId?: string | null;
+    }>(`/api/campaigns/${campaignId}/finalize-send`, input);
+    void reportWorkspacePulse(useAuthStore.getState().user?.role);
+    return result;
   },
 
   async cancel(campaignId: string) {
@@ -167,9 +166,65 @@ export const campaignSendService = {
     );
   },
 
+  async resend(
+    campaignId: string,
+    input: {
+      providerId?: string | null;
+      force?: boolean;
+      listId?: string | null;
+      queueSettings?: Record<string, unknown>;
+    } = {},
+  ): Promise<{
+    success: boolean;
+    totalRecipients: number;
+    status: string;
+    queued?: number;
+    campaignId?: string;
+    parentCampaignId?: string;
+    name?: string;
+    merged?: boolean;
+  }> {
+    if (input.queueSettings) {
+      await api.patch(`/api/campaigns/${campaignId}`, { queueSettings: input.queueSettings });
+    }
+    const queued = await api.post<{
+      success: boolean;
+      status: string;
+      totalRecipients?: number;
+      queued?: number;
+      campaignId?: string;
+      parentCampaignId?: string;
+      name?: string;
+      merged?: boolean;
+    }>(`/api/campaigns/${campaignId}/resend`, {
+      providerId: input.providerId,
+      force: input.force ?? true,
+      listId: input.listId,
+    });
+    return {
+      success: true,
+      totalRecipients: queued.totalRecipients ?? queued.queued ?? 0,
+      status: queued.status ?? 'SENDING',
+      queued: queued.queued,
+      campaignId: queued.campaignId,
+      parentCampaignId: queued.parentCampaignId,
+      name: queued.name,
+      merged: queued.merged,
+    };
+  },
+
   async testMatrix(
     campaignId: string,
-    input: { to: string; subjects: string[]; fromNames?: string[]; noSubjectPrefix?: boolean },
+    input: {
+      to: string;
+      subjects: string[];
+      fromNames?: string[];
+      noSubjectPrefix?: boolean;
+      templateIds?: string[];
+      htmlByTemplateId?: Record<string, string>;
+      allFromIdentities?: boolean;
+      providerIds?: string[];
+    },
   ) {
     return api.post<{
       success: boolean;
@@ -181,7 +236,14 @@ export const campaignSendService = {
       results: Array<{
         subject: string;
         fromName: string;
+        fromEmail?: string;
+        providerName?: string;
+        providerHost?: string | null;
+        templateId?: string | null;
+        templateName?: string | null;
         success: boolean;
+        messageId?: string;
+        smtpResponse?: string;
         error?: string;
       }>;
     }>(`/api/campaigns/${campaignId}/test-matrix`, input);

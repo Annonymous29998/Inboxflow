@@ -23,6 +23,13 @@ describe('isCountableOpen', () => {
     expect(isCountableOpen(CURL, undefined)).toBe(false);
     expect(isCountableOpen('', undefined)).toBe(false);
   });
+
+  it('counts Xfinity/Go image proxy as a real open even if tagged automated', () => {
+    expect(isCountableOpen('Go-http-client/1.1', undefined)).toBe(true);
+    expect(
+      isCountableOpen('Go-http-client/1.1', { source: 'automated', reason: 'security_scanner' }),
+    ).toBe(true);
+  });
 });
 
 describe('isCountableClick', () => {

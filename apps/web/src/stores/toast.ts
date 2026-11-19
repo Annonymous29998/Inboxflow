@@ -8,15 +8,18 @@ export type ToastItem = {
   description?: string;
   tone: ToastTone;
   createdAt: number;
+  durationMs: number;
 };
 
 type ToastInput = {
   title: string;
   description?: string;
   tone?: ToastTone;
-  /** Auto-dismiss after ms. Omit or 0 = stay until the user clicks X. */
+  /** Auto-dismiss after ms. Default 2000. Pass 0 to keep until the user clicks X. */
   durationMs?: number;
 };
+
+export const TOAST_TTL_MS = 2000;
 
 type ToastState = {
   items: ToastItem[];
@@ -29,17 +32,18 @@ export const useToastStore = create<ToastState>((set, get) => ({
   items: [],
   push: (input) => {
     const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const durationMs = input.durationMs ?? TOAST_TTL_MS;
     const item: ToastItem = {
       id,
       title: input.title,
       description: input.description,
       tone: input.tone ?? 'info',
       createdAt: Date.now(),
+      durationMs,
     };
-    set((s) => ({ items: [...s.items.slice(-4), item] }));
-    const ms = input.durationMs ?? 0;
-    if (ms > 0) {
-      window.setTimeout(() => get().dismiss(id), ms);
+    set((s) => ({ items: [...s.items.slice(-1), item] }));
+    if (durationMs > 0) {
+      window.setTimeout(() => get().dismiss(id), durationMs);
     }
     return id;
   },

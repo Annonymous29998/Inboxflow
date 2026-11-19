@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '@/lib/api';
-import { Badge, Button, Card, Input, Label, PageLoading, Progress, Select } from '@/components/ui';
-import { Download, FileUp, Plus, Search, Upload, AlertTriangle, Trash2, ListPlus, Users, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown, MinusSquare, PlusSquare } from 'lucide-react';
+import { Badge, Button, Input, Label, PageLoading, Progress, Select } from '@/components/ui';
+import { Download, FileUp, Plus, Search, Upload, AlertTriangle, Trash2, ListPlus, Users, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
-import { cleanImportEmail } from '@/lib/clean-import-email';
+import {
+  contactImportRowsToText,
+  parseContactImportRows,
+  type ContactImportRow,
+} from '@/lib/parse-contact-import';
+import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
 
 type Contact = {
   id: string;
@@ -52,100 +58,39 @@ const emptyImportProgress: ImportProgressState = {
   errors: [],
 };
 
-type Row = { email: string; firstName?: string; lastName?: string; phone?: string };
-
-function parseRows(text: string): Row[] {
-  const rows: Row[] = [];
-  if (!text || !text.length) return rows;
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (!lines.length) return rows;
-  const header = lines[0].split(/[,\t;]/).map((s) => s.trim().toLowerCase());
-  const hasEmailHeader = header.includes('email') || header.includes('e-mail');
-  const mapCol: Record<string, number> = {};
-  header.forEach((h, i) => {
-    if (h === 'email' || h === 'e-mail') mapCol.email = i;
-    else if (h === 'firstname' || h === 'first_name' || h === 'first') mapCol.firstName = i;
-    else if (h === 'lastname' || h === 'last_name' || h === 'last') mapCol.lastName = i;
-    else if (h === 'phone' || h === 'mobile' || h === 'cell') mapCol.phone = i;
-  });
-  const startIdx = hasEmailHeader ? 1 : 0;
-  const seen = new Set<string>();
-  function pushIfUnique(row: Row) {
-    if (!row?.email) return;
-    const key = row.email.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push(row);
-  }
-
-  const mostlyPlainList =
-    !hasEmailHeader &&
-    lines.length >= 3 &&
-    lines.filter((l) => l.includes('@')).length >= Math.ceil(lines.length * 0.6);
-
-  for (let i = startIdx; i < lines.length; i++) {
-    const rawLine = lines[i];
-    if (!mostlyPlainList && (rawLine.includes(',') || rawLine.includes('\t') || rawLine.includes(';'))) {
-      const cols = rawLine.split(/[,\t;]/).map((s) => s.replace(/^"|"$/g, '').trim());
-      let email: string | null = null;
-      if (mapCol.email !== undefined) {
-        email = cleanImportEmail(cols[mapCol.email] || '');
-      }
-      if (!email) {
-        for (const c of cols) {
-          email = cleanImportEmail(c);
-          if (email) break;
-        }
-      }
-      if (!email) continue;
-      const firstName = mapCol.firstName !== undefined ? cols[mapCol.firstName] || undefined : undefined;
-      const lastName = mapCol.lastName !== undefined ? cols[mapCol.lastName] || undefined : undefined;
-      const phone = mapCol.phone !== undefined ? cols[mapCol.phone] || undefined : undefined;
-      pushIfUnique({ email, firstName, lastName, phone });
-    } else {
-      // Plain-text row: strip .Read / trailing dots / glued junk → email only
-      const email = cleanImportEmail(rawLine);
-      if (!email) continue;
-      pushIfUnique({ email });
-    }
-  }
-  return rows;
-}
-
-function rowsToText(rows: Row[]): string {
-  const header = ['email', 'firstName', 'lastName', 'phone'];
-  return [header.join(','), ...rows.map((r) => [r.email, r.firstName ?? '', r.lastName ?? '', r.phone ?? ''].join(','))].join('\n');
-}
-
-function listNameFromFileName(fileName: string): string {
-  const dot = fileName.lastIndexOf('.');
-  const base = dot > 0 ? fileName.slice(0, dot) : fileName;
-  return base.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim() || `Imported ${new Date().toLocaleDateString()}`;
-}
+type Row = ContactImportRow;
 
 export function ContactsPage() {
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [total, setTotal] = useState(0);
+  const cachedLists = uiCacheGet<ContactList[]>('lists') ?? [];
+  const cachedContacts = uiCacheGet<{ contacts: Contact[]; total: number }>('contacts:home');
+  const [contacts, setContacts] = useState<Contact[]>(() => cachedContacts?.contacts ?? []);
+  const [loading, setLoading] = useState(() => !cachedContacts?.contacts.length && !cachedLists.length);
+  const [total, setTotal] = useState(() => cachedContacts?.total ?? 0);
   const [page, setPage] = useState<number>(1);
   const [pages, setPages] = useState<number>(1);
   const pageLimit = 50;
   const [search, setSearch] = useDraft<string>('contacts:search', '');
   const [status, setStatus] = useDraft<string>('contacts:status', '');
   const [activeListId, setActiveListId] = useDraft<string>('contacts:activeListId', '');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showCreate, setShowCreate] = useDraft<boolean>('contacts:showCreate', false);
   const [showImport, setShowImport] = useDraft<boolean>('contacts:showImport', false);
   const [form, setForm] = useDraft('contacts:form', { email: '', firstName: '', lastName: '' });
   const [importText, setImportText] = useDraft<string>('contacts:importText', '');
   const [importFileName, setImportFileName] = useDraft<string>('contacts:importFileName', '');
-  const [lists, setLists] = useState<ContactList[]>([]);
-  const [listMode, setListMode] = useDraft<'none' | 'existing' | 'auto' | 'custom'>('contacts:listMode', 'auto');
+  const [lists, setLists] = useState<ContactList[]>(() => cachedLists);
+  const [listMode, setListMode] = useDraft<'none' | 'existing' | 'custom'>('contacts:listMode', 'custom');
   const [listId, setListId] = useDraft<string>('contacts:listId', '');
   const [newListName, setNewListName] = useDraft<string>('contacts:newListName', '');
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState<ImportProgressState>(emptyImportProgress);
   const [clearingAll, setClearingAll] = useState(false);
+  const [listModal, setListModal] = useState<{ id: string; name: string } | null>(null);
+  const [modalContacts, setModalContacts] = useState<Contact[]>([]);
+  const [modalPage, setModalPage] = useState(1);
+  const [modalPages, setModalPages] = useState(1);
+  const [modalTotal, setModalTotal] = useState(0);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalSearch, setModalSearch] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -207,33 +152,56 @@ export function ContactsPage() {
     return grouped.filter((g) => g.id === activeListId);
   }, [grouped, activeListId]);
 
-  const parsedRows = useMemo(() => parseRows(importText || ''), [importText]);
+  const parsedRows = useMemo(() => parseContactImportRows(importText || ''), [importText]);
   const parsedCount = parsedRows.length;
   const rawEmailLines = useMemo(() => {
     const lines = (importText || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     return lines.filter((l) => l.includes('@')).length;
   }, [importText]);
   const duplicatesRemoved = Math.max(0, rawEmailLines - parsedCount);
-  const importDisabled = importing || parsedCount === 0;
+  const needsListName = listMode !== 'existing' && listMode !== 'none';
+  const importDisabled =
+    importing || parsedCount === 0 || (needsListName && !newListName.trim()) || (listMode === 'existing' && !listId);
 
-  function toggle(listId: string) {
-    setExpanded((s) => ({ ...s, [listId]: !(s[listId] ?? (grouped.length <= 6)) }));
+  async function loadListMembers(listId: string, pageNum = 1, q = '') {
+    setModalLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('listId', listId);
+      params.set('page', String(pageNum));
+      params.set('limit', '100');
+      if (q.trim()) params.set('search', q.trim());
+      if (status) params.set('status', status);
+      const data = await api.get<{
+        contacts: Contact[];
+        total: number;
+        page?: number;
+        pages?: number;
+      }>(`/api/contacts?${params.toString()}`);
+      setModalContacts(Array.isArray(data.contacts) ? data.contacts : []);
+      setModalTotal(data.total);
+      setModalPages(Math.max(1, data.pages ?? Math.ceil(data.total / 100)));
+      setModalPage(data.page ?? pageNum);
+    } catch (err) {
+      toast.error('Could not load list', err instanceof Error ? err.message : undefined);
+    } finally {
+      setModalLoading(false);
+    }
   }
 
-  function expandAll() {
-    const next: Record<string, boolean> = {};
-    for (const g of grouped) next[g.id] = true;
-    setExpanded(next);
-  }
-
-  function collapseAll() {
-    setExpanded({});
+  function openListModal(id: string, name: string) {
+    setListModal({ id, name });
+    setModalSearch('');
+    setModalPage(1);
+    setModalContacts([]);
+    void loadListMembers(id, 1, '');
   }
 
   async function loadLists() {
     try {
       const data = await api.get<{ lists: ContactList[] }>('/api/lists');
-      setLists(data.lists);
+      setLists(Array.isArray(data.lists) ? data.lists : []);
+      uiCacheSet('lists', data.lists);
       if (!listId && data.lists[0] && listMode === 'existing') setListId(data.lists[0].id);
     } catch {
       /* ignore */
@@ -251,8 +219,11 @@ export function ContactsPage() {
       const data = await api.get<{ contacts: Contact[]; total: number; page?: number; limit?: number; pages?: number }>(
         `/api/contacts${params.toString() ? `?${params.toString()}` : ''}`,
       );
-      setContacts(data.contacts);
-      setTotal(data.total);
+      setContacts(Array.isArray(data.contacts) ? data.contacts : []);
+      setTotal(Number(data.total) || 0);
+      if (page === 1 && !search && !status && !activeListId) {
+        uiCacheSet('contacts:home', { contacts: data.contacts, total: data.total });
+      }
       if (typeof data.pages === 'number') setPages(Math.max(1, data.pages));
       else setPages(Math.max(1, Math.ceil(data.total / (pageLimit || 50))));
       if (activeListId === '__unassigned__') {
@@ -358,6 +329,7 @@ export function ContactsPage() {
       await api.delete(`/api/contacts/${id}`);
       toast.success('Contact deleted');
       await load();
+      if (listModal) await loadListMembers(listModal.id, modalPage, modalSearch);
     } catch (err) {
       toast.error('Could not delete contact', err instanceof Error ? err.message : undefined);
     }
@@ -372,8 +344,8 @@ export function ContactsPage() {
       title: `Delete list “${listName}”`,
       description:
         memberCount > 0
-          ? `This removes the list and permanently deletes contacts that exist only in this list (${memberCount} member${memberCount === 1 ? '' : 's'}).\n\nContacts that also belong to other lists stay in your audience.\n\nThis cannot be undone.`
-          : `This removes the empty list “${listName}” from Contacts and campaigns.\n\nThis cannot be undone.`,
+          ? `This deletes the list and permanently deletes the ${memberCount.toLocaleString()} contact${memberCount === 1 ? '' : 's'} in it.\n\nContacts that also belong to other lists stay in those lists.\n\nThis cannot be undone.`
+          : `This removes the list “${listName}”. If it still has members on the server, those contacts are deleted too.\n\nThis cannot be undone.`,
       tone: 'danger',
       destructive: true,
       confirmText: memberCount > 0 ? 'Delete list + contacts' : 'Delete list',
@@ -426,7 +398,6 @@ export function ContactsPage() {
     const f = e.target.files?.[0];
     if (!f) return;
     setImportFileName(f.name);
-    if (!newListName && listMode === 'auto') setNewListName(listNameFromFileName(f.name));
     const reader = new FileReader();
     reader.onload = () => {
       setImportText(String(reader.result || ''));
@@ -450,12 +421,12 @@ export function ContactsPage() {
       finalListId = listId;
       const lst = lists.find((l) => l.id === listId);
       finalListName = lst?.name ?? '';
-    } else if (listMode === 'auto' || listMode === 'custom') {
-      const baseSuggested =
-        listMode === 'auto' && importFileName ? listNameFromFileName(importFileName) : newListName;
-      const fallback = `Pasted import ${new Date().toISOString().slice(0, 10)}`;
-      finalListName = ((baseSuggested || fallback) as string).trim();
-      if (!finalListName) finalListName = fallback;
+    } else if (listMode !== 'none') {
+      finalListName = newListName.trim();
+      if (!finalListName) {
+        toast.error('Name this list');
+        return;
+      }
     }
     setImporting(true);
     setProgress({
@@ -524,9 +495,37 @@ export function ContactsPage() {
         },
       });
 
-      const CHUNK = 20;
+      // Larger chunks = fewer round-trips through the desktop→Lightsail proxy
+      const CHUNK = 200;
       let chunkIndex = 0;
       let created = 0, updated = 0, skipped = 0, addedToList = 0, processed = 0;
+      async function postChunk(payload: unknown, attempt = 0): Promise<{
+        created: number;
+        updated: number;
+        skipped: number;
+        addedToList: number;
+        listId?: string | null;
+        total: number;
+        duplicates?: string[];
+        jobId?: string | null;
+      }> {
+        try {
+          return await api.post('/api/contacts/import', payload);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const retryable = /rate limit|too many requests|429|internal server error|502|503|504/i.test(msg);
+          if (retryable && attempt < 6) {
+            const waitMs = Math.min(20_000, 2_000 * (attempt + 1));
+            setProgress((p) => ({
+              ...p,
+              message: `Server busy — retrying chunk in ${Math.round(waitMs / 1000)}s…`,
+            }));
+            await new Promise((r) => window.setTimeout(r, waitMs));
+            return postChunk(payload, attempt + 1);
+          }
+          throw err;
+        }
+      }
       for (let i = 0; i < parsed.length; i += CHUNK, chunkIndex++) {
         const slice = parsed.slice(i, i + CHUNK);
         const payload: {
@@ -538,24 +537,18 @@ export function ContactsPage() {
           chunkIndex: number;
           totalRows: number;
         } = {
-          content: rowsToText(slice),
+          content: contactImportRowsToText(slice),
           updateExisting: true,
           jobId,
           chunkIndex,
           totalRows,
         };
         if (finalListId) payload.listId = finalListId;
-        else if (finalListName) payload.listName = finalListName;
-        const result = await api.post<{
-          created: number;
-          updated: number;
-          skipped: number;
-          addedToList: number;
-          listId?: string | null;
-          total: number;
-          duplicates?: string[];
-          jobId?: string | null;
-        }>('/api/contacts/import', payload);
+        else if (finalListName && chunkIndex === 0) payload.listName = finalListName;
+        else if (finalListName && !finalListId) {
+          throw new Error('List was not created on the first import chunk — retry the import');
+        }
+        const result = await postChunk(payload);
         created += result.created || 0;
         updated += result.updated || 0;
         skipped += result.skipped || 0;
@@ -566,7 +559,6 @@ export function ContactsPage() {
           chunkListIdCreated = result.listId;
           setProgress((p) => ({ ...p, listId: result.listId }));
         }
-        if (finalListId && payload.listName) delete (payload as any).listName;
         setProgress((p) => ({
           ...p,
           processed: Math.min(totalRows, Math.max(p.processed, processed)),
@@ -597,8 +589,13 @@ export function ContactsPage() {
       clearDraft('contacts:showImport');
       setImportText('');
       setImportFileName('');
-      await load();
+      setShowImport(false);
+      if (finalListId) {
+        setActiveListId(finalListId);
+        setPage(1);
+      }
       await loadLists();
+      if (!finalListId) await load();
       toast.success(
         'Import complete',
         `${created} new, ${updated} updated, ${skipped} skipped${addedToList ? `, ${addedToList} in list` : ''}`,
@@ -617,11 +614,14 @@ export function ContactsPage() {
   const pct = progress.total ? Math.round((progress.processed / progress.total) * 100) : 0;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Contacts</h1>
-          <p className="text-sm text-muted-foreground">
+    <div className="mailer-root page-root space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            audience · contacts
+          </p>
+          <h1 className="page-title text-primary">Contacts</h1>
+          <p className="page-sub">
             {total.toLocaleString()} {total === 1 ? 'person' : 'people'} in your audience
           </p>
         </div>
@@ -652,8 +652,8 @@ export function ContactsPage() {
         </div>
       </div>
 
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="mailer-panel">
+        <div className="mailer-pad flex flex-wrap items-center gap-3">
           <div className="relative min-w-[240px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -697,215 +697,69 @@ export function ContactsPage() {
               </option>
             )}
           </Select>
-          <Button variant="outline" size="sm" onClick={expandAll} title="Expand all lists">
-            <PlusSquare className="mr-2 h-4 w-4" /> Expand
-          </Button>
-          <Button variant="outline" size="sm" onClick={collapseAll} title="Collapse all lists">
-            <MinusSquare className="mr-2 h-4 w-4" /> Collapse
-          </Button>
-          <Button variant="outline" size="sm" onClick={load}>
-            Refresh
-          </Button>
         </div>
-      </Card>
+      </div>
 
       <div className="space-y-3">
         {loading ? (
           <PageLoading label="Loading contacts…" />
         ) : visibleGroups.length === 0 ? (
-          <Card>
-            <div className="px-4 py-16 text-center text-muted-foreground">
-              <Users className="mx-auto mb-3 h-10 w-10 opacity-40" />
-              <p className="text-base">No contacts yet</p>
-              <p className="mt-1 text-xs">Click Import or Add Contact to grow your audience.</p>
+          <div className="mailer-panel">
+            <div className="mailer-pad py-12 text-center">
+              <Users className="mx-auto mb-3 h-8 w-8 text-[var(--mailer-dim)]" />
+              <p className="text-primary">No contacts yet</p>
+              <p className="mailer-hint">Import a CSV or add a contact to grow your audience.</p>
             </div>
-          </Card>
+          </div>
         ) : null}
         {!loading && visibleGroups.map((g) => {
-          const isOpen = expanded[g.id] ?? grouped.length <= 6;
           const listTotal =
             g.id === '__unassigned__'
               ? g.members.length
               : (lists.find((l) => l.id === g.id)?._count?.members ?? g.members.length);
-          const missingOnThisPage = !activeListId && listTotal > 0 && g.members.length === 0;
+          const canOpen = g.id !== '__unassigned__';
           return (
-            <Card key={g.id} className="overflow-hidden">
+            <div key={g.id} className="camp-row w-full">
               <button
                 type="button"
-                onClick={() => toggle(g.id)}
-                className="flex w-full items-center gap-3 bg-muted/30 px-4 py-3 text-left transition-colors hover:bg-muted/60"
+                className="camp-row-main text-left"
+                onClick={() => {
+                  if (canOpen) openListModal(g.id, g.name);
+                }}
               >
-                {isOpen ? (
-                  <ChevronDown className="h-4 w-4 flex-none text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
-                )}
-                <ListPlus className="h-4 w-4 flex-none text-violet-400" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <h3 className="truncate font-semibold tracking-tight">{g.name}</h3>
-                    <Badge tone="neutral">
-                      {`${listTotal} ${listTotal === 1 ? 'contact' : 'contacts'}`}
-                    </Badge>
-                  </div>
-                  {g.members[0]?.email ? (
-                    <p className="truncate text-xs text-muted-foreground">
-                      {g.members[0].email}
-                      {(() => {
-                        const visibleMinusOne = g.members.length - 1;
-                        const hiddenExtra = listTotal - g.members.length;
-                        if (hiddenExtra > 0 && visibleMinusOne > 0) {
-                          return ` +${visibleMinusOne} more shown, +${hiddenExtra} on other pages`;
-                        } else if (hiddenExtra > 0) {
-                          return ` +${hiddenExtra} more on other pages`;
-                        } else if (visibleMinusOne > 0) {
-                          return ` +${visibleMinusOne} more`;
-                        }
-                        return '';
-                      })()}
-                    </p>
-                  ) : missingOnThisPage ? (
-                    <p className="truncate text-xs text-muted-foreground">
-                      {listTotal.toLocaleString()} contacts — open this list to view them (not on this page of All lists)
-                    </p>
-                  ) : null}
+                <strong>{g.name}</strong>
+                <div className="meta">
+                  {`${listTotal.toLocaleString()} ${listTotal === 1 ? 'contact' : 'contacts'}`}
+                  {canOpen ? ' · View list' : ''}
                 </div>
-                {g.id !== '__unassigned__' && missingOnThisPage ? (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="inline-flex shrink-0 items-center rounded bg-primary/15 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/25"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveListId(g.id);
-                      setPage(1);
-                      setExpanded((s) => ({ ...s, [g.id]: true }));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setActiveListId(g.id);
-                        setPage(1);
-                        setExpanded((s) => ({ ...s, [g.id]: true }));
-                      }
-                    }}
-                  >
+              </button>
+              <div className="camp-row-actions">
+                {canOpen ? (
+                  <Button type="button" variant="outline" size="sm" onClick={() => openListModal(g.id, g.name)}>
                     View list
-                  </span>
+                  </Button>
                 ) : null}
-                {g.id !== '__unassigned__' ? (
-                  <span
-                    role="button"
-                    tabIndex={0}
+                {canOpen ? (
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
                     title="Delete this list"
-                    className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void deleteList(g.id, g.name, listTotal);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        void deleteList(g.id, g.name, listTotal);
-                      }
-                    }}
+                    onClick={() => void deleteList(g.id, g.name, listTotal)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Delete list
-                  </span>
+                  </Button>
                 ) : null}
-              </button>
-              {isOpen && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50 text-muted-foreground">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-medium">Email</th>
-                        <th className="px-4 py-3 text-left font-medium">Name</th>
-                        <th className="px-4 py-3 text-left font-medium">Status</th>
-                        <th className="px-4 py-3 text-left font-medium">Lists</th>
-                        <th className="px-4 py-3 text-left font-medium">Added</th>
-                        <th className="px-4 py-3 text-right font-medium"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {g.members.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                            {missingOnThisPage ? (
-                              <div className="space-y-3">
-                                <p>
-                                  This list has <span className="font-medium text-foreground">{listTotal.toLocaleString()}</span> contacts,
-                                  but none are on the current “All lists” page (page shows a mixed slice of your audience).
-                                </p>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    setActiveListId(g.id);
-                                    setPage(1);
-                                  }}
-                                >
-                                  View all {listTotal.toLocaleString()} in this list
-                                </Button>
-                              </div>
-                            ) : listTotal === 0 ? (
-                              'No contacts in this list.'
-                            ) : (
-                              'No contacts match the current filters.'
-                            )}
-                          </td>
-                        </tr>
-                      )}
-                      {g.members.map((c) => (
-                        <tr key={c.id + g.id} className="border-t border-border hover:bg-muted/30">
-                          <td className="px-4 py-3 font-medium">{c.email}</td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {[c.firstName, c.lastName].filter(Boolean).join(' ') || '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            <Badge tone={c.status === 'SUBSCRIBED' ? 'success' : 'neutral'} className="capitalize">
-                              {c.status.toLowerCase()}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {c.listMemberships?.length
-                              ? c.listMemberships
-                                  .slice(0, 2)
-                                  .map((m) => m.list?.name)
-                                  .filter(Boolean)
-                                  .join(', ') +
-                                (c.listMemberships.length > 2 ? ` +${c.listMemberships.length - 2}` : '')
-                              : '—'}
-                          </td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {new Date(c.createdAt).toLocaleDateString()}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => deleteContact(c.id, c.email)}
-                              className="text-muted-foreground transition-colors hover:text-destructive"
-                              title="Delete"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
+              </div>
+            </div>
           );
         })}
       </div>
 
       {total > 0 && (
-        <Card className="p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="mailer-panel">
+          <div className="mailer-pad flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-muted-foreground">
               Showing <span className="font-medium text-foreground">{contacts.length}</span> of{' '}
               <span className="font-medium text-foreground">{total.toLocaleString()}</span> contact
@@ -972,12 +826,13 @@ export function ContactsPage() {
               </Button>
             </div>
           </div>
-        </Card>
+        </div>
       )}
 
       {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <Card className="w-full max-w-md p-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="mailer-panel w-full max-w-md">
+            <div className="mailer-pad">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Add contact</h2>
               <button onClick={() => setShowCreate(false)} className="text-muted-foreground hover:text-foreground">
@@ -1018,13 +873,15 @@ export function ContactsPage() {
                 <Button type="submit">Add Contact</Button>
               </div>
             </form>
-          </Card>
+            </div>
+          </div>
         </div>
       )}
 
       {showImport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <Card className="w-full max-w-2xl p-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="mailer-panel w-full max-w-2xl">
+            <div className="mailer-pad">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Import contacts</h2>
@@ -1041,9 +898,11 @@ export function ContactsPage() {
             <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <Label className="mb-2 inline-block">Add to a list</Label>
-                <Select value={listMode} onChange={(e) => setListMode(e.target.value as typeof listMode)}>
-                  <option value="auto">Auto-name from filename</option>
-                  <option value="custom">Name it myself</option>
+                <Select
+                  value={listMode === 'existing' || listMode === 'none' ? listMode : 'custom'}
+                  onChange={(e) => setListMode(e.target.value as typeof listMode)}
+                >
+                  <option value="custom">Name this list</option>
                   <option value="existing">Add to existing list</option>
                   <option value="none">Don't add to a list</option>
                 </Select>
@@ -1063,16 +922,16 @@ export function ContactsPage() {
                 </div>
               )}
 
-              {(listMode === 'auto' || listMode === 'custom') && (
+              {listMode !== 'existing' && listMode !== 'none' && (
                 <div>
                   <Label className="mb-2 inline-block">
                     <ListPlus className="mr-1 inline h-3.5 w-3.5" />
-                    {listMode === 'auto' ? 'New list name (auto-filled from file)' : 'New list name'}
+                    List name
                   </Label>
                   <Input
                     value={newListName}
                     onChange={(e) => setNewListName(e.target.value)}
-                    placeholder={listMode === 'auto' ? 'Type name or upload a CSV…' : 'e.g. Website signups Nov 26'}
+                    placeholder="Name this list"
                   />
                 </div>
               )}
@@ -1112,9 +971,6 @@ export function ContactsPage() {
                 value={importText}
                 onChange={(e) => {
                   setImportText(e.target.value);
-                  if (!importFileName && !newListName && listMode !== 'none') {
-                    setNewListName(`Paste import ${new Date().toLocaleDateString()}`);
-                  }
                 }}
               />
               {importText && (
@@ -1172,7 +1028,7 @@ export function ContactsPage() {
                 ) : null}
                 {progress.listName && progress.status !== 'error' && (
                   <div className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-background px-2.5 py-1 text-xs">
-                    <ListPlus className="h-3.5 w-3.5 text-violet-400" /> List:
+                    <ListPlus className="h-3.5 w-3.5 text-primary" /> List:
                     <span className="font-medium">{progress.listName}</span>
                   </div>
                 )}
@@ -1197,7 +1053,9 @@ export function ContactsPage() {
                     ? 'No valid emails detected — paste or upload emails first'
                     : listMode === 'existing' && !listId
                       ? 'Select a list first'
-                      : ''
+                      : needsListName && !newListName.trim()
+                        ? 'Name this list'
+                        : ''
                 }
               >
                 {importing ? (
@@ -1213,7 +1071,7 @@ export function ContactsPage() {
               </Button>
             </div>
 
-            <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-300/30 bg-amber-500/5 p-3 text-xs text-amber-700/90 dark:text-amber-300/80">
+            <div className="mt-4 flex items-start gap-2 border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
               <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
               <div>
                 Tip: Each import creates a <span className="font-medium">new list row</span> (not a
@@ -1223,9 +1081,158 @@ export function ContactsPage() {
                 import.
               </div>
             </div>
-          </Card>
+            </div>
+          </div>
         </div>
       )}
+
+      {listModal
+        ? createPortal(
+        <div className="mailer-root fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4">
+          <button
+            type="button"
+            className="absolute inset-0"
+            aria-label="Close"
+            onClick={() => setListModal(null)}
+          />
+          <div className="mailer-panel relative z-10 flex max-h-[90vh] w-full max-w-5xl flex-col">
+            <div className="flex items-start justify-between gap-3 border-b border-[var(--mailer-stroke)] px-5 py-4">
+              <div className="min-w-0">
+                <p className="mailer-hint" style={{ marginTop: 0 }}>
+                  audience · list
+                </p>
+                <h2 className="truncate text-lg font-semibold text-primary">{listModal.name}</h2>
+                <p className="page-sub">
+                  {modalTotal.toLocaleString()} {modalTotal === 1 ? 'contact' : 'contacts'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setListModal(null)}
+                className="border border-[var(--mailer-stroke)] p-2 text-[var(--mailer-dim)] hover:text-primary"
+                aria-label="Close"
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 border-b border-[var(--mailer-stroke)] px-5 py-3">
+              <Input
+                className="min-w-[12rem] flex-1"
+                placeholder="Search this list…"
+                value={modalSearch}
+                onChange={(e) => setModalSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setModalPage(1);
+                    void loadListMembers(listModal.id, 1, modalSearch);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setModalPage(1);
+                  void loadListMembers(listModal.id, 1, modalSearch);
+                }}
+              >
+                Search
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              {modalLoading ? (
+                <PageLoading label="Loading list…" />
+              ) : (
+                <table className="min-w-full">
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Name</th>
+                      <th>Status</th>
+                      <th>Added</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modalContacts.map((c) => (
+                      <tr key={c.id}>
+                        <td className="px-4 py-2 font-medium">{c.email}</td>
+                        <td className="px-4 py-2 text-[var(--mailer-dim)]">
+                          {[c.firstName, c.lastName].filter(Boolean).join(' ') || '—'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <Badge tone={c.status === 'SUBSCRIBED' ? 'success' : 'neutral'} className="capitalize">
+                            {c.status.toLowerCase()}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-2 text-[var(--mailer-dim)]">
+                          {new Date(c.createdAt).toLocaleDateString()}
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => void deleteContact(c.id, c.email)}
+                            className="text-[var(--mailer-dim)] hover:text-destructive"
+                            title="Delete"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {!modalContacts.length ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-10 text-center text-[var(--mailer-dim)]">
+                          No contacts in this list
+                          {modalSearch.trim() ? ' match the search' : ''}.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {modalTotal > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--mailer-stroke)] px-5 py-3 text-xs">
+                <span className="text-[var(--mailer-dim)]">
+                  Page {modalPage} of {modalPages} · {modalTotal.toLocaleString()} total
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={modalPage <= 1 || modalLoading}
+                    onClick={() => {
+                      const next = modalPage - 1;
+                      setModalPage(next);
+                      void loadListMembers(listModal.id, next, modalSearch);
+                    }}
+                  >
+                    ‹ Prev
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={modalPage >= modalPages || modalLoading}
+                    onClick={() => {
+                      const next = modalPage + 1;
+                      setModalPage(next);
+                      void loadListMembers(listModal.id, next, modalSearch);
+                    }}
+                  >
+                    Next ›
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }

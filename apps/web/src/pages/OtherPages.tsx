@@ -1,12 +1,18 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { Link, Navigate } from 'react-router-dom';
+import { useAuthStore } from '@/stores/auth';
 import { api } from '@/lib/api';
+import { smtpService } from '@/services/smtp.service';
 import { templateService } from '@/services/template.service';
 import { NewTemplateModal } from '@/components/templates/NewTemplateModal';
+import { LetterPane } from '@/components/campaigns/LetterPane';
+import type { CampaignAttachment } from '@/lib/letter-placeholders';
 import { Button, Card, Input, Label, PageLoading, Select, Textarea } from '@/components/ui';
-import { Sparkles, Trash2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { ChevronDown, Copy, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
+import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
 
 const TYPES = [
   'subject_lines',
@@ -117,17 +123,30 @@ export function AiPage() {
 }
 
 export function TemplatesPage() {
+  const user = useAuthStore((s) => s.user);
   const [templates, setTemplates] = useState<
     Array<{ id: string; name: string; description?: string | null; isPublic: boolean; organizationId?: string | null }>
-  >([]);
-  const [loading, setLoading] = useState(true);
+  >(() => uiCacheGet('templates') ?? []);
+  const [loading, setLoading] = useState(() => !(uiCacheGet('templates') as unknown[] | null)?.length);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [newTemplateOpen, setNewTemplateOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editHtml, setEditHtml] = useState('');
+  const [editName, setEditName] = useState('');
+  const [placeholderMap, setPlaceholderMap] = useState<Record<string, string>>({});
+  const [editAttachments, setEditAttachments] = useState<CampaignAttachment[]>([]);
+  const [editLoading, setEditLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [previewContacts, setPreviewContacts] = useState<
+    Array<{ email: string; firstName?: string | null; lastName?: string | null }>
+  >([]);
 
   async function load() {
     try {
       const d = await api.get<{ templates: typeof templates }>('/api/templates');
-      setTemplates(d.templates);
+      setTemplates(Array.isArray(d.templates) ? d.templates : []);
+      uiCacheSet('templates', d.templates);
     } catch (err) {
       toast.error('Could not load templates', err instanceof Error ? err.message : undefined);
     } finally {
@@ -137,20 +156,42 @@ export function TemplatesPage() {
 
   useEffect(() => {
     load().catch(console.error);
+    api
+      .get<{ contacts: Array<{ email: string; firstName?: string | null; lastName?: string | null }> }>(
+        '/api/contacts?limit=40',
+      )
+      .then((d) => setPreviewContacts(Array.isArray(d.contacts) ? d.contacts.filter((c) => c.email) : []))
+      .catch(() => setPreviewContacts([]));
   }, []);
 
-  async function duplicate(id: string) {
-    try {
-      await api.post(`/api/templates/${id}/duplicate`);
-      await load();
-      toast.success('Template duplicated');
-    } catch (err) {
-      toast.error('Could not duplicate', err instanceof Error ? err.message : undefined);
-    }
-  }
+  useEffect(() => {
+    if (!editingId) return;
+    let cancelled = false;
+    setEditLoading(true);
+    templateService
+      .get(editingId)
+      .then((t) => {
+        if (cancelled) return;
+        setEditName(t.name || '');
+        setEditHtml(t.htmlContent || '');
+        setPlaceholderMap(t.editorJson?.placeholderMap || {});
+        setEditAttachments([]);
+      })
+      .catch((err) => {
+        toast.error('Could not open template', err instanceof Error ? err.message : undefined);
+        setEditingId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setEditLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingId]);
 
   async function createTemplate(input: { name: string; file: File | null }) {
     try {
+      let nextId: string | undefined;
       if (input.file) {
         const content = await input.file.text();
         const format = input.file.name.endsWith('.mjml') ? 'mjml' : 'html';
@@ -162,6 +203,7 @@ export function TemplatesPage() {
           saveAsTemplate: true,
         });
         toast.success('Template imported', input.name);
+        nextId = result.template?.id;
         if (result.removed?.length) {
           toast.info(
             'Spam phrases cleaned for inbox placement',
@@ -169,16 +211,36 @@ export function TemplatesPage() {
           );
         }
       } else {
-        await api.post('/api/templates', {
+        const created = await api.post<{ template: { id: string } }>('/api/templates', {
           name: input.name,
-          htmlContent: '<p>Hello {{firstName}}</p><a href="{{unsubscribe_url}}">Unsubscribe</a>',
+          htmlContent: '<p>{Hi|Hello} {{firstName}}</p><a href="{{unsubscribe_url}}">Unsubscribe</a>',
         });
         toast.success('Template created', input.name);
+        nextId = created.template?.id;
       }
       await load();
+      if (nextId) setEditingId(nextId);
     } catch (err) {
       toast.error('Could not create template', err instanceof Error ? err.message : undefined);
       throw err;
+    }
+  }
+
+  async function saveEditor() {
+    if (!editingId) return;
+    setSaving(true);
+    try {
+      await templateService.update(editingId, {
+        name: editName.trim() || undefined,
+        htmlContent: editHtml,
+        editorJson: { placeholderMap },
+      });
+      toast.success('Template saved', editName.trim() || 'Letter');
+      await load();
+    } catch (err) {
+      toast.error('Could not save template', err instanceof Error ? err.message : undefined);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -202,15 +264,30 @@ export function TemplatesPage() {
     }
   }
 
+  const q = filter.trim().toLowerCase();
+  const visible = q
+    ? templates.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          (t.description || '').toLowerCase().includes(q) ||
+          (t.isPublic ? 'public' : 'private').includes(q),
+      )
+    : templates;
+
   return (
-    <div className="space-y-6">
+    <div className="mailer-root page-root space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="page-title">Templates</h1>
-          <p className="text-ink-muted">Save, duplicate, and reuse email designs</p>
+        <div className="min-w-0">
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            library · templates
+          </p>
+          <h1 className="page-title text-primary">Templates</h1>
+          <p className="page-sub">
+            {templates.length} letter{templates.length === 1 ? '' : 's'} · import HTML or start blank · merge tags, spin, preview as a contact — same tools as the campaign Letter tab
+          </p>
         </div>
         <Button className="w-full sm:w-auto" onClick={() => setNewTemplateOpen(true)}>
-          New template
+          <Plus className="h-4 w-4" /> New template
         </Button>
       </div>
 
@@ -220,49 +297,145 @@ export function TemplatesPage() {
         onCreate={createTemplate}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {loading ? (
-          <div className="md:col-span-2 xl:col-span-3">
-            <PageLoading label="Loading templates…" />
-          </div>
-        ) : (
-          templates.map((t) => (
-          <Card key={t.id}>
-            <div className="font-medium">{t.name}</div>
-            <p className="mt-1 text-sm text-ink-muted">
-              {t.description || (t.isPublic ? 'Public template' : 'Private')}
+      {templates.length > 4 ? (
+        <Input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter templates…"
+          className="max-w-md"
+        />
+      ) : null}
+
+      {loading ? (
+        <PageLoading label="Loading templates…" />
+      ) : visible.length ? (
+        <div className="space-y-2">
+          {visible.map((t) => (
+            <div key={t.id} className="camp-row">
+              <div className="camp-row-main">
+                <strong>{t.name}</strong>
+                <div className="meta">
+                  {t.description || (t.isPublic ? 'Public template' : 'Private letter')}
+                </div>
+              </div>
+              <div className="camp-row-actions">
+                <Button type="button" variant="ghost" size="sm" onClick={() => setEditingId(t.id)}>
+                  <Pencil className="h-4 w-4" /> Edit
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  disabled={deletingId === t.id}
+                  onClick={() => void remove(t)}
+                >
+                  <Trash2 className="h-4 w-4" /> Delete
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : !templates.length ? (
+        <div className="mailer-panel">
+          <div className="mailer-pad space-y-3">
+            <p className="mailer-hint" style={{ marginTop: 0 }}>
+              No templates yet. Import an HTML or MJML letter, or start blank. Imported letters from the campaign Letter tab also land here.
             </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Link
-                to={`/app/campaigns/new?template=${t.id}`}
-                className="inline-flex h-8 items-center justify-center border border-border bg-background px-3 text-xs hover:border-primary hover:bg-primary/10"
-              >
-                Use in campaign
-              </Link>
-              <Button variant="outline" size="sm" onClick={() => void duplicate(t.id)}>
-                Duplicate
+            <Button onClick={() => setNewTemplateOpen(true)}>
+              <Plus className="h-4 w-4" /> New template
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="mailer-panel">
+          <div className="mailer-pad">
+            <p className="mailer-hint" style={{ marginTop: 0 }}>
+              No templates match “{filter.trim()}”.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {editingId ? (
+        <div className="mailer-root fixed inset-0 z-[80] flex flex-col bg-[var(--mailer-bg,#0b0d10)]">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--mailer-stroke)] px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="mailer-hint" style={{ marginTop: 0 }}>
+                library · edit letter
+              </p>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="max-w-md"
+                aria-label="Template name"
+              />
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button type="button" variant="ghost" onClick={() => setEditingId(null)}>
+                Close
               </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={deletingId === t.id}
-                onClick={() => void remove(t)}
-              >
-                <Trash2 className="h-4 w-4" /> Delete
+              <Button type="button" disabled={saving || editLoading} onClick={() => void saveEditor()}>
+                {saving ? 'Saving…' : 'Save'}
               </Button>
             </div>
-          </Card>
-        ))
-        )}
-      </div>
-      {!loading && !templates.length ? (
-        <Card className="py-10 text-center">
-          <p className="mb-4 text-sm text-ink-muted">
-            No templates yet. Click New template to name and import an HTML design, or start blank.
-          </p>
-          <Button onClick={() => setNewTemplateOpen(true)}>New template</Button>
-        </Card>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            {editLoading ? (
+              <PageLoading label="Loading letter…" />
+            ) : (
+              <LetterPane
+                html={editHtml}
+                onHtmlChange={setEditHtml}
+                placeholderMap={placeholderMap}
+                onPlaceholderMap={setPlaceholderMap}
+                attachments={editAttachments}
+                onAttachments={setEditAttachments}
+                previewContacts={previewContacts}
+                senderName={user?.firstName}
+                physicalAddress={user?.organization?.physicalAddress}
+                showPlaceholderTab
+              />
+            )}
+          </div>
+        </div>
       ) : null}
+    </div>
+  );
+}
+
+function isSendingApiKey(p: { type: string; viaApiKey?: boolean }) {
+  return p.viaApiKey || p.type !== 'SMTP';
+}
+
+function SettingsFold({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="mailer-panel">
+      <div className="mailer-pad">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="mb-1 flex w-full items-center justify-between gap-3 text-left"
+        >
+          <h2 className="text-sm uppercase tracking-wide text-[var(--mailer-dim)]">{title}</h2>
+          <ChevronDown
+            className={cn(
+              'h-4 w-4 shrink-0 text-[var(--mailer-dim)] transition-transform',
+              open && 'rotate-180',
+            )}
+          />
+        </button>
+        {open ? <div className="mt-3">{children}</div> : null}
+      </div>
     </div>
   );
 }
@@ -270,12 +443,29 @@ export function TemplatesPage() {
 export function SettingsPage() {
   const [keys, setKeys] = useState<Array<{ id: string; name: string; keyPrefix: string; createdAt: string }>>([]);
   const [providers, setProviders] = useState<
-    Array<{ id: string; name: string; type: string; isDefault: boolean; isActive: boolean }>
+    Array<{
+      id: string;
+      name: string;
+      type: string;
+      isDefault: boolean;
+      isActive: boolean;
+      fromEmail?: string;
+      host?: string;
+      viaApiKey?: boolean;
+    }>
   >([]);
   const [newKeyName, setNewKeyName] = useState('');
   const [createdSecret, setCreatedSecret] = useState('');
   const [address, setAddress] = useState('');
   const [sessions, setSessions] = useState<Array<{ id: string; userAgent?: string; ipAddress?: string; createdAt: string }>>([]);
+  const [apiName, setApiName] = useState('');
+  const [apiHost, setApiHost] = useState('');
+  const [apiPort, setApiPort] = useState('587');
+  const [apiUser, setApiUser] = useState('apikey');
+  const [apiKey, setApiKey] = useState('');
+  const [apiFromEmail, setApiFromEmail] = useState('');
+  const [apiFromName, setApiFromName] = useState('');
+  const [savingSendKey, setSavingSendKey] = useState(false);
 
   async function load() {
     const [k, pvd, s, me] = await Promise.all([
@@ -284,10 +474,10 @@ export function SettingsPage() {
       api.get<{ sessions: typeof sessions }>('/api/auth/sessions'),
       api.get<{ user: { organization?: { physicalAddress?: string } } }>('/api/auth/me'),
     ]);
-    setKeys(k.keys);
-    setProviders(pvd.providers);
-    setSessions(s.sessions);
-    setAddress(me.user.organization?.physicalAddress || '');
+    setKeys(Array.isArray(k.keys) ? k.keys : []);
+    setProviders(Array.isArray(pvd.providers) ? pvd.providers : []);
+    setSessions(Array.isArray(s.sessions) ? s.sessions : []);
+    setAddress(me.user?.organization?.physicalAddress || '');
   }
 
   useEffect(() => {
@@ -307,6 +497,66 @@ export function SettingsPage() {
     }
   }
 
+  async function createSendingApiKey(e: React.FormEvent) {
+    e.preventDefault();
+    if (!apiHost.trim()) {
+      toast.error('Host is required');
+      return;
+    }
+    if (!apiKey.trim()) {
+      toast.error('API key is required');
+      return;
+    }
+    if (!apiFromEmail.trim()) {
+      toast.error('Sender email is required');
+      return;
+    }
+    const port = apiPort.trim() || '587';
+    const encryption = port === '465' ? 'SSL' : 'STARTTLS';
+    const config: Record<string, string> = {
+      host: apiHost.trim(),
+      port,
+      encryption,
+      user: apiUser.trim() || 'apikey',
+      pass: apiKey.trim(),
+      apiKey: apiKey.trim(),
+      viaApiKey: 'true',
+      fromEmail: apiFromEmail.trim(),
+      fromName: apiFromName.trim(),
+    };
+    setSavingSendKey(true);
+    try {
+      const data = await api.post<{ provider: { id: string } }>('/api/providers', {
+        name: apiName.trim() || `${apiHost.trim()} ${apiFromEmail.trim()}`,
+        type: 'SMTP',
+        isActive: false,
+        config,
+      });
+      const test = await smtpService.testConnection({ providerId: data.provider.id });
+      if (test.success) {
+        await smtpService.update(data.provider.id, { isActive: true });
+        toast.success('Sending API key saved', 'Connection OK — it is in campaign SMTP / provider → API key');
+      } else {
+        toast.warning(
+          'Key saved but connection failed',
+          test.error || test.message || 'Fix host / API key, then test in SMTP Manager if needed',
+        );
+      }
+      setApiName('');
+      setApiHost('');
+      setApiPort('587');
+      setApiUser('apikey');
+      setApiKey('');
+      setApiFromEmail('');
+      setApiFromName('');
+      await load();
+    } catch (err) {
+      toast.error('Could not save sending API key', err instanceof Error ? err.message : undefined);
+    } finally {
+      setSavingSendKey(false);
+    }
+  }
+
   async function saveOrg(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -318,14 +568,18 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="mailer-root page-root max-w-4xl space-y-4">
       <div>
-        <h1 className="page-title">Settings</h1>
+        <p className="mailer-hint" style={{ marginTop: 0 }}>
+          system · settings
+        </p>
+        <h1 className="page-title text-primary">Settings</h1>
         <p className="page-sub">Organization, API keys, and sessions</p>
       </div>
 
-      <Card>
-        <h2 className="mb-3 font-medium">Physical mailing address (CAN-SPAM)</h2>
+      <div className="mailer-panel">
+        <div className="mailer-pad">
+        <h2 className="mb-3 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Physical mailing address (CAN-SPAM)</h2>
         <form onSubmit={saveOrg} className="flex flex-col gap-2 sm:flex-row">
           <Input
             value={address}
@@ -336,10 +590,10 @@ export function SettingsPage() {
             Save
           </Button>
         </form>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <h2 className="mb-1 font-medium">Email providers</h2>
+      <SettingsFold title="Email providers">
         <p className="mb-4 text-sm text-ink-muted">
           SMTP profiles, testing, and rotation live in SMTP Manager.
         </p>
@@ -361,16 +615,136 @@ export function SettingsPage() {
             <p className="text-sm text-muted-foreground">No providers configured yet.</p>
           ) : null}
         </div>
-        <Link
-          to="/app/smtp"
-          className="inline-flex items-center justify-center gap-2 bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110"
-        >
+        <Link to="/app/smtp" className="inline-flex text-primary underline">
           Open SMTP Manager
         </Link>
-      </Card>
+      </SettingsFold>
 
-      <Card>
-        <h2 className="mb-3 font-medium">API keys</h2>
+      <SettingsFold title="Sending API keys">
+        <p className="mb-4 text-sm text-ink-muted">
+          Any provider that gives an SMTP host + API key (SendGrid, Mailgun, SMTP2GO, SES, Postmark, Brevo, …).
+          Saved keys appear under campaign <span className="text-foreground">SMTP / provider → API key</span>.
+          The sender email you enter here is the From used on send.
+        </p>
+        <form onSubmit={(e) => void createSendingApiKey(e)} className="mb-4 space-y-3">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label>Host</Label>
+              <Input
+                value={apiHost}
+                onChange={(e) => setApiHost(e.target.value)}
+                required
+                placeholder="smtp.sendgrid.net"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <Label>Display name</Label>
+              <Input
+                value={apiName}
+                onChange={(e) => setApiName(e.target.value)}
+                placeholder="e.g. SMTP2GO production"
+              />
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label>Port</Label>
+              <Input
+                value={apiPort}
+                onChange={(e) => setApiPort(e.target.value)}
+                placeholder="587"
+              />
+            </div>
+            <div>
+              <Label>Username</Label>
+              <Input
+                value={apiUser}
+                onChange={(e) => setApiUser(e.target.value)}
+                placeholder="apikey"
+              />
+            </div>
+          </div>
+          <div>
+            <Label>API key</Label>
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              required
+              placeholder="Paste API key / SMTP password"
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label>Sender email</Label>
+              <Input
+                type="email"
+                value={apiFromEmail}
+                onChange={(e) => setApiFromEmail(e.target.value)}
+                required
+                placeholder="donotreply@yourdomain.com"
+              />
+            </div>
+            <div>
+              <Label>Sender name (optional)</Label>
+              <Input
+                value={apiFromName}
+                onChange={(e) => setApiFromName(e.target.value)}
+                placeholder="Leave blank — campaign sender name is used"
+              />
+            </div>
+          </div>
+          <Button type="submit" disabled={savingSendKey}>
+            {savingSendKey ? 'Saving…' : 'Save sending key'}
+          </Button>
+        </form>
+        {providers
+          .filter(isSendingApiKey)
+          .map((p) => (
+            <div key={p.id} className="flex justify-between gap-2 border-b border-border py-2 text-sm">
+              <span>
+                {p.name}
+                {p.host ? ` · ${p.host}` : p.type !== 'SMTP' ? ` · ${p.type}` : ''}
+                {p.fromEmail ? ` · ${p.fromEmail}` : ''}
+                {p.isActive ? '' : ' · inactive'}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  if (
+                    !(await confirmDialog({
+                      title: 'Remove sending key',
+                      description: `Remove “${p.name}”? Campaigns will stop using it.`,
+                      tone: 'danger',
+                      destructive: true,
+                      confirmText: 'Remove',
+                    }))
+                  )
+                    return;
+                  try {
+                    await api.delete(`/api/providers/${p.id}`);
+                    await load();
+                    toast.success('Sending key removed');
+                  } catch (err) {
+                    toast.error('Could not remove key', err instanceof Error ? err.message : undefined);
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        {!providers.some(isSendingApiKey) ? (
+          <p className="text-sm text-muted-foreground">No sending API keys yet.</p>
+        ) : null}
+      </SettingsFold>
+
+      <div className="mailer-panel">
+        <div className="mailer-pad">
+        <h2 className="mb-1 text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Inbox Flow access keys</h2>
+        <p className="mb-3 text-sm text-ink-muted">For scripts that call this app’s API — not for sending mail.</p>
         {createdSecret ? (
           <div className="mb-3 break-all border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
             Copy now — shown once: <code>{createdSecret}</code>
@@ -409,11 +783,11 @@ export function SettingsPage() {
             </Button>
           </div>
         ))}
-        {!keys.length ? <p className="text-sm text-muted-foreground">No API keys yet.</p> : null}
-      </Card>
+        {!keys.length ? <p className="text-sm text-muted-foreground">No Inbox Flow access keys yet.</p> : null}
+        </div>
+      </div>
 
-      <Card>
-        <h2 className="mb-3 font-medium">Active sessions</h2>
+      <SettingsFold title="Active sessions">
         {sessions.map((s) => (
           <div key={s.id} className="flex justify-between gap-4 border-b border-border py-2 text-sm">
             <div className="min-w-0 truncate">
@@ -440,81 +814,12 @@ export function SettingsPage() {
           </div>
         ))}
         {!sessions.length ? <p className="text-sm text-muted-foreground">No active sessions.</p> : null}
-      </Card>
+      </SettingsFold>
     </div>
   );
 }
 
 export function AdminPage() {
-  const [users, setUsers] = useState<
-    Array<{ id: string; email: string; firstName: string; lastName: string; role: string; status: string }>
-  >([]);
-  const [health, setHealth] = useState<{ status: string; database: string } | null>(null);
-  const [logs, setLogs] = useState<Array<{ id: string; action: string; resource: string; createdAt: string }>>([]);
-
-  useEffect(() => {
-    Promise.all([
-      api.get<{ users: typeof users }>('/api/admin/users'),
-      api.get<{ status: string; database: string }>('/api/admin/health'),
-      api.get<{ logs: typeof logs }>('/api/admin/audit-logs'),
-    ])
-      .then(([u, h, l]) => {
-        setUsers(u.users);
-        setHealth(h);
-        setLogs(l.logs);
-      })
-      .catch(console.error);
-  }, []);
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="page-title">Admin</h1>
-        <p className="text-ink-muted">Users, system health, and audit logs</p>
-      </div>
-
-      <Card>
-        <h2 className="font-medium mb-2">System health</h2>
-        <p className="text-sm">
-          API: {health?.status || '…'} · Database: {health?.database || '…'}
-        </p>
-      </Card>
-
-      <Card>
-        <h2 className="font-medium mb-3">Users</h2>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-ink-muted border-b border-border">
-              <th className="pb-2">Name</th>
-              <th className="pb-2">Email</th>
-              <th className="pb-2">Role</th>
-              <th className="pb-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id} className="border-b border-border/50">
-                <td className="py-2">
-                  {u.firstName} {u.lastName}
-                </td>
-                <td>{u.email}</td>
-                <td>{u.role}</td>
-                <td>{u.status}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-
-      <Card>
-        <h2 className="font-medium mb-3">Audit logs</h2>
-        {!logs.length && <p className="text-sm text-ink-muted">No audit entries yet.</p>}
-        {logs.map((l) => (
-          <div key={l.id} className="text-sm py-2 border-b border-border/50">
-            {l.action} · {l.resource} · {new Date(l.createdAt).toLocaleString()}
-          </div>
-        ))}
-      </Card>
-    </div>
-  );
+  return <Navigate to="/admin" replace />;
 }
+

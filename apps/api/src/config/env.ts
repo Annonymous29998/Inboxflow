@@ -21,9 +21,14 @@ const envSchema = z.object({
   APP_NAME: z.string().default('Inbox Flow'),
   APP_URL: z.string().url().default('http://localhost:5173'),
   API_URL: z.string().url().default('http://localhost:3001'),
+  /** Public origin for open/click/unsubscribe (RDP public IP or domain). */
+  PUBLIC_URL: z.string().optional().default(''),
+  TRACKING_BASE_URL: z.string().optional().default(''),
   API_PORT: z.coerce.number().default(3001),
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),
+  /** Lightsail access secret — hybrid desktop verifies cloud JWTs with this when set. */
+  CLOUD_JWT_ACCESS_SECRET: z.string().optional().default(''),
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
@@ -54,6 +59,8 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().default(100),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
   DEFAULT_SEND_RATE: z.coerce.number().default(14),
+  /** How many workspaces may SMTP-send at the same moment on this process. */
+  EMAIL_PARALLEL_ORGS: z.coerce.number().default(8),
   MAX_RETRY_ATTEMPTS: z.coerce.number().default(3),
   BATCH_SIZE: z.coerce.number().default(100),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),

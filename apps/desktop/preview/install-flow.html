@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Inbox Flow — Install preview</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #10161c;
+        --stroke: #1f2a1f;
+        --mint: #7cff9a;
+        --muted: #9bb09b;
+        --text: #e8ffe8;
+        --light: #f4f6f5;
+        --win: #ececec;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; }
+      .app { min-height: 100%; display: grid; grid-template-columns: 240px 1fr; }
+      nav {
+        border-right: 1px solid var(--stroke);
+        padding: 22px 16px;
+        background: #070a0c;
+      }
+      nav h1 { margin: 0; font-size: 11px; letter-spacing: 0.18em; color: var(--mint); text-transform: uppercase; }
+      nav p { color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .step-btn {
+        display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px;
+        background: transparent; border: 1px solid var(--stroke); color: var(--muted);
+        cursor: pointer; font: inherit; font-size: 13px;
+      }
+      .step-btn.on { border-color: var(--mint); color: var(--mint); background: #122016; }
+      main { padding: 28px 36px 48px; }
+      .hint { color: var(--muted); font-size: 13px; max-width: 720px; }
+      .stage { margin-top: 18px; }
+      .win {
+        width: min(880px, 100%);
+        background: var(--win);
+        color: #1b1b1b;
+        border: 1px solid #c9c9c9;
+        box-shadow: 0 24px 60px rgba(0,0,0,.45);
+      }
+      .win-bar { height: 32px; background: #fff; border-bottom: 1px solid #ddd; display: flex; align-items: center; padding: 0 12px; font-size: 12px; gap: 8px; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #cfcfcf; }
+      .wizard { display: grid; grid-template-columns: 164px 1fr; min-height: 360px; }
+      .side {
+        background: #0b0f14 url("./icon.png") no-repeat center 48px / 72px;
+        color: var(--mint);
+        padding: 140px 16px 16px;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border-right: 1px solid #111;
+      }
+      .body { padding: 28px 28px 16px; background: #f7f7f7; }
+      .body h2 { margin: 0 0 8px; font-size: 22px; }
+      .body p { margin: 0 0 10px; color: #444; font-size: 14px; line-height: 1.5; }
+      .btns { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; background: #ececec; border-top: 1px solid #ddd; }
+      .btns button { min-width: 88px; padding: 7px 12px; font: inherit; }
+      .primary { background: #0b0f14; color: var(--mint); border: 1px solid #2a3d2a; }
+      .bar { height: 8px; background: #ddd; margin: 18px 0 10px; overflow: hidden; }
+      .fill { height: 100%; width: 8%; background: #0d9f4f; }
+      .splash {
+        width: min(520px, 100%);
+        background: var(--bg);
+        border: 1px solid var(--stroke);
+        padding: 28px 32px 24px;
+        min-height: 320px;
+        display: flex;
+        flex-direction: column;
+      }
+      .brand { display: flex; gap: 14px; align-items: center; }
+      .mark { width: 52px; height: 52px; object-fit: contain; border: 1px solid var(--stroke); }
+      .splash h2 { margin: 0; font-size: 13px; letter-spacing: 0.16em; color: var(--mint); text-transform: uppercase; }
+      .splash .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+      .splash .stage-t { margin: 28px 0 10px; font-size: 18px; }
+      .splash .line { color: var(--muted); font-size: 12px; min-height: 18px; }
+      .sbar { margin-top: 16px; height: 6px; background: #122016; border: 1px solid var(--stroke); overflow: hidden; }
+      .sfill { height: 100%; width: 8%; background: var(--mint); box-shadow: 0 0 12px rgba(124,255,154,.45); }
+      .foot { margin-top: auto; display: flex; justify-content: space-between; color: #6d856d; font-size: 11px; }
+      .gh { width: min(880px, 100%); background: #0d1117; border: 1px solid #30363d; padding: 22px; }
+      .gh h2 { margin: 0 0 6px; font-size: 20px; }
+      .asset { margin-top: 14px; padding: 12px 14px; border: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+      .login {
+        width: min(720px, 100%);
+        background: #050805;
+        border: 1px solid var(--stroke);
+        padding: 32px;
+        font-family: Consolas, ui-monospace, monospace;
+      }
+      .login h2 { color: var(--mint); font-size: 14px; letter-spacing: .12em; }
+      input { width: 100%; margin: 8px 0 14px; padding: 10px; background: #0b0f14; border: 1px solid var(--stroke); color: var(--text); }
+      .warn { margin-top: 16px; padding: 12px; border: 1px solid #8a6d1a; color: #f0d58a; font-size: 13px; }
+      .light {
+        width: min(720px, 100%);
+        background: #f4f7f6;
+        color: #0f172a;
+        border: 1px solid #d5ddd8;
+        padding: 28px;
+      }
+      .light h2 { margin: 0 0 6px; }
+      .light p { color: #475569; font-size: 14px; }
+      .light label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+      .light input { background: #fff; color: #0f172a; border: 1px solid #cbd5e1; }
+      .teal { background: #0d9488; color: #fff; border: 0; padding: 10px 18px; cursor: pointer; font: inherit; }
+      .mailer {
+        width: min(880px, 100%);
+        background: #0b0f14;
+        border: 1px solid var(--stroke);
+        min-height: 280px;
+        display: grid;
+        grid-template-columns: 180px 1fr;
+      }
+      .mailer aside { padding: 16px; border-right: 1px solid var(--stroke); color: var(--mint); font-size: 12px; }
+      .mailer aside a { display: block; color: var(--muted); padding: 6px 0; }
+      .mailer aside a.on { color: var(--mint); }
+      .mailer section { padding: 20px; }
+      .row { padding: 10px 12px; border: 1px solid var(--stroke); margin-top: 8px; color: var(--muted); font-size: 13px; }
+      .refs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
+      .refs img { width: 100%; border: 1px solid var(--stroke); cursor: pointer; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <nav>
+        <h1>Inbox Flow</h1>
+        <p>Full path: GitHub → Setup → EXE splash → sign in → Bind PC → mailer</p>
+        <button class="step-btn on" data-step="0" type="button">1. GitHub Releases</button>
+        <button class="step-btn" data-step="1" type="button">2. Setup welcome</button>
+        <button class="step-btn" data-step="2" type="button">3. Copying files</button>
+        <button class="step-btn" data-step="3" type="button">4. Finish / Launch</button>
+        <button class="step-btn" data-step="4" type="button">5. EXE installing screen</button>
+        <button class="step-btn" data-step="5" type="button">6. Sign in</button>
+        <button class="step-btn" data-step="6" type="button">7. Bind required</button>
+        <button class="step-btn" data-step="7" type="button">8. Bind PC login</button>
+        <button class="step-btn" data-step="8" type="button">9. Bind this IP</button>
+        <button class="step-btn" data-step="9" type="button">10. PC is bound</button>
+        <button class="step-btn" data-step="10" type="button">11. Mailer</button>
+      </nav>
+      <main>
+        <p class="hint" id="caption"></p>
+        <div class="stage" id="stage"></div>
+        <p class="hint" style="margin-top:22px">Concept renders (same flow):</p>
+        <div class="refs">
+          <img src="./welcome.jpg" alt="Setup welcome concept" data-step="1" />
+          <img src="./progress.jpg" alt="Setup progress concept" data-step="2" />
+          <img src="./splash.jpg" alt="EXE splash concept" data-step="4" />
+        </div>
+      </main>
+    </div>
+    <script>
+      const screens = [
+        {
+          caption: "Created users download InboxFlow-Setup from GitHub Releases (not Lightsail). This repo has no release assets yet — the file still lives in apps/desktop/release/ until you publish.",
+          html: `
+            <div class="gh">
+              <p style="color:#8b949e;margin:0 0 8px">github.com/Annonymous29998/Inboxflow · Releases</p>
+              <h2>Inbox Flow 1.2.2</h2>
+              <p style="color:#8b949e">Windows VPS / RDP installer. Thin client — login talks to Lightsail; send stays on this PC.</p>
+              <div class="asset">
+                <span>InboxFlow-Setup-1.2.2.exe · ~80 MB</span>
+                <button class="primary" type="button" data-next>Download</button>
+              </div>
+            </div>`
+        },
+        {
+          caption: "NSIS Setup.exe (after rebuild with oneClick:false). Shortcuts on Desktop + Start Menu. Does not send mail yet.",
+          html: `
+            <div class="win">
+              <div class="win-bar"><span class="dot"></span> Inbox Flow Setup</div>
+              <div class="wizard">
+                <div class="side">Inbox Flow<br/>inboxflow.io</div>
+                <div class="body">
+                  <h2>Install Inbox Flow</h2>
+                  <p>This copies <b>InboxFlow.exe</b> for this Windows user, plus Start Menu and Desktop shortcuts.</p>
+                  <p>Mail is not sent during setup. After install, the app starts a local host and opens <code>http://localhost:5000</code>.</p>
+                </div>
+              </div>
+              <div class="btns">
+                <button type="button" disabled>Back</button>
+                <button class="primary" type="button" data-next>Next</button>
+                <button type="button">Cancel</button>
+              </div>
+            </div>`
+        },
+        {
+          caption: "Copying files into %LOCALAPPDATA%\\Programs\\Inbox Flow. Previous InboxFlow.exe is closed first so the installer does not hang on Retry.",
+          html: `
+            <div class="win">
+              <div class="win-bar"><span class="dot"></span> Inbox Flow Setup</div>
+              <div class="wizard">
+                <div class="side">Inbox Flow<br/>inboxflow.io</div>
+                <div class="body">
+                  <h2>Installing</h2>
+                  <p id="prog-line">Extracting InboxFlow.exe…</p>
+                  <div class="bar"><div class="fill" id="prog-fill"></div></div>
+                  <p>Writing Start Menu shortcut<br/>Creating Desktop shortcut</p>
+                </div>
+              </div>
+              <div class="btns">
+                <button type="button" disabled>Back</button>
+                <button type="button" disabled>Next</button>
+                <button type="button">Cancel</button>
+              </div>
+            </div>`
+        },
+        {
+          caption: "Finish runs Inbox Flow (runAfterFinish). That is the EXE, not the browser yet.",
+          html: `
+            <div class="win">
+              <div class="win-bar"><span class="dot"></span> Inbox Flow Setup</div>
+              <div class="wizard">
+                <div class="side">Inbox Flow<br/>inboxflow.io</div>
+                <div class="body">
+                  <h2>Installation complete</h2>
+                  <p>Inbox Flow is installed for this Windows user.</p>
+                  <p><label><input type="checkbox" checked /> Run Inbox Flow</label></p>
+                </div>
+              </div>
+              <div class="btns">
+                <button class="primary" type="button" data-next>Finish</button>
+              </div>
+            </div>`
+        },
+        {
+          caption: "First launch splash (Electron). Local host starts, then the browser opens. This is the installing screen you asked for — before localhost.",
+          html: `
+            <div class="splash">
+              <div class="brand">
+                <img class="mark" src="./icon.png" alt="" />
+                <div>
+                  <h2>Inbox Flow</h2>
+                  <p class="sub">inboxflow.io · desktop host</p>
+                </div>
+              </div>
+              <p class="stage-t" id="sp-stage">Installing Inbox Flow</p>
+              <p class="line" id="sp-line">Preparing this PC…</p>
+              <div class="sbar"><div class="sfill" id="sp-fill"></div></div>
+              <div class="foot"><span id="sp-pct">8%</span><span>localhost:5000 opens when ready</span></div>
+            </div>`
+        },
+        {
+          caption: "http://localhost:5000/login on the VPS. Created user signs in with username + license. Staff skip bind and go to the control panel.",
+          html: `
+            <div class="login">
+              <h2>* Inbox Flow · inboxflow.io · TUI *</h2>
+              <p>[ INFO ] Enter your Username and license key</p>
+              <label>Username</label>
+              <input value="demo" readonly />
+              <label>License key</label>
+              <input type="password" value="xxxxxxxxxxxx" readonly />
+              <button class="primary" type="button" data-next>Sign in</button>
+            </div>`
+        },
+        {
+          caption: "Created users are not bound yet. Sign-in stays here until they open Bind PC. The mailer does not open.",
+          html: `
+            <div class="login">
+              <h2>* Inbox Flow · inboxflow.io · TUI *</h2>
+              <p>[ WARN ] This PC is not bound yet.</p>
+              <div class="warn">Open Bind PC, sign in with your username and license key, then bind this PC. Staff never see this step.</div>
+              <p style="margin-top:16px">
+                <button class="primary" type="button" data-next>Bind PC</button>
+              </p>
+            </div>`
+        },
+        {
+          caption: "/bind-pc — light Bind PC site. Same username + license, then Continue.",
+          html: `
+            <div class="light">
+              <p style="letter-spacing:.2em;font-size:11px;font-weight:800;color:#0f766e">INBOX FLOW</p>
+              <h2>Bind PC</h2>
+              <p>Enter your username and license key</p>
+              <label>Username</label>
+              <input value="demo" readonly />
+              <label>License key</label>
+              <input type="password" value="xxxxxxxxxxxx" readonly />
+              <button class="teal" type="button" data-next>Continue</button>
+            </div>`
+        },
+        {
+          caption: "Not bound yet. They enter this VPS public IP and Bind PC. That IP is what SMTP and open/click pixels use.",
+          html: `
+            <div class="light">
+              <p style="letter-spacing:.2em;font-size:11px;font-weight:800;color:#0f766e">INBOX FLOW</p>
+              <h2>Activate this license</h2>
+              <p>License not activated. Bind this PC with the public IP of the Windows VPS.</p>
+              <label>License key</label>
+              <input type="password" value="xxxxxxxxxxxx" readonly />
+              <label>IP address</label>
+              <input value="203.0.113.40" readonly />
+              <button class="teal" type="button" data-next>Bind PC</button>
+            </div>`
+        },
+        {
+          caption: "Bound. They sign in again; the mailer is allowed. Next launches skip this until they reset bind.",
+          html: `
+            <div class="light">
+              <p style="letter-spacing:.2em;font-size:11px;font-weight:800;color:#0f766e">INBOX FLOW</p>
+              <h2>This PC is bound</h2>
+              <p>You can now use the mailer.</p>
+              <p><b>License</b> valid until 19 Dec 2026<br/><b>IP address</b> 203.0.113.40</p>
+              <button class="teal" type="button" data-next>Sign in</button>
+            </div>`
+        },
+        {
+          caption: "Mailer TUI at /app/campaigns. Setup, SMTP, recipients, letter, send. Admin website is not this screen.",
+          html: `
+            <div class="mailer">
+              <aside>
+                INBOX FLOW<br/>inboxflow.io
+                <p style="margin:16px 0 6px;color:#6d856d">── MAILER ──</p>
+                <a class="on">Campaigns</a>
+                <a>Queue</a>
+                <a>Templates</a>
+                <p style="margin:16px 0 6px;color:#6d856d">── AUDIENCE ──</p>
+                <a>Contacts</a>
+                <p style="margin:16px 0 6px;color:#6d856d">── SYSTEM ──</p>
+                <a>SMTP Manager</a>
+                <a>Settings</a>
+              </aside>
+              <section>
+                <h2 style="margin:0 0 8px;color:var(--mint);font-size:16px;">Campaigns</h2>
+                <p style="color:var(--muted);font-size:12px;">Open a campaign for Setup · SMTP/Proxy · Recipients · Letter · Logs · Results</p>
+                <div class="row">Signup welcome · SENDING · 210/400</div>
+                <div class="row">May restock · DRAFT</div>
+                <div class="row">April catalog · SENT · 1840/1852</div>
+              </section>
+            </div>`
+        }
+      ];
+
+      let i = 0;
+      const stage = document.getElementById("stage");
+      const caption = document.getElementById("caption");
+      const buttons = [...document.querySelectorAll(".step-btn")];
+
+      function render(n) {
+        i = n;
+        buttons.forEach((b) => b.classList.toggle("on", Number(b.dataset.step) === n));
+        caption.textContent = screens[n].caption;
+        stage.innerHTML = screens[n].html;
+        stage.querySelectorAll("[data-next]").forEach((el) => el.addEventListener("click", () => render(Math.min(screens.length - 1, i + 1))));
+        if (n === 2) {
+          let p = 8;
+          const fill = document.getElementById("prog-fill");
+          const line = document.getElementById("prog-line");
+          const lines = ["Closing previous InboxFlow.exe…", "Extracting InboxFlow.exe…", "Writing Start Menu shortcut…", "Creating Desktop shortcut…"];
+          const t = setInterval(() => {
+            p = Math.min(100, p + 12);
+            if (fill) fill.style.width = p + "%";
+            if (line) line.textContent = lines[Math.min(lines.length - 1, Math.floor(p / 28))];
+            if (p >= 100) {
+              clearInterval(t);
+              setTimeout(() => render(3), 400);
+            }
+          }, 220);
+        }
+        if (n === 4) {
+          const steps = [
+            [8, "Preparing this PC…"],
+            [22, "Writing local config…"],
+            [45, "Starting local host…"],
+            [72, "Connecting Inbox Flow…"],
+            [84, "Binding http://localhost:5000…"],
+            [100, "Opening http://localhost:5000/login"],
+          ];
+          let k = 0;
+          const tick = () => {
+            const [pct, line] = steps[k];
+            const fill = document.getElementById("sp-fill");
+            const lineEl = document.getElementById("sp-line");
+            const pctEl = document.getElementById("sp-pct");
+            const stageEl = document.getElementById("sp-stage");
+            if (fill) fill.style.width = pct + "%";
+            if (lineEl) lineEl.textContent = line;
+            if (pctEl) pctEl.textContent = pct + "%";
+            if (stageEl && pct === 100) stageEl.textContent = "Install complete";
+            k += 1;
+            if (k < steps.length) setTimeout(tick, 700);
+            else setTimeout(() => render(5), 900);
+          };
+          setTimeout(tick, 400);
+        }
+      }
+
+      buttons.forEach((b) => b.addEventListener("click", () => render(Number(b.dataset.step))));
+      document.querySelectorAll(".refs img").forEach((img) => img.addEventListener("click", () => render(Number(img.dataset.step))));
+      render(0);
+    </script>
+  </body>
+</html>

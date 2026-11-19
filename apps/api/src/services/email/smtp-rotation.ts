@@ -1,6 +1,32 @@
 import { prisma } from '../../config/prisma.js';
+import { isSqliteDatabase } from '../../config/db-kind.js';
 import type { EmailProvider } from '@prisma/client';
 import { writeSystemLog } from '../system-log.js';
+import { parseProviderConfig } from './providers.js';
+
+let sqliteLimitTables = false;
+async function ensureSqliteLimitTables() {
+  if (!isSqliteDatabase() || sqliteLimitTables) return;
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "SmtpHourlySent" (
+      provider_id TEXT NOT NULL,
+      hour_key TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (provider_id, hour_key)
+    )
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "SmtpMinuteSent" (
+      provider_id TEXT NOT NULL,
+      minute_key TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (provider_id, minute_key)
+    )
+  `);
+  sqliteLimitTables = true;
+}
 
 export type RotationMode = 'failover' | 'round_robin' | 'weighted' | 'performance';
 
@@ -18,6 +44,7 @@ export const DEFAULT_SMTP_ROTATION: SmtpRotationSettings = {
 type OrgSendSettings = {
   smtpRotation?: Partial<SmtpRotationSettings>;
   rotationCursor?: number;
+  fromRotateCursors?: Record<string, number>;
   [key: string]: unknown;
 };
 
@@ -48,6 +75,7 @@ function minuteKey() {
 
 export async function getHourlySent(providerId: string): Promise<number> {
   try {
+    await ensureSqliteLimitTables();
     const hk = hourKey();
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT count FROM "SmtpHourlySent"
@@ -61,6 +89,7 @@ export async function getHourlySent(providerId: string): Promise<number> {
 
 export async function getMinuteSent(providerId: string): Promise<number> {
   try {
+    await ensureSqliteLimitTables();
     const mk = minuteKey();
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT count FROM "SmtpMinuteSent"
@@ -74,7 +103,19 @@ export async function getMinuteSent(providerId: string): Promise<number> {
 
 export async function incrementHourlySent(providerId: string) {
   try {
+    await ensureSqliteLimitTables();
     const hk = hourKey();
+    if (isSqliteDatabase()) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "SmtpHourlySent" (provider_id, hour_key, count, updated_at)
+         VALUES (?, ?, 1, datetime('now'))
+         ON CONFLICT (provider_id, hour_key)
+         DO UPDATE SET count = count + 1, updated_at = datetime('now')`,
+        providerId,
+        hk,
+      );
+      return;
+    }
     await prisma.$executeRaw`
       INSERT INTO "SmtpHourlySent" (provider_id, hour_key, count, updated_at)
       VALUES (${providerId}, ${hk}, 1, NOW())
@@ -88,7 +129,19 @@ export async function incrementHourlySent(providerId: string) {
 
 export async function incrementMinuteSent(providerId: string) {
   try {
+    await ensureSqliteLimitTables();
     const mk = minuteKey();
+    if (isSqliteDatabase()) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "SmtpMinuteSent" (provider_id, minute_key, count, updated_at)
+         VALUES (?, ?, 1, datetime('now'))
+         ON CONFLICT (provider_id, minute_key)
+         DO UPDATE SET count = count + 1, updated_at = datetime('now')`,
+        providerId,
+        mk,
+      );
+      return;
+    }
     await prisma.$executeRaw`
       INSERT INTO "SmtpMinuteSent" (provider_id, minute_key, count, updated_at)
       VALUES (${providerId}, ${mk}, 1, NOW())
@@ -178,14 +231,96 @@ async function nextRoundRobinIndex(organizationId: string, modulo: number): Prom
   return cursor % modulo;
 }
 
+/** Round-robin SMTPs × per-SMTP From slots: SMTP1 From1 … SMTPn From1, then From2, wrap. */
+export function smtpFromRotationGrid(
+  smtpCount: number,
+  fromCount: number,
+  emailCount: number,
+): Array<{ smtp: number; from: number }> {
+  const nSmtp = Math.max(0, Math.floor(smtpCount));
+  const nFrom = Math.max(0, Math.floor(fromCount));
+  if (!nSmtp || !nFrom || emailCount <= 0) return [];
+  const smtpCursors = Array.from({ length: nSmtp }, () => 0);
+  let rr = 0;
+  const out: Array<{ smtp: number; from: number }> = [];
+  for (let i = 0; i < emailCount; i++) {
+    const smtp = rr % nSmtp;
+    rr += 1;
+    const from = smtpCursors[smtp]! % nFrom;
+    smtpCursors[smtp] = from + 1;
+    out.push({ smtp: smtp + 1, from: from + 1 });
+  }
+  return out;
+}
+
+export function fromCursorSlot(cursor: number, modulo: number): { index: number; next: number } {
+  if (modulo <= 0) return { index: 0, next: 0 };
+  const c = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0;
+  return { index: c % modulo, next: (c + 1) % modulo };
+}
+
+async function loadFromRotateState(organizationId: string, providerId: string) {
+  const org = await prisma.organization.findUnique({ where: { id: organizationId } });
+  const settings = (org?.sendSettings || {}) as OrgSendSettings;
+  const map = { ...(settings.fromRotateCursors || {}) };
+  const cursor = Number(map[providerId] || 0);
+  return { settings, map, cursor: Number.isFinite(cursor) ? cursor : 0 };
+}
+
+/** Current From slot for this SMTP (does not advance — commit after a successful send). */
+export async function peekFromIdentityIndex(
+  organizationId: string,
+  providerId: string,
+  modulo: number,
+): Promise<number> {
+  if (modulo <= 0) return 0;
+  const { cursor } = await loadFromRotateState(organizationId, providerId);
+  return fromCursorSlot(cursor, modulo).index;
+}
+
+/** Advance this SMTP’s From cursor after the message was accepted. */
+export async function commitFromIdentityIndex(
+  organizationId: string,
+  providerId: string,
+  modulo: number,
+): Promise<void> {
+  if (modulo <= 0) return;
+  const { settings, map, cursor } = await loadFromRotateState(organizationId, providerId);
+  map[providerId] = fromCursorSlot(cursor, modulo).next;
+  await prisma.organization.update({
+    where: { id: organizationId },
+    data: {
+      sendSettings: { ...settings, fromRotateCursors: map } as object,
+    },
+  });
+}
+
 /**
  * Build ordered SMTP/API provider list for one send attempt.
  */
+export type SendChannel = 'smtp' | 'api';
+
+function isApiKeyProvider(p: EmailProvider) {
+  if (p.type !== 'SMTP') return true;
+  try {
+    return parseProviderConfig(p.config).viaApiKey === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function providerMatchesChannel(p: EmailProvider, channel?: SendChannel | null) {
+  if (!channel) return true;
+  if (channel === 'smtp') return p.type === 'SMTP' && !isApiKeyProvider(p);
+  return isApiKeyProvider(p);
+}
+
 export async function resolveRotatedProviders(input: {
   organizationId: string;
   preferredProviderId?: string | null;
   rotation?: SmtpRotationSettings;
   smtpOnly?: boolean;
+  sendChannel?: SendChannel | null;
 }): Promise<EmailProvider[]> {
   const rotation = input.rotation ?? DEFAULT_SMTP_ROTATION;
 
@@ -198,14 +333,23 @@ export async function resolveRotatedProviders(input: {
     orderBy: [{ priority: 'desc' }, { isDefault: 'desc' }, { createdAt: 'asc' }],
   });
 
-  let eligible = await filterBySendingLimits(all);
+  const preferredRow = input.preferredProviderId
+    ? all.find((p) => p.id === input.preferredProviderId)
+    : undefined;
+  const sendChannel: SendChannel | null =
+    input.sendChannel ||
+    (preferredRow ? (preferredRow.type === 'SMTP' ? 'smtp' : 'api') : input.smtpOnly ? 'smtp' : null);
 
-  if (!eligible.length && all.length) eligible = all;
+  const channelPool = sendChannel ? all.filter((p) => providerMatchesChannel(p, sendChannel)) : all;
+
+  let eligible = await filterBySendingLimits(channelPool);
+
+  if (!eligible.length && channelPool.length) eligible = channelPool;
 
   if (!eligible.length) return [];
 
-  // Campaign pinned to one SMTP → that profile first, others only as failover.
-  // Auto-rotate (preferredProviderId null) → full pool with round_robin / weighted / etc.
+  // Campaign pinned to one SMTP/API key → that profile first, others of the same channel as failover.
+  // Auto-rotate (preferredProviderId null) → channel pool with round_robin / weighted / etc.
   if (input.preferredProviderId) {
     const preferred = eligible.find((p) => p.id === input.preferredProviderId);
     if (preferred) {

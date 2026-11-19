@@ -6,8 +6,16 @@ import {
   buildMessageId,
   explainSmtpSendFailure,
   formatFromHeader,
+  parseSmtpFromIdentities,
   resolveSmtpFromEmail,
 } from './mail-headers.js';
+import {
+  INBOXFLOW_SMTP_LISTEN_PORT,
+  isInboxFlowSmtpHost,
+} from './inboxflow-smtp.js';
+import { guardRecipientAddress } from './recipient-guard.js';
+import { assertOutboundPathAllowed, smtpBindLocalAddress, smtpSocksProxyUrl } from './smtp-outbound.js';
+import * as socks from 'socks';
 
 function htmlToPlainText(html: string) {
   return html
@@ -36,6 +44,9 @@ export interface SendEmailPayload {
     keySelector: string;
     privateKey: string;
   };
+  /** Org domains with SPF+DKIM+DMARC verified — any local-part @ these may be From. */
+  authorizedFromDomains?: string[];
+  attachments?: Array<{ filename: string; contentType?: string; content: Buffer | string; encoding?: string }>;
 }
 
 export interface SendResult {
@@ -43,6 +54,66 @@ export interface SendResult {
   messageId?: string;
   error?: string;
   provider: ProviderType;
+  /** SMTP 250 line (or API id). Empty means we did not get an MTA accept. */
+  smtpResponse?: string;
+}
+
+function isMockSmtpHost(host: string) {
+  const h = String(host || '').trim().toLowerCase();
+  return h === 'json' || h === 'dev' || h === 'console';
+}
+
+function allowMockSmtp() {
+  return process.env.NODE_ENV === 'test' || process.env.INBOXFLOW_ALLOW_JSON_SMTP === '1';
+}
+
+type SmtpInfoLike = {
+  messageId?: string;
+  response?: string;
+  accepted?: unknown;
+  rejected?: unknown;
+  pending?: unknown;
+};
+
+function smtpAcceptedRecipient(info: SmtpInfoLike, to: string): { ok: boolean; error?: string; response?: string } {
+  const toAddr = String(to || '').trim().toLowerCase();
+  const response = String(info.response || '').trim();
+  const accepted = Array.isArray(info.accepted)
+    ? info.accepted.map((x) => String(x || '').toLowerCase()).filter(Boolean)
+    : [];
+  const rejected = Array.isArray(info.rejected)
+    ? info.rejected.map((x) => String(x || '').toLowerCase()).filter(Boolean)
+    : [];
+  const pending = Array.isArray(info.pending)
+    ? info.pending.map((x) => String(x || '').toLowerCase()).filter(Boolean)
+    : [];
+
+  if (rejected.length && (!toAddr || rejected.some((r) => r.includes(toAddr) || toAddr.includes(r)))) {
+    return { ok: false, error: `SMTP rejected recipient: ${rejected.join(', ')}`, response };
+  }
+  if (pending.length && (!accepted.length || (toAddr && pending.some((p) => p.includes(toAddr))))) {
+    return { ok: false, error: `SMTP deferred recipient (not delivered): ${pending.join(', ')}`, response };
+  }
+  const acceptedTo = !toAddr || accepted.some((a) => a.includes(toAddr) || toAddr.includes(a));
+  const twoXx = /^2\d\d\b/.test(response);
+  if (accepted.length && acceptedTo) {
+    return { ok: true, response: response || `accepted ${accepted.join(', ')}` };
+  }
+  if (!accepted.length && twoXx) {
+    return { ok: true, response };
+  }
+  if (!accepted.length && !response) {
+    return {
+      ok: false,
+      error: 'SMTP did not accept the message (no 250 response). Mail was not handed to the server.',
+      response,
+    };
+  }
+  return {
+    ok: false,
+    error: `SMTP did not accept ${to || 'recipient'}${response ? `: ${response}` : ''}`,
+    response,
+  };
 }
 
 type ProviderConfig = Record<string, string>;
@@ -92,6 +163,9 @@ export type ConnectionTestResult = {
     responseTimeMs: number;
   };
   error?: string;
+  messageId?: string;
+  sentCount?: number;
+  fromEmails?: string[];
 };
 
 function toBool(value: unknown, fallback = false): boolean {
@@ -137,6 +211,20 @@ export function smtpOptionsFromProfile(config: SmtpTestInput | ProviderConfig) {
     disableStartTls = !secure && !requireTLS;
   }
 
+  if (isInboxFlowSmtpHost(host)) {
+    return {
+      host: '127.0.0.1',
+      port: INBOXFLOW_SMTP_LISTEN_PORT,
+      secure: false,
+      requireTLS: false,
+      ignoreTLS: true,
+      allowInsecureCert: true,
+      user,
+      pass,
+      encryption: 'NONE',
+    };
+  }
+
   return {
     host,
     port,
@@ -152,7 +240,12 @@ export function smtpOptionsFromProfile(config: SmtpTestInput | ProviderConfig) {
 
 export function createSmtpTransport(
   config: SmtpTestInput | ProviderConfig,
-  timeouts?: { connectionTimeout?: number; greetingTimeout?: number; socketTimeout?: number },
+  timeouts?: {
+    connectionTimeout?: number;
+    greetingTimeout?: number;
+    socketTimeout?: number;
+    allowDirect?: boolean;
+  },
 ) {
   const host = String(config.host || '').trim();
   if (!host) {
@@ -164,14 +257,25 @@ export function createSmtpTransport(
   }
 
   const opts = smtpOptionsFromProfile(config);
+  const flat = Object.fromEntries(
+    Object.entries(config as Record<string, unknown>).map(([k, v]) => [k, v == null ? '' : String(v)]),
+  ) as Record<string, string>;
+  if (timeouts?.allowDirect === false) {
+    assertOutboundPathAllowed(flat, false);
+  }
+  const loopback = opts.host === '127.0.0.1' || opts.host === 'localhost';
+  const localAddress = loopback ? undefined : smtpBindLocalAddress(flat);
+  const proxy = loopback ? undefined : smtpSocksProxyUrl(flat);
 
-  return nodemailer.createTransport({
+  const transport = nodemailer.createTransport({
     host: opts.host,
     port: opts.port,
     secure: opts.secure,
     requireTLS: opts.requireTLS,
     ignoreTLS: opts.ignoreTLS,
     auth: opts.user ? { user: opts.user, pass: opts.pass } : undefined,
+    ...(localAddress ? { localAddress } : {}),
+    ...(proxy ? { proxy } : {}),
     connectionTimeout: timeouts?.connectionTimeout ?? 20000,
     greetingTimeout: timeouts?.greetingTimeout ?? 20000,
     socketTimeout: timeouts?.socketTimeout ?? 120000,
@@ -183,13 +287,20 @@ export function createSmtpTransport(
         : {}),
     },
   });
+  if (proxy) {
+    transport.set?.('proxy_socks_module', socks);
+  }
+  return transport;
 }
 
 /**
  * Verify SMTP credentials/connectivity with nodemailer.verify().
  * Does not send an email.
  */
-export async function testSmtpConnection(config: SmtpTestInput): Promise<ConnectionTestResult> {
+export async function testSmtpConnection(
+  config: SmtpTestInput,
+  opts?: { allowDirect?: boolean },
+): Promise<ConnectionTestResult> {
   const started = Date.now();
   const host = String(config.host || '').trim();
   const port = Number(config.port || 587);
@@ -199,7 +310,7 @@ export async function testSmtpConnection(config: SmtpTestInput): Promise<Connect
     const p = Number(cfg.port || 587);
     const s = toBool(cfg.secure, p === 465);
     try {
-      const transport = createSmtpTransport(cfg);
+      const transport = createSmtpTransport(cfg, { allowDirect: opts?.allowDirect });
       await transport.verify();
       return {
         success: true,
@@ -282,51 +393,97 @@ export async function testSmtpConnection(config: SmtpTestInput): Promise<Connect
 export async function sendSmtpTestEmail(
   config: SmtpTestInput,
   to: string,
-  options?: { notes?: string | null },
+  options?: { notes?: string | null; allowDirect?: boolean },
 ): Promise<ConnectionTestResult & { messageId?: string }> {
-  const verify = await testSmtpConnection(config);
+  const verify = await testSmtpConnection(config, { allowDirect: options?.allowDirect });
   if (!verify.success) return verify;
 
-  const fromEmail = String(config.fromEmail || config.user || '').trim() || 'noreply@localhost';
-  const fromName = String(config.fromName || '').trim();
+  const host = String(config.host || '').trim();
+  if (isMockSmtpHost(host) && !allowMockSmtp()) {
+    return {
+      success: false,
+      message: 'SMTP is in mock mode (host json/dev/console) — no email was delivered',
+      error: 'Configure a real SMTP host before sending',
+      details: verify.details,
+    };
+  }
+
+  const identities = parseSmtpFromIdentities(config as Record<string, string>);
+  const froms = identities.length
+    ? identities
+    : [
+        {
+          email: String(config.fromEmail || config.user || '').trim() || 'noreply@localhost',
+          name: String(config.fromName || '').trim(),
+        },
+      ];
   const notes = String(options?.notes || '').trim();
   const bodyText = notes || 'Your SMTP connection is working.';
   const bodyHtml = notes
     ? `<p>${notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`
     : '<p>Your SMTP connection is working.</p>';
-  const messageId = buildMessageId(fromEmail);
 
-  try {
-    const transport = createSmtpTransport(config);
-    const info = await transport.sendMail({
-      from: formatFromHeader(fromEmail, fromName),
-      to,
-      replyTo: config.replyTo || undefined,
-      subject: 'SMTP connection test',
-      text: bodyText,
-      html: bodyHtml,
-      messageId,
-      date: new Date(),
-      envelope: { from: fromEmail, to },
-    });
-    return {
-      ...verify,
-      message: `Connected and sent test email to ${to}`,
-      messageId: info.messageId,
-    };
-  } catch (error) {
+  const sentFrom: string[] = [];
+  const errors: string[] = [];
+  let lastMessageId: string | undefined;
+  const transport = createSmtpTransport(config, { allowDirect: options?.allowDirect });
+
+  for (let i = 0; i < froms.length; i++) {
+    const ident = froms[i]!;
+    const fromEmail = ident.email;
+    const fromName = ident.name || String(config.fromName || '').trim();
+    if (i > 0) await new Promise((r) => setTimeout(r, 400));
+    try {
+      const messageId = buildMessageId(fromEmail);
+      const info = await transport.sendMail({
+        from: formatFromHeader(fromEmail, fromName),
+        to,
+        replyTo: config.replyTo || undefined,
+        subject: froms.length > 1 ? `SMTP connection test (${i + 1}/${froms.length})` : 'SMTP connection test',
+        text: bodyText,
+        html: bodyHtml,
+        messageId,
+        date: new Date(),
+        envelope: { from: fromEmail, to },
+      });
+      const accept = smtpAcceptedRecipient(info as SmtpInfoLike, to);
+      if (!accept.ok && !isMockSmtpHost(host)) {
+        errors.push(`${fromEmail}: ${accept.error || 'not accepted'}`);
+        continue;
+      }
+      sentFrom.push(fromEmail);
+      lastMessageId = info.messageId;
+    } catch (error) {
+      errors.push(`${fromEmail}: ${error instanceof Error ? error.message : 'Send failed'}`);
+    }
+  }
+
+  if (!sentFrom.length) {
     return {
       success: false,
       message: 'SMTP verified but sending test email failed',
-      error: error instanceof Error ? error.message : 'Send failed',
+      error: errors.join(' · ') || 'Send failed',
       details: verify.details,
+      sentCount: 0,
+      fromEmails: [],
     };
   }
+
+  return {
+    ...verify,
+    success: errors.length === 0,
+    message: `Connected and sent ${sentFrom.length} test email${sentFrom.length === 1 ? '' : 's'} to ${to} from ${sentFrom.join(', ')}`,
+    messageId: lastMessageId,
+    sentCount: sentFrom.length,
+    fromEmails: sentFrom,
+    error: errors.length ? errors.join(' · ') : undefined,
+  };
 }
 
 export async function testProviderConnection(
   type: ProviderType,
   rawConfig: unknown,
+  opts?: { allowDirect?: boolean },
 ): Promise<ConnectionTestResult> {
   // Accept both: (a) raw Prisma config { encrypted: '...' } store object and (b) already-decoded flat Record<string,string>.
   // (Avoids double-decode crash when /:id/test passes already-parsed config.)
@@ -339,7 +496,7 @@ export async function testProviderConnection(
     );
   }
   if (type === 'SMTP') {
-    return testSmtpConnection(config);
+    return testSmtpConnection(config, { allowDirect: opts?.allowDirect });
   }
 
   // Lightweight credential presence checks for API providers
@@ -367,14 +524,22 @@ export async function sendViaProvider(
   type: ProviderType,
   rawConfig: unknown,
   payload: SendEmailPayload,
-  options: { portFailover?: boolean } = {},
+  options: { portFailover?: boolean; allowDirect?: boolean } = {},
 ): Promise<SendResult> {
   const config = parseConfig(rawConfig);
+
+  const recipientGuard = await guardRecipientAddress(payload.to);
+  if (!recipientGuard.ok) {
+    return { success: false, error: recipientGuard.reason, provider: type };
+  }
 
   try {
     switch (type) {
       case 'SMTP':
-        return await sendSmtp(config, payload, { portFailover: options.portFailover });
+        return await sendSmtp(config, payload, {
+          portFailover: options.portFailover,
+          allowDirect: options.allowDirect,
+        });
       case 'SES':
         return await sendSes(config, payload);
       case 'SENDGRID':
@@ -398,6 +563,7 @@ export async function sendViaProvider(
 export type SmtpSendOptions = {
   /** When true (default SMTP / Hostinger-style), try 465 ↔ 587 failover. */
   portFailover?: boolean;
+  allowDirect?: boolean;
 };
 
 async function sendSmtp(
@@ -406,7 +572,9 @@ async function sendSmtp(
   options: SmtpSendOptions = {},
 ): Promise<SendResult> {
   const host = config.host || 'localhost';
-  const resolved = resolveSmtpFromEmail(payload.from, config);
+  const resolved = resolveSmtpFromEmail(payload.from, config, {
+    authorizedDomains: payload.authorizedFromDomains,
+  });
   const fromEmail = resolved.from || 'noreply@localhost';
   const from = formatFromHeader(fromEmail, payload.fromName || config.fromName);
   const text = (payload.text && payload.text.trim()) || htmlToPlainText(payload.html || '');
@@ -422,6 +590,7 @@ async function sendSmtp(
     messageId,
     date: new Date(),
     envelope: { from: fromEmail, to: payload.to },
+    ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
     ...(payload.dkim
       ? {
           dkim: {
@@ -433,11 +602,18 @@ async function sendSmtp(
       : {}),
   };
 
-  if (host === 'json' || host === 'dev' || host === 'console') {
-    const transport = createSmtpTransport(config);
+  if (isMockSmtpHost(host)) {
+    if (!allowMockSmtp()) {
+      return {
+        success: false,
+        error: 'SMTP host is json/dev/console — messages are not delivered. Set a real SMTP host.',
+        provider: 'SMTP',
+      };
+    }
+    const transport = createSmtpTransport(config, { allowDirect: options.allowDirect });
     const info = await transport.sendMail(mail);
     console.log('[dev-send]', payload.to, payload.subject);
-    return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
+    return { success: true, messageId: info.messageId || messageId, provider: 'SMTP', smtpResponse: 'mock' };
   }
 
   const profile = smtpOptionsFromProfile(config);
@@ -469,37 +645,29 @@ async function sendSmtp(
   for (let i = 0; i < attempts.length; i += 1) {
     const attemptCfg = attempts[i]!;
     for (let tryN = 0; tryN < 2; tryN += 1) {
-      const transport = createSmtpTransport(attemptCfg, { socketTimeout: 120000 });
+      const transport = createSmtpTransport(attemptCfg, {
+        socketTimeout: 120000,
+        allowDirect: options.allowDirect,
+      });
       try {
         const info = await transport.sendMail(mail);
         transport.close?.();
-        const rejected = Array.isArray((info as { rejected?: unknown }).rejected)
-          ? ((info as { rejected: unknown[] }).rejected as unknown[])
-              .map((x) => String(x || '').toLowerCase())
-              .filter(Boolean)
-          : [];
-        const toAddr = String(payload.to || '').toLowerCase();
-        if (rejected.length && (!toAddr || rejected.some((r) => r.includes(toAddr) || toAddr.includes(r)))) {
+        const accept = smtpAcceptedRecipient(info as SmtpInfoLike, payload.to);
+        if (!accept.ok) {
           return {
             success: false,
-            error: `SMTP rejected recipient: ${rejected.join(', ')}`,
+            error: accept.error || 'SMTP did not accept the recipient',
             provider: 'SMTP',
             messageId: info.messageId || messageId,
+            smtpResponse: accept.response,
           };
         }
-        // Also fail if nodemailer reports zero accepted and a response suggesting reject
-        const accepted = Array.isArray((info as { accepted?: unknown }).accepted)
-          ? ((info as { accepted: unknown[] }).accepted as unknown[])
-          : null;
-        if (accepted && accepted.length === 0 && rejected.length > 0) {
-          return {
-            success: false,
-            error: `SMTP rejected recipient: ${rejected.join(', ')}`,
-            provider: 'SMTP',
-            messageId: info.messageId || messageId,
-          };
-        }
-        return { success: true, messageId: info.messageId || messageId, provider: 'SMTP' };
+        return {
+          success: true,
+          messageId: info.messageId || messageId,
+          provider: 'SMTP',
+          smtpResponse: accept.response,
+        };
       } catch (error) {
         transport.close?.();
         const raw = error instanceof Error ? error.message : 'SMTP send failed';
@@ -513,7 +681,7 @@ async function sendSmtp(
     }
   }
 
-  return { success: false, error: lastError, provider: 'SMTP' };
+  return { success: false, error: lastError, provider: 'SMTP', smtpResponse: lastError };
 }
 
 /** Send via SMTP with optional 465↔587 failover (for default/Hostinger accounts). */

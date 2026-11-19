@@ -7,6 +7,21 @@ import { prisma } from '../../config/prisma.js';
  * - Contacts that appear on any campaign keep their rows + tracking (status → CLEANED)
  * - Contacts with no campaign history are hard-deleted
  */
+/** Permanently delete contacts (list + campaign recipient rows cascade). */
+export async function hardDeleteContacts(orgId: string, contactIds: string[]) {
+  const ids = [...new Set(contactIds.filter(Boolean))];
+  if (!ids.length) {
+    return { deleted: 0, archived: 0, removed: 0 };
+  }
+
+  await prisma.contactListMember.deleteMany({ where: { contactId: { in: ids } } });
+  await prisma.contactTag.deleteMany({ where: { contactId: { in: ids } } });
+  const result = await prisma.contact.deleteMany({
+    where: { organizationId: orgId, id: { in: ids } },
+  });
+  return { deleted: result.count, archived: 0, removed: result.count };
+}
+
 export async function removeContactsFromAudience(orgId: string, contactIds: string[]) {
   const ids = [...new Set(contactIds.filter(Boolean))];
   if (!ids.length) {

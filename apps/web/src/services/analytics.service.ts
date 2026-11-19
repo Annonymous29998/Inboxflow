@@ -35,7 +35,7 @@ export type DashboardData = {
 
 export const analyticsService = {
   getDashboard(): Promise<DashboardData> {
-    return api.get<DashboardData>('/api/analytics/dashboard?live=1');
+    return api.get<DashboardData>('/api/analytics/dashboard');
   },
 
   streamDashboard(

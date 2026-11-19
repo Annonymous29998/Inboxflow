@@ -11,7 +11,15 @@ const LEGITIMATE_MAIL_PROXY = [
   /apple mail/i,
   /iphone.*mail/i,
   /ipad.*mail/i,
+  /xfinity/i,
+  /comcast/i,
+  /aol/i,
 ];
+
+/** Xfinity/Comcast and some other webmail fetch the open pixel with Go's default client. */
+function isMailImageProxyUa(ua: string): boolean {
+  return /go-http-client/i.test(ua) || /xfinity/i.test(ua) || /comcast/i.test(ua);
+}
 
 const AUTOMATED_UA = [
   /brevo\/1\.0/i,
@@ -117,6 +125,9 @@ export function isCountableOpen(
   userAgent: string | null | undefined,
   metadata: unknown,
 ): boolean {
+  const ua = (userAgent || '').trim();
+  // Count webmail image proxies (Xfinity uses Go-http-client/1.1).
+  if (isMailImageProxyUa(ua)) return true;
   if (metadata && typeof metadata === 'object' && (metadata as { source?: string }).source === 'automated') {
     const reason = (metadata as { reason?: string }).reason;
     // Stale reasons from older strict filters — re-evaluate by UA.
@@ -124,7 +135,6 @@ export function isCountableOpen(
       return false;
     }
   }
-  const ua = (userAgent || '').trim();
   if (!ua || classifyAutomatedTracking(ua).automated) return false;
   if (isScannerChrome(ua)) return false;
   if (isLegitimateMailProxy(ua)) return true;

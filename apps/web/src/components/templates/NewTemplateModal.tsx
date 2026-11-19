@@ -54,29 +54,30 @@ export function NewTemplateModal({ open, onClose, onCreate }: NewTemplateModalPr
   }
 
   return (
-    <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 px-4 font-mono">
+    <div className="mailer-root fixed inset-0 z-[85] flex items-center justify-center bg-black/70 px-4">
       <button type="button" className="absolute inset-0" onClick={onClose} aria-label="Close" />
 
-      <div className="relative z-10 w-full max-w-lg overflow-hidden border border-border bg-card text-foreground shadow-2xl">
+      <div className="mailer-panel relative z-10 w-full max-w-lg">
         <form onSubmit={(e) => void handleSubmit(e)}>
-          <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
+          <div className="flex items-start justify-between gap-4 border-b border-[var(--mailer-stroke)] px-5 py-4">
             <div>
-              <h2 className="text-lg font-semibold uppercase tracking-wide text-accent">New template</h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Name your template and import an HTML or MJML file, or start with a blank design.
+              <p className="mailer-hint" style={{ marginTop: 0 }}>
+                library · new
               </p>
+              <h2 className="text-lg font-semibold uppercase tracking-wide text-primary">New template</h2>
+              <p className="mailer-hint">Name it, import HTML / MJML, or start blank.</p>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="border border-border p-2 text-muted-foreground hover:text-primary"
+              className="border border-[var(--mailer-stroke)] p-2 text-[var(--mailer-dim)] hover:text-primary"
               aria-label="Close"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="space-y-4 px-6 py-5">
+          <div className="mailer-pad space-y-4">
             <div>
               <Label>Template name</Label>
               <Input
@@ -92,7 +93,7 @@ export function NewTemplateModal({ open, onClose, onCreate }: NewTemplateModalPr
             <div>
               <Label>Import HTML / MJML (optional)</Label>
               <div
-                className="mt-1 flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-2 border border-dashed border-border bg-background px-4 py-6 text-center transition-colors hover:border-primary hover:bg-primary/5"
+                className="mt-1 flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-2 border border-dashed border-[var(--mailer-stroke)] bg-[#050805] px-4 py-6 text-center hover:border-[var(--color-accent)]"
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -109,16 +110,20 @@ export function NewTemplateModal({ open, onClose, onCreate }: NewTemplateModalPr
                 role="button"
                 tabIndex={0}
               >
-                <Upload className="h-6 w-6 text-muted-foreground" />
+                <Upload className="h-6 w-6 text-[var(--mailer-dim)]" />
                 {file ? (
                   <>
                     <p className="text-sm font-medium text-primary">{file.name}</p>
-                    <p className="text-xs text-muted-foreground">Click to choose a different file</p>
+                    <p className="mailer-hint" style={{ marginTop: 0 }}>
+                      Click to choose a different file
+                    </p>
                   </>
                 ) : (
                   <>
-                    <p className="text-sm text-foreground">Drop or click to upload</p>
-                    <p className="text-xs text-muted-foreground">.html, .htm, .mjml, .txt</p>
+                    <p className="text-sm">Drop or click to upload</p>
+                    <p className="mailer-hint" style={{ marginTop: 0 }}>
+                      .html, .htm, .mjml, .txt
+                    </p>
                   </>
                 )}
               </div>
@@ -136,7 +141,7 @@ export function NewTemplateModal({ open, onClose, onCreate }: NewTemplateModalPr
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
           </div>
 
-          <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:justify-end">
+          <div className="flex flex-col-reverse gap-2 border-t border-[var(--mailer-stroke)] px-5 py-4 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
               Cancel
             </Button>

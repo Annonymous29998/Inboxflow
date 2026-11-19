@@ -12,42 +12,35 @@ import {
   ShieldAlert,
   Globe,
   Activity,
+  Server,
 } from 'lucide-react';
 import { Badge, Card } from '@/components/ui';
-import { formatNumber, formatPercent, scoreColor } from '@/lib/utils';
+import { formatNumber, formatPercent } from '@/lib/utils';
 import { analyticsService, type DashboardData } from '@/services/analytics.service';
+import { useAuthStore } from '@/stores/auth';
+import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
 
 export function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null);
+  const user = useAuthStore((s) => s.user);
+  const workspace = user?.organization?.name;
+  const cached = uiCacheGet<DashboardData>('dashboard');
+  const [data, setData] = useState<DashboardData | null>(cached);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
   const [liveConnected, setLiveConnected] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void analyticsService.getDashboard().then((d) => {
-      if (!cancelled) setData(d);
+      if (cancelled) return;
+      setData(d);
+      uiCacheSet('dashboard', d);
+      setLiveConnected(true);
     }).catch((err) => {
-      if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load dashboard');
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
+      if (cancelled) return;
+      if (!cached) setError(err instanceof Error ? err.message : 'Failed to load dashboard');
     });
-
-    const sub = analyticsService.streamDashboard({
-      onUpdate: (d) => {
-        if (!cancelled) {
-          setData(d);
-          setLiveConnected(true);
-          setError('');
-        }
-      },
-      onError: () => setLiveConnected(false),
-      onDone: () => setLiveConnected(false),
-    });
-
     return () => {
       cancelled = true;
-      sub.cancel();
     };
   }, []);
 
@@ -96,7 +89,10 @@ export function DashboardPage() {
             ) : null}
           </div>
           <p className="page-sub">
-            Real-time from queue + verified opens/clicks (bots excluded, not demo data)
+            {workspace ? `${workspace} · ` : ''}
+            {import.meta.env.DEV
+              ? 'Local Vite fixtures — production uses the live queue and verified opens/clicks'
+              : 'Real-time from queue + verified opens/clicks (bots excluded)'}
           </p>
         </div>
         <Link
@@ -113,10 +109,24 @@ export function DashboardPage() {
         </div>
       ) : null}
 
-      {loading ? (
-        <p className="text-sm text-muted-foreground">
-          <span className="text-primary">$</span> loading metrics…
-        </p>
+      {!error && data && (stats?.totalContacts ?? 0) === 0 && (stats?.activeCampaigns ?? 0) === 0 ? (
+        <div className="grid gap-2 sm:grid-cols-3">
+          <Link to="/app/smtp" className="border border-border bg-card p-4 hover:border-primary/50">
+            <Server className="mb-2 h-4 w-4 text-primary" />
+            <p className="text-sm font-medium">Add SMTP</p>
+            <p className="mt-1 text-xs text-muted-foreground">Your own hosts — not shared with other logins</p>
+          </Link>
+          <Link to="/app/contacts" className="border border-border bg-card p-4 hover:border-primary/50">
+            <Users className="mb-2 h-4 w-4 text-primary" />
+            <p className="text-sm font-medium">Import contacts</p>
+            <p className="mt-1 text-xs text-muted-foreground">Lists stay in this workspace only</p>
+          </Link>
+          <Link to="/app/campaigns/new" className="border border-border bg-card p-4 hover:border-primary/50">
+            <Send className="mb-2 h-4 w-4 text-primary" />
+            <p className="text-sm font-medium">New campaign</p>
+            <p className="mt-1 text-xs text-muted-foreground">Same editor, queue, and tracking as the operator</p>
+          </Link>
+        </div>
       ) : null}
 
       <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3 xl:grid-cols-4">
@@ -157,7 +167,6 @@ export function DashboardPage() {
                 <th className="pb-3 font-medium">Sent</th>
                 <th className="pb-3 font-medium">Opens</th>
                 <th className="pb-3 font-medium">Clicks</th>
-                <th className="pb-3 font-medium">Score</th>
               </tr>
             </thead>
             <tbody>
@@ -192,20 +201,11 @@ export function DashboardPage() {
                   </td>
                   <td>{c.openedCount}</td>
                   <td>{c.clickedCount}</td>
-                  <td>
-                    {c.deliverabilityScore != null ? (
-                      <span style={{ color: scoreColor(c.deliverabilityScore) }} className="font-semibold">
-                        {c.deliverabilityScore}
-                      </span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
                 </tr>
               ))}
               {!data?.recentCampaigns?.length && (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-ink-muted">
+                  <td colSpan={5} className="py-8 text-center text-ink-muted">
                     No campaigns yet. Create your first one to see analytics here.
                   </td>
                 </tr>

@@ -1,9 +1,12 @@
+import { demoMailerRequest, isDemoAccessToken } from '@/lib/demo-mailer-api';
+
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 type RequestOptions = {
   method?: string;
   body?: unknown;
   token?: string | null;
+  timeoutMs?: number;
 };
 
 class ApiClient {
@@ -40,6 +43,9 @@ class ApiClient {
   }
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    if (isDemoAccessToken(this.accessToken)) {
+      return demoMailerRequest<T>(path, options);
+    }
     const headers: Record<string, string> = {};
     // Only set JSON content-type when there is a body — empty DELETE/GET bodies
     // with application/json make Fastify throw FST_ERR_CTP_EMPTY_JSON_BODY.
@@ -48,35 +54,41 @@ class ApiClient {
     }
     if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
 
-    let res = await fetch(`${API_URL}${path}`, {
-      method: options.method || 'GET',
-      headers,
-      credentials: 'include',
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    });
+    const run = () =>
+      fetch(`${API_URL}${path}`, {
+        method: options.method || 'GET',
+        headers,
+        credentials: 'include',
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+      });
+
+    let res = await run();
 
     if (res.status === 401) {
       const refreshed = await this.tryRefresh();
       if (refreshed) {
         if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
         else delete headers.Authorization;
-        res = await fetch(`${API_URL}${path}`, {
-          method: options.method || 'GET',
-          headers,
-          credentials: 'include',
-          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        });
+        res = await run();
       }
     }
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.error || data.message || `Request failed (${res.status})`);
+      const err = new Error(data.error || data.message || `Request failed (${res.status})`) as Error & {
+        status?: number;
+        code?: string;
+      };
+      err.status = res.status;
+      err.code = typeof data.code === 'string' ? data.code : undefined;
+      throw err;
     }
     return data as T;
   }
 
   private async tryRefresh() {
+    if (isDemoAccessToken(this.accessToken) || isDemoAccessToken(this.refreshToken)) return false;
     try {
       const body: Record<string, string> = {};
       if (this.refreshToken) body.refreshToken = this.refreshToken;
@@ -87,7 +99,7 @@ class ApiClient {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        this.clearSession();
+        if (res.status === 401 || res.status === 403) this.clearSession();
         return false;
       }
       const data = await res.json();
@@ -95,7 +107,6 @@ class ApiClient {
       this.setTokens(data.accessToken ?? null, data.refreshToken ?? null);
       return true;
     } catch {
-      this.clearSession();
       return false;
     }
   }
@@ -104,8 +115,8 @@ class ApiClient {
     return this.request<T>(path);
   }
 
-  post<T>(path: string, body?: unknown) {
-    return this.request<T>(path, { method: 'POST', body });
+  post<T>(path: string, body?: unknown, extra?: { timeoutMs?: number }) {
+    return this.request<T>(path, { method: 'POST', body, timeoutMs: extra?.timeoutMs });
   }
 
   patch<T>(path: string, body?: unknown) {
@@ -132,6 +143,27 @@ class ApiClient {
     let cancelled = false;
     let controller: AbortController | null = null;
     const run = async () => {
+      if (isDemoAccessToken(this.accessToken)) {
+        const eventName = path.includes('dashboard')
+          ? 'dashboard'
+          : path.includes('send-status')
+            ? 'status'
+            : path.includes('/jobs/')
+              ? 'job'
+              : 'message';
+        void demoMailerRequest(path.replace(/\/stream$/, ''))
+          .then((data) => {
+            if (cancelled) return;
+            opts.onEvent?.(eventName, data);
+            opts.onDone?.();
+          })
+          .catch((e) => {
+            if (cancelled) return;
+            opts.onError?.(e instanceof Error ? e : new Error(String(e)));
+            opts.onDone?.();
+          });
+        return;
+      }
       try {
         const headers: Record<string, string> = { Accept: 'text/event-stream' };
         if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
@@ -220,6 +252,9 @@ class ApiClient {
   }
 
   async blob(path: string, options: RequestOptions = {}): Promise<Blob> {
+    if (isDemoAccessToken(this.accessToken)) {
+      return new Blob([''], { type: 'text/csv' });
+    }
     const headers: Record<string, string> = {};
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';

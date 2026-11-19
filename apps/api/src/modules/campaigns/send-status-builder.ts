@@ -1,4 +1,5 @@
 import { prisma } from '../../config/prisma.js';
+import { maybeFinalizeCampaignSend } from '../../services/email/campaign-finalize.js';
 import { deliveredRecipientFilter, inboxDeliveredFilter } from './recipient-stats.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
@@ -59,10 +60,19 @@ function aggregateEngagementRows(
 }
 
 export async function buildCampaignSendStatus(organizationId: string, campaignId: string) {
-  const campaign = await prisma.campaign.findFirst({
+  let campaign = await prisma.campaign.findFirst({
     where: { id: campaignId, organizationId },
   });
   if (!campaign) return null;
+  if (campaign.status === 'SENDING') {
+    const flipped = await maybeFinalizeCampaignSend(campaignId);
+    if (flipped) {
+      campaign = await prisma.campaign.findFirst({
+        where: { id: campaignId, organizationId },
+      });
+      if (!campaign) return null;
+    }
+  }
 
   const [
     sentCount,
@@ -70,9 +80,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     bouncedCount,
     pendingCount,
     deliveredCount,
-    recentFailures,
-    recentBounces,
-    recentDelivered,
+    processedRecipients,
     openEvents,
     clickEvents,
     humanOpened,
@@ -85,22 +93,20 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } }),
     prisma.campaignRecipient.count({ where: inboxDeliveredFilter(campaignId) }),
     prisma.campaignRecipient.findMany({
-      where: { campaignId, status: 'FAILED' },
-      include: { contact: { select: { email: true } } },
-      orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
-      take: 40,
-    }),
-    prisma.campaignRecipient.findMany({
-      where: { campaignId, status: 'BOUNCED' },
-      include: { contact: { select: { email: true } } },
-      orderBy: [{ bouncedAt: 'desc' }, { sentAt: 'desc' }],
-      take: 40,
-    }),
-    prisma.campaignRecipient.findMany({
-      where: deliveredRecipientFilter(campaignId),
-      include: { contact: { select: { email: true } } },
-      orderBy: { sentAt: 'desc' },
-      take: 40,
+      where: {
+        campaignId,
+        status: { in: ['SENT', 'FAILED', 'BOUNCED', 'DELIVERED'] },
+      },
+      select: {
+        status: true,
+        error: true,
+        smtpResponse: true,
+        sentAt: true,
+        bouncedAt: true,
+        createdAt: true,
+        contact: { select: { email: true } },
+      },
+      orderBy: [{ sentAt: 'asc' }, { createdAt: 'asc' }],
     }),
     prisma.trackingEvent.findMany({
       where: { campaignId, type: 'OPENED' },
@@ -123,7 +129,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
         status: { in: ['RUNNING', 'PENDING', 'PAUSED'] },
       },
       orderBy: { createdAt: 'desc' },
-      select: { meta: true },
+      select: { id: true, meta: true },
     }),
   ]);
 
@@ -133,40 +139,51 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
   );
   const countableClicks = filterCountableClicks(clickEvents, verifiedOpenIds);
 
-  const sendActivity: SendActivityRow[] = [
-    ...recentDelivered
-      .filter((r) => r.status !== 'BOUNCED')
-      .map((r) => ({
+  const sendActivity: SendActivityRow[] = processedRecipients.map((r) => {
+    if (r.status === 'FAILED') {
+      return {
+        email: r.contact.email,
+        status: 'FAILED' as const,
+        error: r.error || 'Send failed',
+        at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
+      };
+    }
+    if (r.status === 'BOUNCED') {
+      return {
+        email: r.contact.email,
+        status: 'BOUNCED' as const,
+        error: r.error || 'Rejected / bounced by provider',
+        at: r.bouncedAt?.toISOString() || r.sentAt?.toISOString() || r.createdAt.toISOString(),
+      };
+    }
+    return {
       email: r.contact.email,
       status: (r.status === 'DELIVERED' ? 'DELIVERED' : 'SENT') as 'SENT' | 'DELIVERED',
-      error: null,
+      error: r.smtpResponse || null,
       at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
-    })),
-    ...recentFailures.map((r) => ({
-      email: r.contact.email,
-      status: 'FAILED' as const,
-      error: r.error || 'Send failed',
-      at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
-    })),
-    ...recentBounces.map((r) => ({
-      email: r.contact.email,
-      status: 'BOUNCED' as const,
-      error: r.error || 'Rejected / bounced by provider',
-      at: r.bouncedAt?.toISOString() || r.sentAt?.toISOString() || r.createdAt.toISOString(),
-    })),
-  ].sort((a, b) => (a.at < b.at ? 1 : -1));
+    };
+  });
+  const recentDelivered = processedRecipients.filter(
+    (r) => r.status === 'SENT' || r.status === 'DELIVERED',
+  );
+  const recentFailures = processedRecipients.filter((r) => r.status === 'FAILED');
+  const recentBounces = processedRecipients.filter((r) => r.status === 'BOUNCED');
 
   const engagementActivity: SendActivityRow[] = [
     ...aggregateEngagementRows(humanOpens, 'OPENED', 40),
     ...aggregateEngagementRows(countableClicks, 'CLICKED', 40),
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
 
-  const recentSent = recentDelivered.slice(0, 12).map((r) => ({
+  const recentSent = recentDelivered.map((r) => ({
     email: r.contact.email,
     at: r.sentAt,
+    smtpResponse: r.smtpResponse || null,
   }));
 
-  const lastSentEmail = sendActivity.find((a) => a.status === 'SENT' || a.status === 'DELIVERED')?.email ?? null;
+  const lastProcessedEmail =
+    processedRecipients.at(-1)?.contact.email ??
+    [...sendActivity].reverse().find((a) => a.status === 'SENT' || a.status === 'DELIVERED')?.email ??
+    null;
 
   const jobMeta =
     activeJob?.meta && typeof activeJob.meta === 'object'
@@ -178,7 +195,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
   const queueStage = typeof jobMeta.stage === 'string' ? jobMeta.stage : 'sending';
   const pauseUntil = typeof jobMeta.pauseUntil === 'string' ? jobMeta.pauseUntil : null;
   const betweenEmailMs =
-    asFiniteNumber(jobMeta.betweenEmailMs, null) ?? asFiniteNumber(qs.betweenEmailMs, 4_000) ?? 4_000;
+    asFiniteNumber(jobMeta.betweenEmailMs, null) ?? asFiniteNumber(qs.betweenEmailMs, 1_500) ?? 1_500;
   const batchPauseMs =
     asFiniteNumber(jobMeta.batchPauseMs, null) ?? asFiniteNumber(qs.batchPauseMs, null);
   const batchNumber = asFiniteNumber(jobMeta.batchNumber, null);
@@ -201,7 +218,9 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     openedCount: humanOpened,
     clickedCount: humanClicked,
     completedAt: campaign.completedAt,
-    lastEmail: lastSentEmail,
+    jobId: activeJob?.id ?? null,
+    lastEmail:
+      (typeof jobMeta.lastEmail === 'string' && jobMeta.lastEmail) || lastProcessedEmail,
     queueStage,
     pauseUntil,
     betweenEmailMs,
@@ -210,16 +229,16 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     queueBatchSize,
     recentSent,
     recentFailures: [
-      ...recentFailures.slice(0, 40).map((r) => ({
+      ...recentFailures.map((r) => ({
         email: r.contact.email,
         error: r.error || 'Send failed',
       })),
-      ...recentBounces.slice(0, 40).map((r) => ({
+      ...recentBounces.map((r) => ({
         email: r.contact.email,
         error: r.error || 'Rejected / bounced by provider',
       })),
-    ].slice(0, 60),
-    recentBounces: recentBounces.slice(0, 40).map((r) => ({
+    ],
+    recentBounces: recentBounces.map((r) => ({
       email: r.contact.email,
       error: r.error || 'Rejected / bounced by provider',
     })),
@@ -235,8 +254,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       at: e.createdAt.toISOString(),
       url: e.url,
     })),
-    /** Send queue log — SENT / FAILED / BOUNCED / DELIVERED. */
-    activity: sendActivity.slice(0, 100),
+    /** Full send log for this campaign only — SENT / FAILED / BOUNCED / DELIVERED. */
+    activity: sendActivity,
     engagementActivity,
   };
 }

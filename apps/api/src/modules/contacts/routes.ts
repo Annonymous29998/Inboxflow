@@ -1,13 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { stringify } from 'csv-stringify/sync';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import { parseContactImport } from './import-parser.js';
 import { upsertJobProgress } from '../jobs/progress.js';
 import { audienceContactWhere, removeContactsFromAudience } from './audience-cleanup.js';
+import { emailDomain } from '../../services/email/mail-headers.js';
+import { guardRecipientAddress, prefetchMxForDomains } from '../../services/email/recipient-guard.js';
 
 export async function contactRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -90,6 +92,9 @@ export async function contactRoutes(app: FastifyInstance) {
         },
       });
       if (suppressed) throw new AppError(400, 'Email is on suppression list');
+
+      const guard = await guardRecipientAddress(body.email);
+      if (!guard.ok) throw new AppError(400, guard.reason);
 
       const contact = await prisma.contact.create({
         data: {
@@ -219,15 +224,23 @@ export async function contactRoutes(app: FastifyInstance) {
       if (!raw) throw new AppError(400, 'No import content provided');
 
       let listId = body.listId;
-      if (!listId && body.listName?.trim()) {
+      // Only create a list on the first chunk (or single-shot imports) to avoid duplicate lists
+      const canCreateList =
+        !listId &&
+        Boolean(body.listName?.trim()) &&
+        (body.chunkIndex === 0 || body.totalRows === undefined);
+      if (canCreateList) {
         const list = await prisma.contactList.create({
           data: {
             organizationId: orgId,
-            name: body.listName.trim(),
+            name: body.listName!.trim(),
             description: 'Created from contact import',
           },
         });
         listId = list.id;
+      }
+      if (!listId && body.listName?.trim() && body.chunkIndex > 0 && body.totalRows !== undefined) {
+        throw new AppError(400, 'Missing listId for import chunk — retry the import');
       }
 
       const rows = parseContactImport(raw);
@@ -276,7 +289,6 @@ export async function contactRoutes(app: FastifyInstance) {
       async function emitProgress(force = false) {
         if (!jobId) return;
         const processed = Math.min(total, jobProcessedBase + created + updated + skipped);
-        const now = Date.now();
         if (!force && (processed - (emitProgress as any).lastSent) < 10) return;
         (emitProgress as any).lastSent = processed;
         try {
@@ -306,49 +318,102 @@ export async function contactRoutes(app: FastifyInstance) {
       (emitProgress as any).lastSent = -99999;
       await emitProgress(true);
 
+      // Batch lookups — N+1 findUnique per row was freezing imports through the desktop proxy
+      const emails = rows.map((r) => r.email);
+      const [existingContacts, suppressedRows] = await Promise.all([
+        prisma.contact.findMany({
+          where: { organizationId: orgId, email: { in: emails } },
+          select: { id: true, email: true, status: true },
+        }),
+        prisma.suppressionList.findMany({
+          where: { organizationId: orgId, email: { in: emails } },
+          select: { email: true },
+        }),
+      ]);
+      const existingByEmail = new Map(existingContacts.map((c) => [c.email.toLowerCase(), c]));
+      const suppressedSet = new Set(suppressedRows.map((s) => s.email.toLowerCase()));
+      const blockedStatuses = new Set(['BOUNCED', 'COMPLAINED', 'UNSUBSCRIBED']);
+
+      await prefetchMxForDomains(rows.map((r) => emailDomain(r.email)));
+
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         const email = row.email;
+        const emailKey = email.toLowerCase();
         const data = {
           firstName: row.firstName || null,
           lastName: row.lastName || null,
           phone: row.phone || null,
         };
 
-        const existing = await prisma.contact.findUnique({
-          where: { organizationId_email: { organizationId: orgId, email } },
-        });
+        const guard = await guardRecipientAddress(email);
+        if (!guard.ok) {
+          skipped++;
+          await emitProgress();
+          continue;
+        }
+
+        const existing = existingByEmail.get(emailKey);
 
         if (existing) {
           duplicates.push(email);
-          if (body.updateExisting) {
-            await prisma.contact.update({ where: { id: existing.id }, data });
+          if (blockedStatuses.has(existing.status)) {
+            skipped++;
+            await emitProgress();
+            continue;
+          }
+          const restoreCleaned = existing.status === 'CLEANED';
+          if (body.updateExisting || restoreCleaned) {
+            await prisma.contact.update({
+              where: { id: existing.id },
+              data: {
+                ...(body.updateExisting ? data : {}),
+                ...(restoreCleaned ? { status: 'SUBSCRIBED' } : {}),
+              },
+            });
+            existingByEmail.set(emailKey, { ...existing, status: restoreCleaned ? 'SUBSCRIBED' : existing.status });
             updated++;
           } else {
             skipped++;
           }
           await ensureListMembership(existing.id);
         } else {
-          const suppressed = await prisma.suppressionList.findUnique({
-            where: { organizationId_email: { organizationId: orgId, email } },
-          });
-          if (suppressed) {
+          if (suppressedSet.has(emailKey)) {
             skipped++;
             await emitProgress();
             continue;
           }
 
-          const contact = await prisma.contact.create({
-            data: {
-              organizationId: orgId,
-              email,
-              ...data,
-              source: 'import',
-              consentAt: new Date(),
-            },
-          });
-          await ensureListMembership(contact.id);
-          created++;
+          try {
+            const contact = await prisma.contact.create({
+              data: {
+                organizationId: orgId,
+                email,
+                ...data,
+                source: 'import',
+                consentAt: new Date(),
+              },
+            });
+            existingByEmail.set(emailKey, { id: contact.id, email: contact.email, status: contact.status });
+            await ensureListMembership(contact.id);
+            created++;
+          } catch (err) {
+            if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+              const raced = await prisma.contact.findFirst({
+                where: { organizationId: orgId, email: { equals: email, mode: 'insensitive' } },
+                select: { id: true, email: true, status: true },
+              });
+              if (raced) {
+                existingByEmail.set(emailKey, raced);
+                await ensureListMembership(raced.id);
+                updated++;
+              } else {
+                skipped++;
+              }
+            } else {
+              skipped++;
+            }
+          }
         }
         if (i % 10 === 9) await emitProgress();
       }

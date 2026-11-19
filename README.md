@@ -18,6 +18,18 @@ Stack: React + Vite · Supabase Postgres · Supabase Edge Functions (email) · o
 - Tracking (opens, clicks, unsubscribes, bounces) + analytics
 - Admin panel, audit logs, Docker deployment
 
+## Windows desktop EXE (uses Lightsail)
+
+Normal Windows installer that opens your Lightsail app (same login, campaigns, SMTP).
+
+**Send this file:** `apps/desktop/release/InboxFlow-Setup-1.0.0.exe`
+
+See **[docs/DESKTOP_WINDOWS.md](docs/DESKTOP_WINDOWS.md)**.
+
+```bash
+cd apps/desktop && npx electron-builder --win nsis --x64
+```
+
 ## Quick start (no Docker)
 
 Requires local **PostgreSQL** (or Supabase) for development.

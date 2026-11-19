@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import { Button } from '@/components/ui';
+import { Button, Label, Select } from '@/components/ui';
 import { cn } from '@/lib/utils';
+import type { SendActivity } from '@/services/campaign-send.service';
 import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
 
 export type SendFlowPhase = 'confirm' | 'background' | 'success' | 'error';
@@ -13,7 +14,10 @@ interface SendProgressModalProps {
   sentCount?: number;
   failedCount?: number;
   recentFailures?: Array<{ email: string; error: string }>;
-  recentSent?: Array<{ email: string; at?: string | null }>;
+  recentSent?: Array<{ email: string; at?: string | null; smtpResponse?: string | null }>;
+  activity?: SendActivity[];
+  openedCount?: number;
+  clickedCount?: number;
   lastEmail?: string | null;
   errorMessage?: string;
   confirmTitle?: string;
@@ -27,12 +31,16 @@ interface SendProgressModalProps {
   batchNumber?: number | null;
   cancelled?: boolean;
   paused?: boolean;
+  lists?: Array<{ id: string; name: string; _count?: { members: number } }>;
+  selectedListId?: string;
+  onListChange?: (listId: string) => void;
   onConfirmSend: () => void;
   onForceSend?: () => void;
   onCancelSend?: () => void;
   onPauseSend?: () => void;
   onResumeSend?: () => void;
   onRetryFailed?: () => void;
+  onViewAnalytics?: () => void;
   onClose: () => void;
 }
 
@@ -72,25 +80,32 @@ export function SendProgressModal({
   failedCount = 0,
   recentFailures = [],
   recentSent = [],
+  activity = [],
+  openedCount = 0,
+  clickedCount = 0,
   lastEmail = null,
   errorMessage,
   confirmTitle = 'Send campaign?',
   confirmMessage,
   fromLabel,
-  batchSize = 10,
-  batchPauseSeconds = 30,
-  betweenEmailMs = 4_000,
+  batchSize = 50,
+  batchPauseSeconds = 15,
+  betweenEmailMs = 1_500,
   queueStage = 'sending',
   pauseUntil = null,
   batchNumber = null,
   cancelled = false,
   paused = false,
+  lists = [],
+  selectedListId = '',
+  onListChange,
   onConfirmSend,
   onForceSend,
   onCancelSend,
   onPauseSend,
   onResumeSend,
   onRetryFailed,
+  onViewAnalytics,
   onClose,
 }: SendProgressModalProps) {
   const startAtRef = useRef<number | null>(null);
@@ -179,6 +194,28 @@ export function SendProgressModal({
                     <span className="text-muted-foreground">From:</span>{' '}
                     <span className="text-primary">{fromLabel}</span>
                   </p>
+                ) : null}
+                {onListChange ? (
+                  <div className="mt-4 text-left">
+                    <Label>Audience for this send</Label>
+                    <Select
+                      className="mt-1"
+                      value={selectedListId}
+                      onChange={(e) => onListChange(e.target.value)}
+                    >
+                      <option value="">Select a list</option>
+                      {lists.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.name}
+                          {l._count?.members != null ? ` (${l._count.members})` : ''}
+                        </option>
+                      ))}
+                    </Select>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Opens and clicks are tracked on a new campaign so the original stats stay
+                      intact.
+                    </p>
+                  </div>
                 ) : null}
                 <p className="mt-3 text-xs leading-5 text-muted-foreground">
                   Sending runs on the server in the background. You can close this tab or window
@@ -294,6 +331,8 @@ export function SendProgressModal({
             <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-5">
               <StatTile label="Success" value={formatCount(stats.success)} tone="ok" />
               <StatTile label="Failed" value={formatCount(stats.failed)} tone="bad" />
+              <StatTile label="Opened" value={formatCount(openedCount)} tone="ok" />
+              <StatTile label="Clicked" value={formatCount(clickedCount)} tone="ok" />
               <StatTile label="Remaining" value={formatCount(stats.remaining)} />
               <StatTile
                 label="ETA"
@@ -306,45 +345,13 @@ export function SendProgressModal({
               />
             </div>
 
-            {phase === 'background' && (recentSent.length > 0 || recentFailures.length > 0) ? (
-              <div className="mt-4 max-h-44 overflow-auto border border-border bg-muted/30 px-3 py-2 text-left">
-                <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent">
-                  Live activity (failed first)
-                </div>
-                <ul className="space-y-1 font-mono text-[11px]">
-                  {recentFailures.slice(0, 8).map((f) => (
-                    <li key={`fail-${f.email}`} className="break-all text-destructive">
-                      [FAIL] {f.email} — {f.error}
-                    </li>
-                  ))}
-                  {recentSent.slice(0, 8).map((r) => (
-                    <li key={`ok-${r.email}`} className="break-all text-primary">
-                      [SENT] {r.email}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {(phase === 'background' || phase === 'success') && recentFailures.length > 0 ? (
-              <div className="mt-4 max-h-40 overflow-auto border border-destructive/30 bg-destructive/5 px-3 py-2 text-left">
-                <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-destructive">
-                  Failed recipients ({failedCount})
-                </div>
-                <ul className="space-y-1 text-[11px]">
-                  {recentFailures.map((f) => (
-                    <li key={f.email} className="break-all">
-                      <span className="font-medium text-foreground">{f.email}</span>
-                      <span className="text-muted-foreground"> — {f.error}</span>
-                    </li>
-                  ))}
-                  {failedCount > recentFailures.length ? (
-                    <li className="text-muted-foreground">
-                      +{failedCount - recentFailures.length} more — open Recipients → Failed
-                    </li>
-                  ) : null}
-                </ul>
-              </div>
+            {(phase === 'background' || phase === 'success') &&
+            (activity.length > 0 || recentSent.length > 0 || recentFailures.length > 0) ? (
+              <CampaignSendLog
+                activity={activity}
+                recentSent={recentSent}
+                recentFailures={recentFailures}
+              />
             ) : null}
 
             <div className="mt-5 flex flex-wrap justify-center gap-3">
@@ -373,6 +380,11 @@ export function SendProgressModal({
               {phase === 'background' ? (
                 <Button type="button" variant="outline" onClick={onClose}>
                   Close (keep sending)
+                </Button>
+              ) : null}
+              {phase === 'success' && onViewAnalytics ? (
+                <Button type="button" onClick={onViewAnalytics}>
+                  View opens & clicks
                 </Button>
               ) : null}
               {phase === 'success' ? (
@@ -404,6 +416,87 @@ export function SendProgressModal({
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function CampaignSendLog({
+  activity,
+  recentSent,
+  recentFailures,
+}: {
+  activity: SendActivity[];
+  recentSent: Array<{ email: string; at?: string | null; smtpResponse?: string | null }>;
+  recentFailures: Array<{ email: string; error: string }>;
+}) {
+  const paneRef = useRef<HTMLDivElement>(null);
+  const stickToEnd = useRef(true);
+  const rows = useMemo<SendActivity[]>(() => {
+    if (activity.length) return activity;
+    const fallback: SendActivity[] = [
+      ...recentFailures.map((f) => ({
+        email: f.email,
+        status: 'FAILED' as const,
+        error: f.error,
+        at: '',
+      })),
+      ...recentSent.map((r) => ({
+        email: r.email,
+        status: 'SENT' as const,
+        error: r.smtpResponse ?? null,
+        at: r.at || '',
+      })),
+    ];
+    return fallback;
+  }, [activity, recentFailures, recentSent]);
+
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el || !stickToEnd.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [rows.length]);
+
+  function copyLog() {
+    const text = rows
+      .map((r) => `[${r.at || ''}] ${r.status}  ${r.email}${r.error ? ` — ${r.error}` : ''}`)
+      .join('\n');
+    void navigator.clipboard.writeText(text);
+  }
+
+  return (
+    <div className="mt-4 border border-border bg-muted/30 text-left">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-accent">
+          This campaign log · {rows.length} lines · keep all
+        </div>
+        <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={copyLog}>
+          Copy
+        </Button>
+      </div>
+      <div
+        ref={paneRef}
+        className="max-h-[min(50vh,420px)] overflow-auto px-3 py-2"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
+      >
+        <ul className="space-y-1 font-mono text-[11px]">
+          {rows.map((r, i) => {
+            const fail = r.status === 'FAILED' || r.status === 'BOUNCED';
+            return (
+              <li
+                key={`${r.status}-${r.email}-${r.at}-${i}`}
+                className={cn('break-all', fail ? 'text-destructive' : 'text-primary')}
+              >
+                {r.at ? <span className="text-muted-foreground">[{r.at.slice(11, 19)}] </span> : null}
+                [{r.status}] {r.email}
+                {r.error ? ` — ${r.error}` : ''}
+              </li>
+            );
+          })}
+        </ul>
       </div>
     </div>
   );

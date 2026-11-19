@@ -1,6 +1,6 @@
 import { type ComponentProps, type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
 import { cn } from '@/lib/utils';
 
@@ -39,7 +39,9 @@ export function AuthLayout({
           INBOX FLOW
         </p>
         <p className="mb-6 text-center text-[11px] text-accent">
-          {'*> Inbox Flow · inboxflow.io · TUI *'}
+          {typeof window !== 'undefined' && (window as Window & { inboxflowDesktop?: { isDesktop?: boolean } }).inboxflowDesktop?.isDesktop
+            ? '*> Inbox Flow · Desktop · local *'
+            : '*> Inbox Flow · inboxflow.io · TUI *'}
         </p>
         <div className="tui-box">
           <div className="tui-box-title">{title}</div>
@@ -110,14 +112,28 @@ export function AuthSubmit({
   loading,
   children,
   disabled,
+  loadingLabel = 'Working…',
 }: {
   loading?: boolean;
   children: ReactNode;
   disabled?: boolean;
+  loadingLabel?: string;
 }) {
   return (
-    <Button type="submit" className="w-full rounded-none font-mono" disabled={disabled || loading}>
-      {loading ? '…' : children}
+    <Button
+      type="submit"
+      className="w-full rounded-none font-mono"
+      disabled={disabled || loading}
+      aria-busy={loading}
+    >
+      {loading ? (
+        <>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {loadingLabel}
+        </>
+      ) : (
+        children
+      )}
     </Button>
   );
 }

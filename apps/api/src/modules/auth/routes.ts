@@ -19,12 +19,20 @@ const registerSchema = z.object({
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().min(1),
   password: z.string(),
   totpCode: z.string().optional(),
 });
 
+function loginCandidates(ident: string): string[] {
+  const lower = ident.trim().toLowerCase();
+  if (!lower) return [];
+  if (lower.includes('@')) return [lower];
+  return [lower, `${lower}@inboxflow.io`, `${lower}@users.inboxflow.io`];
+}
+
 function cookieSecure(): boolean {
+  if (process.env.INBOXFLOW_DESKTOP === '1') return false;
   if (env.COOKIE_SECURE !== undefined) return env.COOKIE_SECURE;
   return env.NODE_ENV === 'production';
 }
@@ -180,12 +188,40 @@ export async function authRoutes(app: FastifyInstance) {
     async (request, reply) => {
     try {
       const body = loginSchema.parse(request.body);
-      const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
+      const user = await prisma.user.findFirst({
+        where: { email: { in: loginCandidates(body.email) } },
+        include: {
+          organization: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              physicalAddress: true,
+              sendSettings: true,
+              subscription: { select: { status: true, currentPeriodEnd: true } },
+            },
+          },
+        },
+      });
       if (!user) throw new AppError(401, 'Invalid credentials');
-      if (user.status === 'SUSPENDED') throw new AppError(403, 'Account suspended');
+      if (user.status === 'SUSPENDED') throw new AppError(403, 'Account deactivated');
+      if (user.role === 'USER') {
+        const sub = user.organization?.subscription;
+        const ended = !sub || sub.status === 'EXPIRED' || sub.status === 'CANCELLED' || new Date(sub.currentPeriodEnd).getTime() <= Date.now();
+        if (ended) throw new AppError(403, 'Subscription ended. Ask your admin to renew.');
+      }
 
       const valid = await bcrypt.compare(body.password, user.passwordHash);
       if (!valid) throw new AppError(401, 'Invalid credentials');
+
+      if (user.role === 'USER') {
+        const { licenseBindBlocked, publicClientIp } = await import('../../services/admin/license-bind.js');
+        const blocked = licenseBindBlocked(
+          user.organization?.sendSettings,
+          publicClientIp({ ip: request.ip }),
+        );
+        if (blocked) throw new AppError(403, blocked);
+      }
 
       if (user.twoFactorEnabled) {
         if (!body.totpCode) {
@@ -207,6 +243,19 @@ export async function authRoutes(app: FastifyInstance) {
 
       setAuthCookies(reply, tokens);
 
+      const { orgAllowsDirectSmtp } = await import('../../services/email/smtp-outbound.js');
+      const { orgKeepsWorkspaceOnDevice } = await import('../../services/email/workspace-residency.js');
+      const smtpAllowDirect = orgAllowsDirectSmtp({
+        sendSettings: user.organization?.sendSettings,
+        role: user.role,
+        email: user.email,
+      });
+      const workspaceLocal = orgKeepsWorkspaceOnDevice({
+        sendSettings: user.organization?.sendSettings,
+        role: user.role,
+        email: user.email,
+      });
+
       return reply.send({
         user: {
           id: user.id,
@@ -217,6 +266,19 @@ export async function authRoutes(app: FastifyInstance) {
           organizationId: user.organizationId,
           status: user.status,
           twoFactorEnabled: user.twoFactorEnabled,
+          organization: user.organization
+            ? {
+                id: user.organization.id,
+                name: user.organization.name,
+                slug: user.organization.slug,
+                physicalAddress: user.organization.physicalAddress ?? undefined,
+              }
+            : undefined,
+          smtpAllowDirect,
+          workspaceLocal,
+          boundIp: (await import('../../services/admin/license-bind.js')).readLicenseBind(
+            user.organization?.sendSettings,
+          )?.boundIp ?? null,
         },
         ...tokens,
       });
@@ -224,6 +286,112 @@ export async function authRoutes(app: FastifyInstance) {
       return sendError(reply, error);
     }
   });
+
+  app.get('/bind-ip', async (request, reply) => {
+    const { publicClientIp } = await import('../../services/admin/license-bind.js');
+    return reply.send({
+      ip: publicClientIp({ ip: request.ip, headers: request.headers as Record<string, unknown> }),
+    });
+  });
+
+  app.post(
+    '/bind-ip',
+    {
+      config: {
+        rateLimit: { max: 20, timeWindow: '15 minutes' },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const body = z
+          .object({
+            username: z.string().min(1),
+            licenseKey: z.string().min(1),
+            boundIp: z.string().min(1),
+          })
+          .parse(request.body);
+        const { isPlatformOperator } = await import('../../services/email/workspace-residency.js');
+        const {
+          mergeLicenseBind,
+          parseTypedBindIp,
+          readLicenseBind,
+          ipsMatch,
+          bindIpMustMatchRequest,
+          publicClientIp,
+        } = await import('../../services/admin/license-bind.js');
+
+        const user = await prisma.user.findFirst({
+          where: { email: { in: loginCandidates(body.username) } },
+          include: {
+            organization: {
+              select: {
+                id: true,
+                sendSettings: true,
+                subscription: { select: { status: true, currentPeriodEnd: true } },
+              },
+            },
+          },
+        });
+        if (!user) throw new AppError(401, 'Invalid username or license key');
+        if (isPlatformOperator({ role: user.role, email: user.email })) {
+          throw new AppError(403, 'Operator accounts do not use Bind PC');
+        }
+        if (user.status === 'SUSPENDED') throw new AppError(403, 'Account deactivated');
+        const sub = user.organization?.subscription;
+        const ended =
+          !sub ||
+          sub.status === 'EXPIRED' ||
+          sub.status === 'CANCELLED' ||
+          new Date(sub.currentPeriodEnd).getTime() <= Date.now();
+        if (ended) throw new AppError(403, 'Subscription ended. Ask your admin to renew.');
+
+        const valid = await bcrypt.compare(body.licenseKey, user.passwordHash);
+        if (!valid) throw new AppError(401, 'Invalid username or license key');
+
+        const boundIp = parseTypedBindIp(body.boundIp);
+        if (!boundIp) {
+          throw new AppError(400, 'Enter the public IP of this RDP / Windows VPS.');
+        }
+        const bindMismatch = bindIpMustMatchRequest(
+          boundIp,
+          publicClientIp({ ip: request.ip, headers: request.headers as Record<string, unknown> }),
+        );
+        if (bindMismatch) throw new AppError(403, bindMismatch);
+        const already = readLicenseBind(user.organization?.sendSettings);
+        if (already?.boundIp && !ipsMatch(already.boundIp, boundIp)) {
+          throw new AppError(
+            403,
+            'This license is already activated on another PC. Ask admin to unbind it first.',
+          );
+        }
+
+        const boundAt = new Date().toISOString();
+        if (!user.organizationId) throw new AppError(400, 'Account has no workspace');
+        await prisma.organization.update({
+          where: { id: user.organizationId },
+          data: {
+            sendSettings: mergeLicenseBind(user.organization?.sendSettings, { boundIp, boundAt }) as object,
+          },
+        });
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { lastLoginAt: new Date() },
+        });
+
+        const username = (user.firstName || user.email.split('@')[0] || user.email).trim();
+        return reply.send({
+          success: true,
+          activated: true,
+          username,
+          boundIp,
+          validUntil: sub!.currentPeriodEnd.toISOString(),
+          subscriptionStatus: sub!.status,
+        });
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
 
   app.post('/refresh', async (request, reply) => {
     try {
@@ -384,11 +552,51 @@ export async function authRoutes(app: FastifyInstance) {
           avatarUrl: true,
           timezone: true,
           organizationId: true,
-          organization: { select: { id: true, name: true, slug: true, physicalAddress: true } },
+          organization: {
+            select: { id: true, name: true, slug: true, physicalAddress: true, sendSettings: true },
+          },
         },
       });
       if (!user) throw new AppError(404, 'User not found');
-      return reply.send({ user });
+      const { orgAllowsDirectSmtp } = await import('../../services/email/smtp-outbound.js');
+      const smtpAllowDirect = orgAllowsDirectSmtp({
+        sendSettings: user.organization?.sendSettings,
+        role: user.role,
+        email: user.email,
+      });
+      const { orgKeepsWorkspaceOnDevice } = await import('../../services/email/workspace-residency.js');
+      const workspaceLocal = orgKeepsWorkspaceOnDevice({
+        sendSettings: user.organization?.sendSettings,
+        role: user.role,
+        email: user.email,
+      });
+      return reply.send({
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          role: user.role,
+          status: user.status,
+          twoFactorEnabled: user.twoFactorEnabled,
+          avatarUrl: user.avatarUrl,
+          timezone: user.timezone,
+          organizationId: user.organizationId,
+          organization: user.organization
+            ? {
+                id: user.organization.id,
+                name: user.organization.name,
+                slug: user.organization.slug,
+                physicalAddress: user.organization.physicalAddress,
+              }
+            : null,
+          smtpAllowDirect,
+          workspaceLocal,
+          boundIp: (await import('../../services/admin/license-bind.js')).readLicenseBind(
+            user.organization?.sendSettings,
+          )?.boundIp ?? null,
+        },
+      });
     } catch (error) {
       return sendError(reply, error);
     }

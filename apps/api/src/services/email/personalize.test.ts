@@ -56,3 +56,46 @@ describe('personalize sender_name', () => {
     expect(applySenderName(raw, 'Brand Co')).toBe('© Brand Co');
   });
 });
+
+describe('personalize spin and imported tags', () => {
+  it('rewrites {{FNAME}} via placeholderMap then fills first name', () => {
+    expect(
+      personalize('Hi {{FNAME}}', { firstName: 'Ava', email: 'ava@x.com' }, {
+        placeholderMap: { FNAME: 'firstName' },
+      }),
+    ).toBe('Hi Ava');
+  });
+
+  it('picks a spin variant stably per email', () => {
+    const a = personalize('{Hi|Hello} there', { email: 'one@x.com' });
+    const b = personalize('{Hi|Hello} there', { email: 'one@x.com' });
+    expect(a).toBe(b);
+    expect(a === 'Hi there' || a === 'Hello there').toBe(true);
+  });
+
+  it('fills imported Blue {first_name} / {mename} tags', () => {
+    expect(
+      personalize('Hi {first_name}', { firstName: 'Ava', email: 'ava@x.com' }),
+    ).toBe('Hi Ava');
+    expect(
+      personalize('From {mename}', { email: 'a@b.com' }, { senderName: 'Inbox Flow' }),
+    ).toBe('From Inbox Flow');
+  });
+
+  it('fills spaced {{first name}} tags from imported letters', () => {
+    expect(
+      personalize('Hi {{first name}}', { firstName: 'Ava', email: 'ava@x.com' }),
+    ).toBe('Hi Ava');
+  });
+
+  it('spins Placeholder-tab one-per-line pools per recipient', () => {
+    const a = personalize('Meet {{date}}', { email: 'one@x.com' }, {
+      spinPools: { date: ['10', '20'] },
+    });
+    const b = personalize('Meet {{date}}', { email: 'one@x.com' }, {
+      spinPools: { date: ['10', '20'] },
+    });
+    expect(a).toBe(b);
+    expect(a === 'Meet 10' || a === 'Meet 20').toBe(true);
+  });
+});

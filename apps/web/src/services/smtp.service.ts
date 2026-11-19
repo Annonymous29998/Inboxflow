@@ -1,5 +1,35 @@
 import { api } from '@/lib/api';
 
+export type SmtpFromIdentity = { email: string; name?: string };
+
+/** API may send an array or a JSON string (config blob / demo workspace). */
+export function parseFromIdentities(raw: unknown): SmtpFromIdentity[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((row) => {
+        if (typeof row === 'string') return { email: row.trim(), name: '' };
+        if (row && typeof row === 'object') {
+          const r = row as { email?: unknown; name?: unknown };
+          return { email: String(r.email || '').trim(), name: String(r.name || '').trim() };
+        }
+        return { email: '', name: '' };
+      })
+      .filter((s) => s.email);
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      return parseFromIdentities(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function normalizeProfile<T extends SmtpProfile>(p: T): T {
+  return { ...p, fromIdentities: parseFromIdentities(p.fromIdentities) };
+}
+
 export type SmtpProfile = {
   id: string;
   name: string;
@@ -26,8 +56,16 @@ export type SmtpProfile = {
   encryption?: string;
   fromEmail?: string;
   fromName?: string;
+  fromIdentities?: SmtpFromIdentity[];
   replyTo?: string;
   user?: string;
+  outboundPath?: string;
+  bindIp?: string;
+  socksHost?: string;
+  socksPort?: string;
+  socksUser?: string;
+  hasSocksPass?: boolean;
+  viaApiKey?: boolean;
   hasPassword?: boolean;
   issues?: string[];
 };
@@ -35,13 +73,17 @@ export type SmtpProfile = {
 export const smtpService = {
   async list(): Promise<SmtpProfile[]> {
     const data = await api.get<{ providers: SmtpProfile[] }>('/api/providers');
-    return data.providers.filter((p) => p.type === 'SMTP');
+    return Array.isArray(data.providers) ? data.providers.map(normalizeProfile) : [];
+  },
+
+  async listSmtp(): Promise<SmtpProfile[]> {
+    return (await this.list()).filter((p) => p.type === 'SMTP' && !p.viaApiKey);
   },
 
   async get(id: string): Promise<SmtpProfile & { config?: Record<string, string> }> {
     return api.get<{ provider: SmtpProfile & { config?: Record<string, string> } }>(
       `/api/providers/${id}`,
-    ).then((d) => d.provider);
+    ).then((d) => (d.provider ? normalizeProfile(d.provider) : d.provider));
   },
 
   async create(input: {
@@ -100,8 +142,9 @@ export const smtpService = {
     message: string;
     error?: string;
     messageId?: string;
+    sentCount?: number;
+    fromEmails?: string[];
     issues?: string[];
-    deliverabilityWarnings?: string[];
   }> {
     // Always use the Railway/API path for live SMTP verify/send.
     // Supabase Edge Functions block outbound ports 25 and 587
@@ -112,7 +155,14 @@ export const smtpService = {
     // and masked passwords can fall back to the stored secret.
     if (input.providerId) {
       const data = await api.post<{
-        result: { success: boolean; message: string; error?: string; messageId?: string };
+        result: {
+          success: boolean;
+          message: string;
+          error?: string;
+          messageId?: string;
+          sentCount?: number;
+          fromEmails?: string[];
+        };
         issues?: string[];
         deliverabilityWarnings?: string[];
       }>(`/api/providers/${input.providerId}/test`, {
@@ -122,7 +172,7 @@ export const smtpService = {
         notes: input.notes || undefined,
         skipLiveVerify: Boolean(input.skipLiveVerify),
       });
-      return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
+      return { ...data.result, issues: data.issues || [] };
     }
 
     const data = await api.post<{
@@ -137,7 +187,7 @@ export const smtpService = {
       notes: input.notes || undefined,
       skipLiveVerify: Boolean(input.skipLiveVerify),
     });
-    return { ...data.result, issues: data.issues || [], deliverabilityWarnings: data.deliverabilityWarnings || [] };
+    return { ...data.result, issues: data.issues || [] };
   },
 
   async detectTls(port: string | number) {

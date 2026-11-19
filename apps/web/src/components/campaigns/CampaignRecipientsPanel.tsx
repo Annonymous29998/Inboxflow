@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Eye, Mail, MousePointerClick } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Eye, Mail, MousePointerClick } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Card, Input, Select } from '@/components/ui';
 
@@ -45,6 +45,8 @@ type Props = {
   contactsPagination?: boolean;
   /** Poll while campaign is actively sending (queue console passes false when finished) */
   livePoll?: boolean;
+  /** Start collapsed; the heading toggles the table. */
+  defaultCollapsed?: boolean;
 };
 
 function formatTs(iso: string | null) {
@@ -64,7 +66,9 @@ export function CampaignRecipientsPanel({
   compact,
   contactsPagination = false,
   livePoll,
+  defaultCollapsed = false,
 }: Props) {
+  const [open, setOpen] = useState(!defaultCollapsed);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [total, setTotal] = useState(0);
@@ -118,8 +122,9 @@ export function CampaignRecipientsPanel({
   }, [page, pages]);
 
   useEffect(() => {
+    if (!open) return;
     load();
-  }, [load]);
+  }, [load, open]);
 
   const shouldLivePoll =
     livePoll ??
@@ -142,17 +147,8 @@ export function CampaignRecipientsPanel({
     r.delivered ||
     ['DELIVERED', 'OPENED', 'CLICKED', 'SENT', 'UNSUBSCRIBED'].includes(r.status);
 
-  return (
-    <div className="space-y-3">
-      {!compact ? (
-        <div>
-          <h2 className="font-medium">Recipients</h2>
-          <p className="text-xs text-ink-muted">
-            Opens and clicks from mail clients and browsers, including people
-            who unsubscribed. Named bots (curl, scanners) are hidden.
-          </p>
-        </div>
-      ) : null}
+  const body = (
+    <>
 
       {/* Summary bar — nexlogs style */}
       {summary ? (
@@ -461,6 +457,36 @@ export function CampaignRecipientsPanel({
           </div>
         ) : null}
       </Card>
+    </>
+  );
+
+  if (compact) {
+    return <div className="space-y-3">{body}</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <button
+        type="button"
+        className="flex w-full items-start gap-2 text-left"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        {open ? (
+          <ChevronDown className="mt-1 h-4 w-4 flex-none text-muted-foreground" />
+        ) : (
+          <ChevronRight className="mt-1 h-4 w-4 flex-none text-muted-foreground" />
+        )}
+        <div className="min-w-0 flex-1">
+          <h2 className="font-medium">Recipients{total > 0 ? ` (${total.toLocaleString()})` : ''}</h2>
+          <p className="text-xs text-ink-muted">
+            {open
+              ? 'Opens and clicks from mail clients and browsers, including people who unsubscribed. Named bots (curl, scanners) are hidden.'
+              : 'Collapsed — click to show the recipient table.'}
+          </p>
+        </div>
+      </button>
+      {open ? body : null}
     </div>
   );
 }

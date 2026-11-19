@@ -113,13 +113,12 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
     batchSize?: number;
     batchPauseMs?: number;
   };
-  const betweenEmailMs = queueSettings.betweenEmailMs ?? 4_000;
-  const batchSize = Math.max(10, Number(queueSettings.batchSize ?? 10));
-  const batchPauseMs = queueSettings.batchPauseMs ?? 30_000;
+  const betweenEmailMs = queueSettings.betweenEmailMs ?? 1_500;
+  const batchSize = Math.max(10, Math.min(50, Number(queueSettings.batchSize ?? 50)));
+  const batchPauseMs = queueSettings.batchPauseMs ?? 15_000;
   const humanDelay = (baseMs: number) => {
     if (baseMs <= 0) return 0;
-    const factor = 0.6 + Math.random() * 0.8;
-    return Math.max(250, Math.round(baseMs * factor));
+    return Math.round(baseMs);
   };
 
   let processed = 0;
@@ -219,14 +218,13 @@ export async function processCampaignBatch(campaignId: string, options?: { maxRu
       if (!html.includes(pixel)) html += pixel;
     }
 
-    if (campaign.trackClicks) {
-      html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_m, url: string) => {
-        const sig = signClickRedirect(campaignId, contactId, url);
-        const tracked =
-          `${trackBase}?action=click&campaignId=${campaignId}&contactId=${contactId}&u=${encodeURIComponent(url)}&s=${sig}`;
-        return `href="${tracked}"`;
-      });
-    }
+    html = html.replace(/\bhref\s*=\s*(["'])(https?:\/\/[\s\S]*?)\1/gi, (full, q: string, url: string) => {
+      if (/\/api\/t\/|action=click|action=unsubscribe|mailto:/i.test(url)) return full;
+      const sig = signClickRedirect(campaignId, contactId, url);
+      const tracked =
+        `${trackBase}?action=click&campaignId=${campaignId}&contactId=${contactId}&u=${encodeURIComponent(url)}&s=${sig}`;
+      return `href=${q}${tracked}${q}`;
+    });
 
     try {
       const result = await sendViaSmtp(

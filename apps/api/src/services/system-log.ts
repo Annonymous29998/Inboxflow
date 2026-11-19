@@ -41,6 +41,10 @@ export function detectSmtpConfigIssues(config: {
   user?: string;
   pass?: string;
   fromEmail?: string;
+  outboundPath?: string;
+  bindIp?: string;
+  socksHost?: string;
+  socksPort?: string | number;
 }) {
   const issues: string[] = [];
   const host = String(config.host || '').trim().toLowerCase();
@@ -75,6 +79,14 @@ export function detectSmtpConfigIssues(config: {
   }
   if (host.includes('sendgrid') && config.user && config.user !== 'apikey') {
     issues.push('SendGrid SMTP username is usually literally "apikey"');
+  }
+
+  const path = String(config.outboundPath || 'direct').trim().toLowerCase();
+  if (path === 'bind' && !String(config.bindIp || '').trim()) {
+    issues.push('Bind IP path needs an address this send machine already has');
+  }
+  if (path === 'socks' && !String(config.socksHost || '').trim()) {
+    issues.push('SOCKS path needs a proxy host');
   }
 
   return issues;

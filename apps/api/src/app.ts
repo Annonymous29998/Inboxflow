@@ -6,6 +6,8 @@ import rateLimit from '@fastify/rate-limit';
 import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { env } from './config/env.js';
 import { sendError } from './utils/errors.js';
 
@@ -24,6 +26,12 @@ export async function buildApp() {
     status: 'ok',
     service: env.APP_NAME,
     time: new Date().toISOString(),
+    features: {
+      pulse: true,
+      adminNote: true,
+      resetLicense: true,
+      subscriptions: true,
+    },
   }));
 
   // Allow DELETE/POST with Content-Type: application/json and an empty body
@@ -55,8 +63,23 @@ export async function buildApp() {
   await app.register(jwt, { secret: env.JWT_ACCESS_SECRET });
 
   await app.register(rateLimit, {
-    max: env.RATE_LIMIT_MAX,
+    max: (request) => {
+      const path = String(request.url || '').split('?')[0];
+      if (path.startsWith('/api/auth/login') || path.startsWith('/api/auth/register')) return 20;
+      return Math.max(env.RATE_LIMIT_MAX, 5_000);
+    },
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
+    allowList: (request) => {
+      const path = String(request.url || '').split('?')[0];
+      return (
+        path === '/health' ||
+        path.startsWith('/api/t/') ||
+        path === '/api/contacts/import' ||
+        path.startsWith('/api/jobs/') ||
+        path.includes('/send-one') ||
+        path.includes('/send-status')
+      );
+    },
   });
 
   const enableDocs =
@@ -104,6 +127,7 @@ export async function buildApp() {
     { providerRoutes },
     { apiKeyRoutes },
     { adminRoutes },
+    { workspacePulseRoutes },
     { systemLogRoutes },
     { importRoutes },
     { jobRoutes },
@@ -120,6 +144,7 @@ export async function buildApp() {
     import('./modules/providers/routes.js'),
     import('./modules/api-keys/routes.js'),
     import('./modules/admin/routes.js'),
+    import('./modules/workspace/pulse-routes.js'),
     import('./modules/system-logs/routes.js'),
     import('./modules/import/routes.js'),
     import('./modules/jobs/routes.js'),
@@ -138,6 +163,7 @@ export async function buildApp() {
   await app.register(providerRoutes, { prefix: '/api/providers' });
   await app.register(apiKeyRoutes, { prefix: '/api/api-keys' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
+  await app.register(workspacePulseRoutes, { prefix: '/api/workspace' });
   await app.register(systemLogRoutes, { prefix: '/api/logs' });
   await app.register(importRoutes, { prefix: '/api/import' });
   await app.register(jobRoutes, { prefix: '/api/jobs' });
@@ -157,6 +183,23 @@ export async function buildApp() {
       return reply.redirect(`/api/t/unsubscribe?${params.toString()}`);
     },
   });
+
+  // Desktop EXE: serve the Vite SPA from the same origin as /api (no public domain).
+  const webRoot = String(process.env.DESKTOP_WEB_ROOT || '').trim();
+  if (process.env.INBOXFLOW_DESKTOP === '1' && webRoot && existsSync(join(webRoot, 'index.html'))) {
+    const { default: fastifyStatic } = await import('@fastify/static');
+    await app.register(fastifyStatic, {
+      root: webRoot,
+      prefix: '/',
+      wildcard: false,
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method === 'GET' && !request.url.startsWith('/api')) {
+        return reply.sendFile('index.html');
+      }
+      return reply.status(404).send({ error: 'Not found' });
+    });
+  }
 
   return app;
 }

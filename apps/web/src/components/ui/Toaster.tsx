@@ -1,6 +1,10 @@
+import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { useLocation } from 'react-router-dom';
 import { X } from 'lucide-react';
-import { useToastStore, type ToastTone } from '@/stores/toast';
+import { TOAST_TTL_MS, useToastStore, type ToastTone } from '@/stores/toast';
 import { cn } from '@/lib/utils';
+import { shellFromPath } from '@/lib/shell';
 
 function toneClass(tone: ToastTone) {
   switch (tone) {
@@ -31,21 +35,42 @@ function toneLabel(tone: ToastTone) {
 export function Toaster() {
   const items = useToastStore((s) => s.items);
   const dismiss = useToastStore((s) => s.dismiss);
+  const admin = shellFromPath(useLocation().pathname) === 'admin';
+
+  useEffect(() => {
+    const timers = items
+      .filter((t) => t.durationMs > 0)
+      .map((t) => {
+        const wait = Math.max(0, t.durationMs - (Date.now() - t.createdAt));
+        return window.setTimeout(() => dismiss(t.id), wait);
+      });
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [items, dismiss]);
 
   if (!items.length) return null;
 
-  return (
+  return createPortal(
     <div
-      className="pointer-events-none fixed bottom-14 right-3 z-[80] flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2 sm:right-5"
+      className="pointer-events-none fixed bottom-14 right-3 z-[200] flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2 sm:right-5"
       aria-live="polite"
       aria-relevant="additions"
+      data-toast-ttl={TOAST_TTL_MS}
     >
       {items.map((t) => (
         <div
           key={t.id}
           className={cn(
-            'pointer-events-auto animate-fade-in border bg-card px-3 py-2.5 font-mono shadow-xl',
-            toneClass(t.tone),
+            'pointer-events-auto animate-fade-in border px-3 py-2.5 shadow-xl',
+            admin
+              ? 'rounded-xl border-slate-300 bg-slate-50 font-[Manrope,ui-sans-serif,sans-serif] text-slate-900'
+              : 'border-border bg-card font-mono',
+            !admin && toneClass(t.tone),
+            admin && t.tone === 'success' && 'border-teal-600 text-teal-800',
+            admin && t.tone === 'error' && 'border-rose-500 text-rose-800',
+            admin && t.tone === 'warning' && 'border-amber-500 text-amber-800',
+            admin && t.tone === 'info' && 'border-slate-400 text-slate-800',
           )}
           role="status"
         >
@@ -68,6 +93,7 @@ export function Toaster() {
           </div>
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -56,6 +56,13 @@ export const SMTP_AUTH_HINTS: SmtpAuthHint[] = [
     spfMechanisms: ['include:amazonses.com'],
     dkimHint: 'Verify the domain in SES and publish the three DKIM CNAMEs Amazon shows.',
   },
+  {
+    id: 'hostinger',
+    label: 'Hostinger',
+    match: /hostinger/i,
+    spfMechanisms: ['include:_spf.mail.hostinger.com'],
+    dkimHint: 'Inbox Flow DKIM (inboxflow._domainkey) is enough when sending through Inbox Flow SMTP.',
+  },
 ];
 
 export function hintsForSmtpHost(host: string): SmtpAuthHint[] {

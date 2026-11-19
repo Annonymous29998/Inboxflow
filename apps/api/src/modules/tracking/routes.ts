@@ -1,10 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../config/prisma.js';
-import {
-  isSafeRedirectUrl,
-  verifyClickRedirect,
-  verifyUnsubscribe,
-} from '../../utils/signed-urls.js';
+import { resolveClickDest, verifyOpen, verifyUnsubscribe } from '../../utils/signed-urls.js';
 import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 export { webhookRoutes } from './webhook-routes.js';
@@ -52,6 +48,14 @@ export async function trackingRoutes(app: FastifyInstance) {
     const auto = classifyAutomatedTracking(rawUa);
 
     const contactIdClean = contactId.replace(/\.gif$/, '');
+    const q = request.query as { s?: string };
+
+    reply.header('Content-Type', 'image/gif');
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+
+    if (!verifyOpen(contactIdClean, campaignId, q.s)) {
+      return reply.send(TRANSPARENT_GIF);
+    }
 
     try {
       const countable = isCountableOpen(rawUa, undefined);
@@ -109,18 +113,16 @@ export async function trackingRoutes(app: FastifyInstance) {
       console.error('Open tracking error', e);
     }
 
-    reply.header('Content-Type', 'image/gif');
-    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     return reply.send(TRANSPARENT_GIF);
   });
 
-  // Click redirect — requires HMAC signature; blocks open redirects
+  // Legacy click tickets (if any) go straight to the destination — no interstitial page.
   app.get('/c/:campaignId/:contactId', async (request, reply) => {
     const { campaignId, contactId } = request.params as { campaignId: string; contactId: string };
-    const q = request.query as { u?: string; s?: string };
-    const url = q.u || '';
+    const q = request.query as { t?: string; u?: string; s?: string; go?: string };
+    const url = resolveClickDest(campaignId, contactId, q);
 
-    if (!url || !isSafeRedirectUrl(url) || !verifyClickRedirect(campaignId, contactId, url, q.s)) {
+    if (!url) {
       return reply.status(400).type('text/plain').send('Invalid or unsigned tracking link');
     }
 
@@ -220,8 +222,11 @@ export async function trackingRoutes(app: FastifyInstance) {
       console.error('Click tracking error', e);
     }
 
-    return reply.redirect(url);
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('Cache-Control', 'no-store');
+    return reply.redirect(url, 302);
   });
+
 
   // One-click unsubscribe — requires HMAC signature
   app.route({

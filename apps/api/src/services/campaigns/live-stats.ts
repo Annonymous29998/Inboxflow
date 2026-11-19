@@ -1,16 +1,9 @@
 import { prisma } from '../../config/prisma.js';
 import {
   deliveredRecipientFilter,
-  inboxDeliveredFilter,
-  INBOX_DELIVERED_STATUSES,
   sumDeliveredFromCounts,
 } from '../../modules/campaigns/recipient-stats.js';
-import {
-  countHumanClicks,
-  countHumanOpens,
-  maybeRecountCampaignEngagement,
-} from '../tracking/recount.js';
-import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
+import { readLifetimeStats } from '../org-lifetime-stats.js';
 
 export type CampaignLiveStats = {
   sentCount: number;
@@ -28,26 +21,32 @@ export async function getCampaignLiveStats(
   campaignId: string,
   totalRecipients?: number,
 ): Promise<CampaignLiveStats> {
-  maybeRecountCampaignEngagement(campaignId);
-
-  const [accepted, inboxDelivered, failed, pending, bounced, opened, clicked] = await Promise.all([
+  const [accepted, failed, pending, bounced, stored] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
-    prisma.campaignRecipient.count({ where: inboxDeliveredFilter(campaignId) }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } }),
     prisma.campaignRecipient.count({ where: { campaignId, status: 'BOUNCED' } }),
-    countHumanOpens(campaignId),
-    countHumanClicks(campaignId),
+    prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: {
+        sentCount: true,
+        deliveredCount: true,
+        failedCount: true,
+        openedCount: true,
+        clickedCount: true,
+        bouncedCount: true,
+      },
+    }),
   ]);
 
   return {
-    sentCount: accepted,
-    deliveredCount: inboxDelivered,
-    failedCount: failed,
+    sentCount: Math.max(accepted, stored?.sentCount ?? 0),
+    deliveredCount: Math.max(accepted, stored?.deliveredCount ?? 0, stored?.sentCount ?? 0),
+    failedCount: Math.max(failed, stored?.failedCount ?? 0),
     pendingCount: pending,
-    openedCount: opened,
-    clickedCount: clicked,
-    bouncedCount: bounced,
+    openedCount: stored?.openedCount ?? 0,
+    clickedCount: stored?.clickedCount ?? 0,
+    bouncedCount: Math.max(bounced, stored?.bouncedCount ?? 0),
     totalRecipients,
   };
 }
@@ -67,33 +66,24 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
   const out = new Map<string, ListStat>();
   if (!campaignIds.length) return out;
 
-  const [byStatus, inbox, trackEvents] = await Promise.all([
+  // Do not load every TrackingEvent here — that made campaign list refresh stall.
+  // Unique opens/clicks on the list come from stored campaign counters (updated on send/results).
+  const [byStatus, storedRows] = await Promise.all([
     prisma.campaignRecipient.groupBy({
       by: ['campaignId', 'status'],
       where: { campaignId: { in: campaignIds } },
       _count: { _all: true },
     }),
-    prisma.campaignRecipient.groupBy({
-      by: ['campaignId'],
-      where: {
-        campaignId: { in: campaignIds },
-        OR: [{ deliveredAt: { not: null } }, { status: { in: INBOX_DELIVERED_STATUSES } }],
-      },
-      _count: { _all: true },
-    }),
-    prisma.trackingEvent.findMany({
-      where: {
-        campaignId: { in: campaignIds },
-        type: { in: ['OPENED', 'CLICKED', 'UNSUBSCRIBED'] },
-        contactId: { not: null },
-      },
+    prisma.campaign.findMany({
+      where: { id: { in: campaignIds } },
       select: {
-        campaignId: true,
-        contactId: true,
-        type: true,
-        userAgent: true,
-        metadata: true,
-        createdAt: true,
+        id: true,
+        sentCount: true,
+        deliveredCount: true,
+        failedCount: true,
+        openedCount: true,
+        clickedCount: true,
+        bouncedCount: true,
       },
     }),
   ]);
@@ -103,104 +93,57 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
   for (const r of byStatus) {
     counts.set(`${r.campaignId}:${r.status}` as K, r._count._all);
   }
-  const inboxById = new Map(inbox.map((r) => [r.campaignId, r._count._all]));
-
-  const eventOpened = new Map<string, Set<string>>();
-  const eventClicked = new Map<string, Set<string>>();
-  const opensByCampaign = new Map<string, Set<string>>();
-  for (const e of trackEvents) {
-    if (!e.contactId || !e.campaignId || e.type !== 'OPENED') continue;
-    if (!isCountableOpen(e.userAgent, e.metadata)) continue;
-    if (!opensByCampaign.has(e.campaignId)) opensByCampaign.set(e.campaignId, new Set());
-    opensByCampaign.get(e.campaignId)!.add(e.contactId);
-  }
-  const clicksByCampaign = new Map<string, typeof trackEvents>();
-  for (const e of trackEvents) {
-    if (!e.contactId || !e.campaignId || e.type !== 'CLICKED') continue;
-    const list = clicksByCampaign.get(e.campaignId) ?? [];
-    list.push(e);
-    clicksByCampaign.set(e.campaignId, list);
-  }
-  for (const [campaignId, opens] of opensByCampaign) {
-    eventOpened.set(campaignId, new Set(opens));
-  }
-  for (const [campaignId, clicks] of clicksByCampaign) {
-    const human = filterCountableClicks(clicks);
-    if (!eventClicked.has(campaignId)) eventClicked.set(campaignId, new Set());
-    if (!eventOpened.has(campaignId)) eventOpened.set(campaignId, new Set());
-    for (const e of human) {
-      if (!e.contactId) continue;
-      eventClicked.get(campaignId)!.add(e.contactId);
-      eventOpened.get(campaignId)!.add(e.contactId);
-    }
-  }
-  for (const e of trackEvents) {
-    if (!e.contactId || !e.campaignId || e.type !== 'UNSUBSCRIBED') continue;
-    if (!eventOpened.has(e.campaignId)) eventOpened.set(e.campaignId, new Set());
-    if (!eventClicked.has(e.campaignId)) eventClicked.set(e.campaignId, new Set());
-    eventOpened.get(e.campaignId)!.add(e.contactId);
-    eventClicked.get(e.campaignId)!.add(e.contactId);
-  }
-
+  const storedById = new Map(storedRows.map((c) => [c.id, c]));
   for (const id of campaignIds) {
-    maybeRecountCampaignEngagement(id);
+    const stored = storedById.get(id);
+    const sent = Math.max(sumDeliveredFromCounts(counts, id), stored?.sentCount ?? 0);
     out.set(id, {
-      sentCount: sumDeliveredFromCounts(counts, id),
-      deliveredCount: inboxById.get(id) ?? 0,
-      failedCount: counts.get(`${id}:FAILED` as K) ?? 0,
+      sentCount: sent,
+      deliveredCount: Math.max(sent, stored?.deliveredCount ?? 0),
+      failedCount: Math.max(counts.get(`${id}:FAILED` as K) ?? 0, stored?.failedCount ?? 0),
       pendingCount: counts.get(`${id}:QUEUED` as K) ?? 0,
-      bouncedCount: counts.get(`${id}:BOUNCED` as K) ?? 0,
-      openedCount: eventOpened.get(id)?.size ?? 0,
-      clickedCount: eventClicked.get(id)?.size ?? 0,
+      bouncedCount: Math.max(counts.get(`${id}:BOUNCED` as K) ?? 0, stored?.bouncedCount ?? 0),
+      openedCount: stored?.openedCount ?? 0,
+      clickedCount: stored?.clickedCount ?? 0,
     });
   }
   return out;
 }
 
 export async function getOrgLiveEngagement(organizationId: string) {
-  const campaigns = await prisma.campaign.findMany({
-    where: {
-      organizationId,
-      status: { in: ['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'] },
-    },
-    select: { id: true },
-  });
-
-  const ids = campaigns.map((c) => c.id);
-  if (!ids.length) {
-    return { sent: 0, delivered: 0, failed: 0, opened: 0, clicked: 0, bounced: 0, complained: 0 };
-  }
-
-  const [deliveredCount, failed, bounced, complainedAgg] = await Promise.all([
-    prisma.campaignRecipient.count({
+  const [agg, org] = await Promise.all([
+    prisma.campaign.aggregate({
       where: {
-        campaignId: { in: ids },
-        status: { in: ['SENT', 'DELIVERED', 'OPENED', 'CLICKED'] },
+        organizationId,
+        status: { in: ['SENT', 'SENDING', 'PAUSED', 'CANCELLED', 'FAILED'] },
+      },
+      _sum: {
+        sentCount: true,
+        deliveredCount: true,
+        failedCount: true,
+        openedCount: true,
+        clickedCount: true,
+        bouncedCount: true,
+        complainedCount: true,
       },
     }),
-    prisma.campaignRecipient.count({ where: { campaignId: { in: ids }, status: 'FAILED' } }),
-    prisma.campaignRecipient.count({ where: { campaignId: { in: ids }, status: 'BOUNCED' } }),
-    prisma.campaign.aggregate({
-      where: { organizationId, id: { in: ids } },
-      _sum: { complainedCount: true },
+    prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { sendSettings: true },
     }),
   ]);
-
-  let opened = 0;
-  let clicked = 0;
-  for (const id of ids) {
-    maybeRecountCampaignEngagement(id);
-    opened += await countHumanOpens(id);
-    clicked += await countHumanClicks(id);
-  }
+  const lifetime = readLifetimeStats(org?.sendSettings);
+  const sum = agg._sum;
+  const sent = (sum.sentCount ?? 0) + lifetime.sent;
+  const delivered = Math.max(sum.deliveredCount ?? 0, sum.sentCount ?? 0) + lifetime.delivered;
 
   return {
-    sent: deliveredCount + failed,
-    delivered: deliveredCount,
-    failed,
-    opened,
-    clicked,
-    bounced,
-    complained: complainedAgg._sum.complainedCount ?? 0,
+    sent,
+    delivered,
+    failed: (sum.failedCount ?? 0) + lifetime.failed,
+    opened: (sum.openedCount ?? 0) + lifetime.opened,
+    clicked: (sum.clickedCount ?? 0) + lifetime.clicked,
+    bounced: (sum.bouncedCount ?? 0) + lifetime.bounced,
+    complained: (sum.complainedCount ?? 0) + lifetime.complained,
   };
 }

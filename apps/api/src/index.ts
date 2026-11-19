@@ -1,10 +1,24 @@
 import { buildApp } from './app.js';
 import { env } from './config/env.js';
+import { isDesktopHybrid } from './config/db-kind.js';
+import { ensureSqliteSchema } from './config/sqlite-schema.js';
 import { startWorkers } from './services/email/queue.js';
+import { startInboxFlowSmtpServer } from './services/email/inboxflow-smtp.js';
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  const desktop = isDesktopHybrid() || process.env.INBOXFLOW_DESKTOP === '1';
+  if (!desktop) process.exit(1);
+});
 
 // Railway: trigger watched-filter redeploy so skipped railway.json + /health-first fixes actually apply.
 
 async function main() {
+  ensureSqliteSchema();
   const app = await buildApp();
 
   // Background queue workers are optional. Nexlogs-style sending uses browser sequential
@@ -15,9 +29,22 @@ async function main() {
 
   // Railway (and most hosts) inject PORT — prefer it over API_PORT.
   const port = Number(process.env.PORT) || env.API_PORT;
-  await app.listen({ port, host: '0.0.0.0' });
+  const host = isDesktopHybrid() ? '127.0.0.1' : '0.0.0.0';
+  await app.listen({ port, host });
   console.log(`${env.APP_NAME} API listening on :${port}`);
+  const { resolvePublicBaseUrl } = await import('./services/email/public-url.js');
+  const publicUrl = resolvePublicBaseUrl({
+    publicUrl: env.PUBLIC_URL,
+    trackingBaseUrl: env.TRACKING_BASE_URL,
+    apiUrl: env.API_URL,
+  });
+  console.log(`Tracking / opens / clicks: ${publicUrl}`);
   console.log(`API docs: http://localhost:${port}/docs`);
+  try {
+    await startInboxFlowSmtpServer();
+  } catch (err) {
+    console.error('Inbox Flow SMTP listener did not start:', err);
+  }
 }
 
 main().catch((err) => {

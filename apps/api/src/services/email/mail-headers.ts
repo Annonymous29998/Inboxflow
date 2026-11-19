@@ -63,26 +63,142 @@ export function smtpHostAllowsConsumerFrom(host: string, fromDomain: string): bo
   return false;
 }
 
+/** True when email is on a domain the org verified (or a subdomain of it). */
+export function isAuthorizedFromDomain(email: string, domains: string[] | undefined): boolean {
+  const d = emailDomain(email);
+  if (!d || !domains?.length) return false;
+  return domains.some((own) => {
+    const o = String(own || '')
+      .trim()
+      .toLowerCase();
+    return Boolean(o) && (d === o || d.endsWith(`.${o}`));
+  });
+}
+
+export type SmtpFromIdentity = { email: string; name: string };
+
+function addSmtpIdentity(out: SmtpFromIdentity[], email?: string, name?: string) {
+  const e = String(email || '').trim();
+  if (!e.includes('@')) return;
+  const existing = out.find((x) => x.email.toLowerCase() === e.toLowerCase());
+  const n = String(name || '').trim();
+  if (existing) {
+    if (n && !existing.name) existing.name = n;
+    return;
+  }
+  out.push({ email: e, name: n });
+}
+
+function collectFromIdentitiesField(config: {
+  fromIdentities?: string | SmtpFromIdentity[] | Array<string | SmtpFromIdentity>;
+}): SmtpFromIdentity[] {
+  const out: SmtpFromIdentity[] = [];
+  const rawIdent = config.fromIdentities;
+  if (Array.isArray(rawIdent)) {
+    for (const row of rawIdent) {
+      if (typeof row === 'string') addSmtpIdentity(out, row);
+      else if (row && typeof row === 'object') addSmtpIdentity(out, row.email, row.name);
+    }
+  } else if (typeof rawIdent === 'string' && rawIdent.trim()) {
+    try {
+      const parsed = JSON.parse(rawIdent) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const row of parsed) {
+          if (typeof row === 'string') addSmtpIdentity(out, row);
+          else if (row && typeof row === 'object') {
+            const r = row as SmtpFromIdentity;
+            addSmtpIdentity(out, r.email, r.name);
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return out;
+}
+
+/** Drop the SMTP username if it was auto-appended as an extra From. */
+export function withoutAutoSmtpLoginFrom(
+  identities: SmtpFromIdentity[],
+  smtpUser?: string,
+): SmtpFromIdentity[] {
+  const login = String(smtpUser || '')
+    .trim()
+    .toLowerCase();
+  if (!login.includes('@') || identities.length < 2) return identities;
+  const kept = identities.filter((i) => i.email.toLowerCase() !== login);
+  return kept.length ? kept : identities;
+}
+
+/** All From addresses saved on one SMTP profile (plus legacy single fromEmail). */
+export function parseSmtpFromIdentities(config: {
+  fromEmail?: string;
+  fromName?: string;
+  user?: string;
+  fromIdentities?: string | SmtpFromIdentity[] | Array<string | SmtpFromIdentity>;
+  fromEmails?: string | string[];
+}): SmtpFromIdentity[] {
+  const listed = collectFromIdentitiesField(config);
+  if (listed.length) return withoutAutoSmtpLoginFrom(listed, config.user);
+
+  const out: SmtpFromIdentity[] = [];
+  const rawEmails = config.fromEmails;
+  if (Array.isArray(rawEmails)) {
+    for (const e of rawEmails) addSmtpIdentity(out, e);
+  } else if (typeof rawEmails === 'string' && rawEmails.trim()) {
+    try {
+      const parsed = JSON.parse(rawEmails) as unknown;
+      if (Array.isArray(parsed)) for (const e of parsed) addSmtpIdentity(out, String(e));
+    } catch {
+      for (const line of rawEmails.split(/[\n,;]+/)) addSmtpIdentity(out, line);
+    }
+  }
+  addSmtpIdentity(out, config.fromEmail, config.fromName);
+  if (!out.length) addSmtpIdentity(out, config.user);
+  return out;
+}
+
 /**
- * Kestrel-style From: the SMTP profile Sender Email is what we send as.
- * Campaign sender name can still change the display name. Campaign sender email
- * is only used when it is on the same domain as the profile From.
+ * From address for SMTP:
+ * - Any From saved on this SMTP profile, or
+ * - Campaign sender on the SMTP profile’s domain, or
+ * - Any mailbox on an org-verified domain (SPF + DKIM + DMARC), or
+ * - Else fall back to the SMTP profile Sender Email.
  */
 export function resolveSmtpFromEmail(
   requestedFrom: string | undefined,
-  config: { fromEmail?: string; user?: string; host?: string },
+  config: {
+    fromEmail?: string;
+    fromName?: string;
+    user?: string;
+    host?: string;
+    fromIdentities?: string | SmtpFromIdentity[];
+    fromEmails?: string | string[];
+  },
+  opts?: { authorizedDomains?: string[] },
 ): { from: string; adjusted: boolean; blockReason?: string } {
-  const cfgFrom = String(config.fromEmail || config.user || '').trim();
+  const identities = parseSmtpFromIdentities(config);
+  const cfgFrom = identities[0]?.email || String(config.fromEmail || config.user || '').trim();
   const requested = String(requestedFrom || '').trim();
   const host = String(config.host || '');
+  const authorized = opts?.authorizedDomains || [];
+
+  if (requested) {
+    const listed = identities.find((i) => i.email.toLowerCase() === requested.toLowerCase());
+    if (listed) return { from: listed.email, adjusted: false };
+  }
+
+  if (requested && isAuthorizedFromDomain(requested, authorized)) {
+    return { from: requested, adjusted: false };
+  }
 
   if (cfgFrom.includes('@')) {
     if (!requested || requested.toLowerCase() === cfgFrom.toLowerCase()) {
       return { from: cfgFrom, adjusted: false };
     }
     const reqDom = emailDomain(requested);
-    const cfgDom = emailDomain(cfgFrom);
-    const sameDomain = Boolean(reqDom && cfgDom && reqDom === cfgDom);
+    const sameDomain = identities.some((i) => emailDomain(i.email) === reqDom && reqDom);
     const gmailViaGmail =
       isConsumerMailDomain(reqDom) && smtpHostAllowsConsumerFrom(host, reqDom);
     if (sameDomain || gmailViaGmail) {
@@ -116,6 +232,12 @@ export function explainSmtpSendFailure(raw: string): string {
       `${msg} — SMTP login did not complete. Re-enter the correct Username and Password from your provider, ` +
       `Save, then Test Connection. If “Allow insecure TLS” is on, that only skips cert checks — STARTTLS/AUTH still run.`
     );
+  }
+  if (/mailbox full|over quota|quota exceeded/i.test(msg)) {
+    return `${msg} — Mailbox is full (soft bounce). This recipient was not delivered.`;
+  }
+  if (/5\.1\.1|user unknown|no such user|mailbox unavailable/i.test(msg)) {
+    return `${msg} — Address does not exist (hard bounce).`;
   }
   if (/550|sender.*reject|not owned|not allowed/i.test(msg)) {
     return (

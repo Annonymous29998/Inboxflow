@@ -16,6 +16,10 @@ const UNSUPPORTED = [
   { pattern: /<form/i, message: 'Forms are often stripped; use links/buttons instead' },
   { pattern: /@import/i, message: '@import CSS is unreliable in email' },
   { pattern: /<video/i, message: 'Video tags are unsupported — use a thumbnail + link' },
+  {
+    pattern: /<svg[\s>]/i,
+    message: 'Inline SVG is stripped by Gmail, Outlook, Yahoo, and Xfinity webmail — use a PNG/GIF <img> instead',
+  },
 ];
 
 function htmlToPlainText(html: string) {

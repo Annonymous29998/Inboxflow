@@ -4,7 +4,9 @@ import {
   pgmqArchiveByCampaign,
   pgmqDelete,
   pgmqRead,
+  pgmqReadFairByOrg,
   pgmqSend,
+  pgmqSetVt,
   sleep,
   type QueueName,
 } from '../queue/pgmq-client.js';
@@ -14,8 +16,27 @@ import { Prisma } from '@prisma/client';
 import { analyzeCampaign } from '../../modules/deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, stripHtmlTags, isImageOnlyHtml } from '../../modules/deliverability/spam-scrubber.js';
 import { sendCampaignEmailToRecipient } from './campaign-send.js';
+import { syncRecipientIssue } from './recipient-guard.js';
 import { deliveredRecipientFilter } from '../../modules/campaigns/recipient-stats.js';
-import { normalizeBatchSize } from './queue-settings.js';
+import {
+  DEFAULT_BATCH_PAUSE_MS,
+  DEFAULT_BETWEEN_EMAIL_MS,
+  normalizeBatchSize,
+  normalizeMaxPerMinute,
+  withRecommendedPacing,
+} from './queue-settings.js';
+import {
+  throttleAttemptsLeft,
+  throttleRetryMs,
+  isSmtpAccountBlockError,
+  SMTP_BLOCK_STREAK_LIMIT,
+} from './smtp-throttle.js';
+import { maybeFinalizeCampaignSend } from './campaign-finalize.js';
+import { writeSystemLog } from '../system-log.js';
+import { usesInProcessSend } from '../../config/db-kind.js';
+
+/** Consecutive 535/554 replies for the in-process worker (single PM2 fork). */
+const smtpBlockStreak = new Map<string, number>();
 
 export type EmailJobData = {
   campaignId: string;
@@ -24,6 +45,7 @@ export type EmailJobData = {
   to: string;
   attempt?: number;
   providerId?: string | null;
+  organizationId?: string;
 };
 
 export type CampaignJobData = {
@@ -45,6 +67,12 @@ const MAX_ATTEMPTS = env.MAX_RETRY_ATTEMPTS;
 const VISIBILITY_SEC = 300;
 
 export async function enqueueCampaign(campaignId: string) {
+  smtpBlockStreak.set(campaignId, 0);
+  if (usesInProcessSend()) {
+    const { startLocalCampaignSend } = await import('./local-campaign-send.js');
+    startLocalCampaignSend(campaignId);
+    return;
+  }
   await pgmqSend<CampaignJobData>('campaign-dispatch', { campaignId });
 }
 
@@ -58,7 +86,30 @@ export async function enqueueBounce(data: BounceJobData) {
 }
 
 export async function drainCampaignJobs(campaignId: string) {
+  if (usesInProcessSend()) return;
   await pgmqArchiveByCampaign('email-send', campaignId);
+}
+
+/** Re-queue still-subscribed recipients. Keep unique open/click timestamps so engagement merges. */
+export async function resetCampaignForResend(campaignId: string, contactIds?: string[]): Promise<number> {
+  await drainCampaignJobs(campaignId);
+  const reset = await prisma.campaignRecipient.updateMany({
+    where: {
+      campaignId,
+      ...(contactIds?.length ? { contactId: { in: contactIds } } : {}),
+      status: { notIn: ['UNSUBSCRIBED', 'COMPLAINED'] },
+      contact: { status: 'SUBSCRIBED' },
+    },
+    data: {
+      status: 'QUEUED',
+      error: null,
+      messageId: null,
+      sentAt: null,
+      deliveredAt: null,
+      bouncedAt: null,
+    },
+  });
+  return reset.count;
 }
 
 async function handleJobFailure(queue: QueueName, msgId: bigint, readCt: number, err: unknown) {
@@ -70,11 +121,18 @@ async function handleJobFailure(queue: QueueName, msgId: bigint, readCt: number,
 }
 
 export function startWorkers() {
+  if (usesInProcessSend()) {
+    void import('./local-campaign-send.js').then((m) => m.startLocalSendSupervisor());
+    console.log('Workers started: in-process sequential send (desktop / RDP)');
+    return { stop: () => {} };
+  }
   void ensurePgmqQueues().then(() => {
     void runCampaignWorker();
     void runEmailWorker();
     void runBounceWorker();
-    console.log('Workers started: campaign-dispatch, email-send, bounce-process (Supabase Queues / pgmq)');
+    console.log(
+      `Workers started: campaign-dispatch, email-send (parallel orgs=${env.EMAIL_PARALLEL_ORGS}), bounce-process`,
+    );
   });
 
   return { stop: () => {} };
@@ -107,25 +165,26 @@ async function runCampaignWorker() {
 }
 
 async function runEmailWorker() {
-  const minGapMs = Math.max(50, Math.floor(1000 / Math.max(1, env.DEFAULT_SEND_RATE)));
+  const parallelOrgs = Math.max(1, Math.min(32, env.EMAIL_PARALLEL_ORGS || 8));
 
   for (;;) {
     try {
-      const batch = await pgmqRead<EmailJobData>('email-send', VISIBILITY_SEC, 1);
+      const batch = await pgmqReadFairByOrg<EmailJobData>('email-send', VISIBILITY_SEC, parallelOrgs, 1);
       if (!batch.length) {
-        await sleep(500);
+        await sleep(400);
         continue;
       }
 
-      const row = batch[0]!;
-      try {
-        await processEmailJob(row.message);
-        await pgmqDelete('email-send', row.msg_id);
-      } catch (err) {
-        await handleJobFailure('email-send', row.msg_id, row.read_ct, err);
-      }
-
-      await sleep(minGapMs);
+      await Promise.all(
+        batch.map(async (row) => {
+          try {
+            await processEmailJob(row.message);
+            await pgmqDelete('email-send', row.msg_id);
+          } catch (err) {
+            await handleJobFailure('email-send', row.msg_id, row.read_ct, err);
+          }
+        }),
+      );
     } catch (err) {
       console.error('Email worker error:', err);
       await sleep(2000);
@@ -159,7 +218,7 @@ async function runBounceWorker() {
   }
 }
 
-async function dispatchCampaign(campaignId: string) {
+export async function dispatchCampaign(campaignId: string) {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     include: {
@@ -292,20 +351,46 @@ async function dispatchCampaign(campaignId: string) {
     select: { email: true },
   });
   const suppressedSet = new Set(suppressed.map((s) => s.email.toLowerCase()));
-  contacts = contacts.filter((c) => !suppressedSet.has(c.email.toLowerCase()));
+  contacts = contacts.filter(
+    (c) => !suppressedSet.has(c.email.toLowerCase()) && syncRecipientIssue(c.email).ok,
+  );
 
   await prisma.campaign.update({
     where: { id: campaignId },
     data: { totalRecipients: contacts.length },
   });
+  try {
+    const { upsertJobProgress } = await import('../../modules/jobs/progress.js');
+    const job = await prisma.job.findFirst({
+      where: {
+        campaignId,
+        type: 'CAMPAIGN_SEND',
+        status: { in: ['RUNNING', 'PENDING', 'PAUSED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, organizationId: true, processed: true, meta: true },
+    });
+    if (job) {
+      await upsertJobProgress({
+        id: job.id,
+        type: 'CAMPAIGN_SEND',
+        organizationId: job.organizationId,
+        campaignId,
+        status: 'RUNNING',
+        total: contacts.length,
+        processed: job.processed,
+        meta: job.meta as Prisma.InputJsonValue,
+      });
+    }
+  } catch {
+    /* progress must not block queue */
+  }
 
-  const queueSettings = (campaign.queueSettings || {}) as {
-    batchSize?: number;
-  };
-  const batchSize = normalizeBatchSize(queueSettings.batchSize);
+  const queueSettings = withRecommendedPacing(campaign.queueSettings);
+  const batchSize = queueSettings.batchSize;
   await prisma.campaign.update({
     where: { id: campaignId },
-    data: { queueSettings: { ...queueSettings, batchSize } },
+    data: { queueSettings: queueSettings as object },
   });
 
   // Enqueue only recipients that still need sending. Never reset SENT back to QUEUED
@@ -352,19 +437,23 @@ async function dispatchCampaign(campaignId: string) {
               update: { status: 'QUEUED', error: null },
             });
 
-      await pgmqSend<EmailJobData>('email-send', {
-        campaignId,
-        recipientId: recipient.id,
-        contactId: contact.id,
-        to: contact.email,
-        providerId: campaign.providerId,
-      });
+      if (!usesInProcessSend()) {
+        await pgmqSend<EmailJobData>('email-send', {
+          campaignId,
+          recipientId: recipient.id,
+          contactId: contact.id,
+          to: contact.email,
+          providerId: campaign.providerId,
+          organizationId: campaign.organizationId,
+        });
+      }
     }
   }
 }
 
-async function processEmailJob(data: EmailJobData) {
+export async function processEmailJob(data: EmailJobData) {
   const { campaignId, recipientId, contactId, to, providerId } = data;
+  const attempt = Number(data.attempt || 0);
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
@@ -380,18 +469,16 @@ async function processEmailJob(data: EmailJobData) {
   });
   // Skip already-finished rows (duplicate queue messages after pause/resume/retry).
   if (!recipient || recipient.status !== 'QUEUED') {
+    await maybeFinalizeCampaignSend(campaignId);
     return;
   }
 
-  const qs = (campaign.queueSettings || {}) as {
-    betweenEmailMs?: number;
-    batchPauseMs?: number;
-    batchSize?: number;
-  };
-  const betweenEmailMs = Math.max(0, Number(qs.betweenEmailMs ?? 4_000));
-  const batchPauseMs = Math.max(0, Number(qs.batchPauseMs ?? 30_000));
+  const qs = withRecommendedPacing(campaign.queueSettings);
+  const betweenEmailMs = Math.max(0, Number(qs.betweenEmailMs ?? DEFAULT_BETWEEN_EMAIL_MS));
+  const batchPauseMs = Math.max(0, Number(qs.batchPauseMs ?? DEFAULT_BATCH_PAUSE_MS));
   const batchSize = normalizeBatchSize(qs.batchSize);
-  const jitter = (baseMs: number) => Math.max(250, Math.round(baseMs * (0.6 + Math.random() * 0.8)));
+  const maxPerMinute = normalizeMaxPerMinute(qs.maxPerMinute);
+  const exactMs = (baseMs: number) => Math.max(0, Math.round(baseMs));
 
   const processedCount = await prisma.campaignRecipient.count({
     where: { campaignId, status: { not: 'QUEUED' } },
@@ -447,10 +534,10 @@ async function processEmailJob(data: EmailJobData) {
 
   if (betweenEmailMs > 0 && processedCount > 0 && !atBatchBoundary) {
     await pushQueueStage({ stage: 'between_emails', betweenEmailMs, batchSize, pauseUntil: null });
-    if (!(await waitMs(jitter(betweenEmailMs)))) return;
+    if (!(await waitMs(exactMs(betweenEmailMs)))) return;
   }
   if (batchPauseMs > 0 && atBatchBoundary) {
-    const pauseMs = jitter(batchPauseMs);
+    const pauseMs = exactMs(batchPauseMs);
     const batchNumber = Math.floor(processedCount / batchSize);
     await pushQueueStage({
       stage: 'batch_pause',
@@ -468,6 +555,24 @@ async function processEmailJob(data: EmailJobData) {
 
   if (!(await stillSending())) return;
 
+  const minuteAgo = new Date(Date.now() - 60_000);
+  let sentLastMinute = await prisma.campaignRecipient.count({
+    where: { ...deliveredRecipientFilter(campaignId), sentAt: { gte: minuteAgo } },
+  });
+  while (sentLastMinute >= maxPerMinute) {
+    await pushQueueStage({
+      stage: 'rate_limit_pause',
+      maxPerMinute,
+      sentLastMinute,
+      pauseUntil: new Date(Date.now() + 5_000).toISOString(),
+    });
+    if (!(await waitMs(5_000))) return;
+    const windowStart = new Date(Date.now() - 60_000);
+    sentLastMinute = await prisma.campaignRecipient.count({
+      where: { ...deliveredRecipientFilter(campaignId), sentAt: { gte: windowStart } },
+    });
+  }
+
   const result = await sendCampaignEmailToRecipient({
     campaignId,
     recipientId,
@@ -475,6 +580,41 @@ async function processEmailJob(data: EmailJobData) {
     to,
     providerId,
   });
+
+  const smtpLine = `${result.smtpResponse || ''} ${result.error || ''}`.trim();
+  if (result.success || result.throttled || !isSmtpAccountBlockError(smtpLine)) {
+    smtpBlockStreak.set(campaignId, 0);
+  } else {
+    const streak = (smtpBlockStreak.get(campaignId) || 0) + 1;
+    smtpBlockStreak.set(campaignId, streak);
+    // One SMTP: pause on first auth/block. Several SMTPs: already failed over this
+    // recipient; pause after 10 emails where every profile still blocked.
+    const smtpCount = Number(result.providersAvailable ?? 1);
+    const pauseAfter = smtpCount <= 1 ? 1 : SMTP_BLOCK_STREAK_LIMIT;
+    if (streak >= pauseAfter) {
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: 'PAUSED' },
+      });
+      await drainCampaignJobs(campaignId);
+      smtpBlockStreak.set(campaignId, 0);
+      await writeSystemLog({
+        organizationId: campaign.organizationId,
+        level: 'ERROR',
+        category: 'smtp',
+        message: `Campaign paused after ${streak} SMTP block/auth error(s) (${smtpCount} SMTP in pool). ${smtpLine.slice(0, 180)}. Remaining recipients were left queued.`,
+        meta: { campaignId, streak },
+      });
+      await pushQueueStage({
+        stage: 'smtp_blocked',
+        smtpBlockStreak: streak,
+        lastError: result.error || smtpLine,
+        lastResult: 'smtp_block',
+        lastEmail: to,
+      });
+      return;
+    }
+  }
 
   const [sentCount, failedCount, pendingCount] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
@@ -527,30 +667,62 @@ async function processEmailJob(data: EmailJobData) {
     /* progress updates must not fail the send */
   }
 
-  // Permanent recipient failure is already stored — don't throw or the queue retries a dead row.
-  if (!result.success) {
+  if (result.throttled) {
+    const nextAttempt = attempt + 1;
+    if (!throttleAttemptsLeft(nextAttempt)) {
+      await prisma.$transaction([
+        prisma.campaignRecipient.update({
+          where: { id: recipientId },
+          data: {
+            status: 'FAILED',
+            error: `Rate limited by recipient mail server after ${nextAttempt} slow-downs. ${result.error || ''}`.slice(
+              0,
+              500,
+            ),
+          },
+        }),
+        prisma.campaign.update({
+          where: { id: campaignId },
+          data: { failedCount: { increment: 1 } },
+        }),
+      ]);
+      await maybeFinalizeCampaignSend(campaignId);
+      return;
+    }
+    const retryAfterMs = throttleRetryMs(result.error, nextAttempt);
+    const delaySeconds = Math.max(30, Math.ceil(retryAfterMs / 1000));
+    await pushQueueStage({
+      stage: 'throttle_pause',
+      pauseUntil: new Date(Date.now() + retryAfterMs).toISOString(),
+      lastError: result.error,
+      lastEmail: to,
+      lastResult: 'throttled',
+    });
+    if (!(await waitMs(Math.min(30_000, retryAfterMs)))) return;
+    await pgmqSend<EmailJobData>(
+      'email-send',
+      {
+        campaignId,
+        recipientId,
+        contactId,
+        to,
+        providerId,
+        attempt: nextAttempt,
+        organizationId: campaign.organizationId,
+      },
+      delaySeconds,
+    );
     return;
   }
 
-  const counts = await prisma.campaign.findUnique({
-    where: { id: campaignId },
-    select: { totalRecipients: true, status: true },
-  });
-  const delivered = await prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) });
-  const failed = await prisma.campaignRecipient.count({ where: { campaignId, status: 'FAILED' } });
-  const pending = await prisma.campaignRecipient.count({ where: { campaignId, status: 'QUEUED' } });
-  if (
-    counts &&
-    counts.status === 'SENDING' &&
-    counts.totalRecipients > 0 &&
-    pending === 0 &&
-    delivered + failed >= counts.totalRecipients
-  ) {
-    await prisma.campaign.update({
-      where: { id: campaignId },
-      data: { status: failed > 0 && delivered === 0 ? 'FAILED' : 'SENT', completedAt: new Date() },
-    });
+  // Permanent recipient failure is already stored — don't throw or the queue retries a dead row.
+  // Still finalize if this was the last queued address (failed last email used to leave SENDING stuck).
+  if (!result.success) {
+    await maybeFinalizeCampaignSend(campaignId);
+    return;
   }
+
+  await maybeFinalizeCampaignSend(campaignId);
 }
 
 async function processBounce(data: BounceJobData) {

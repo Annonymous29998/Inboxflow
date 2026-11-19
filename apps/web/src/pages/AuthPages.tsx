@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayout';
+import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
+import { tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
 export function LoginPage() {
@@ -12,6 +14,12 @@ export function LoginPage() {
   const [needs2FA, setNeeds2FA] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [bindWarn, setBindWarn] = useState(false);
+  const sessionUser = useAuthStore((s) => s.user);
+
+  useEffect(() => {
+    setBindWarn(tenantNeedsBind(sessionUser));
+  }, [sessionUser]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,8 +52,18 @@ export function LoginPage() {
           }
         } catch {}
       }
-      navigate('/app');
+      const signed = useAuthStore.getState().user;
+      if (tenantNeedsBind(signed)) {
+        setBindWarn(true);
+        return;
+      }
+      navigate(signed?.role === 'SUPER_ADMIN' || signed?.role === 'ADMIN' ? '/app' : '/app/campaigns');
     } catch (err) {
+      const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code || '') : '';
+      if (code === 'BIND_REQUIRED') {
+        setBindWarn(true);
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Unable to sign in');
     } finally {
       setLoading(false);
@@ -53,23 +71,32 @@ export function LoginPage() {
   }
 
   return (
-    <AuthLayout title="Sign in" subtitle="Access your organization control panel">
+    <AuthLayout
+      title="Sign in"
+      subtitle={
+        loading
+          ? 'Signing in — checking your credentials…'
+          : 'Enter your Username and license key'
+      }
+    >
       <form className="space-y-4" onSubmit={onSubmit}>
         <AuthField
-          label="Email"
+          label="Username"
           id="email"
-          type="email"
-          autoComplete="email"
+          type="text"
+          autoComplete="username"
           required
+          disabled={loading}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
         <AuthField
-          label="Password"
+          label="License key"
           id="password"
           type="password"
           autoComplete="current-password"
           required
+          disabled={loading}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
@@ -77,19 +104,38 @@ export function LoginPage() {
           <AuthField
             label="Authenticator code"
             id="totp"
+            disabled={loading}
             value={totpCode}
             onChange={(e) => setTotpCode(e.target.value)}
             placeholder="000000"
           />
         ) : null}
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        <AuthSubmit loading={loading}>Sign in</AuthSubmit>
+        {loading ? (
+          <p className="text-xs text-accent">
+            <span className="tui-tag tui-tag-info">[ WAIT ]</span> Contacting the API — this can take a few seconds.
+          </p>
+        ) : null}
+        {error ? (
+          <p className="text-sm text-destructive">
+            {/internal server error/i.test(error)
+              ? 'Sign in failed: the local API cannot reach the database. That is why you see Internal Server Error — not a bad password.'
+              : error}
+          </p>
+        ) : null}
+        <AuthSubmit loading={loading} loadingLabel="Signing in…">
+          Sign in
+        </AuthSubmit>
         <div className="text-center text-sm">
           <Link to="/forgot-password" className="text-muted-foreground hover:text-primary">
             Forgot password?
           </Link>
         </div>
       </form>
+      <BindRequiredModal
+        open={bindWarn}
+        username={email || sessionUser?.firstName || sessionUser?.email || ''}
+        onDismiss={() => setBindWarn(false)}
+      />
     </AuthLayout>
   );
 }

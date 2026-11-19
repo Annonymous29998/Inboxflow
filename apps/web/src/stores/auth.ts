@@ -1,6 +1,19 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../lib/api';
+import {
+  DEMO_ACCESS_TOKEN,
+  DEMO_MAILER_ID,
+  DEMO_REFRESH_TOKEN,
+  DEMO_STAFF_ACCESS_TOKEN,
+  DEMO_STAFF_ID,
+  DEMO_STAFF_REFRESH_TOKEN,
+  demoMailerUser,
+  demoStaffUser,
+  isDemoMailerLogin,
+  isDemoStaffLogin,
+  readDemoBound,
+} from '@/lib/demo-mailer';
 
 export type User = {
   id: string;
@@ -12,7 +25,22 @@ export type User = {
   status?: string;
   twoFactorEnabled?: boolean;
   organization?: { id: string; name: string; slug: string; physicalAddress?: string };
+  /** False for workspaces created by admin — they cannot send Direct from Lightsail. */
+  smtpAllowDirect?: boolean;
+  /** Contacts, campaigns, and SMTP stay on this PC instead of the shared database. */
+  workspaceLocal?: boolean;
+  boundIp?: string | null;
 };
+
+function rememberBoundIp(user: User | null) {
+  const ip = user?.boundIp;
+  if (!ip || user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN') return;
+  try {
+    window.inboxflowDesktop?.saveBoundIp?.(ip);
+  } catch {
+    /* browser-only */
+  }
+}
 
 type AuthState = {
   user: User | null;
@@ -71,17 +99,60 @@ function readPersisted(): { user: User | null; accessToken: string | null; refre
   return null;
 }
 
+const boot = readPersisted();
+if (boot && (boot.accessToken || boot.refreshToken)) {
+  api.setTokens(boot.accessToken ?? null, boot.refreshToken ?? null);
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
-      user: null,
-      loading: true,
-      hydrated: false,
-      accessToken: null,
-      refreshToken: null,
+      user: boot?.user ?? null,
+      loading: false,
+      hydrated: true,
+      accessToken: boot?.accessToken ?? null,
+      refreshToken: boot?.refreshToken ?? null,
       _fetchPromise: null,
       setUser: (user) => set({ user }),
       login: async (email, password, totpCode) => {
+        if (isDemoStaffLogin(email, password)) {
+          try {
+            await fetch(`${import.meta.env.VITE_API_URL || ''}/api/auth/logout`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+            });
+          } catch {
+            /* drop any prior session */
+          }
+          const u = demoStaffUser();
+          api.setTokens(DEMO_STAFF_ACCESS_TOKEN, DEMO_STAFF_REFRESH_TOKEN);
+          set({ user: u, accessToken: DEMO_STAFF_ACCESS_TOKEN, refreshToken: DEMO_STAFF_REFRESH_TOKEN, loading: false });
+          syncPersistNow(get());
+          void import('../lib/ui-cache').then((m) => m.uiCacheClearAccount(DEMO_STAFF_ID)).catch(() => undefined);
+          return {};
+        }
+        if (isDemoMailerLogin(email, password)) {
+          try {
+            await fetch(`${import.meta.env.VITE_API_URL || ''}/api/auth/logout`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+            });
+          } catch {
+            /* drop operator cookies so demo never rides that session */
+          }
+          const bound = readDemoBound();
+          const u = demoMailerUser(bound?.boundIp || '');
+          api.setTokens(DEMO_ACCESS_TOKEN, DEMO_REFRESH_TOKEN);
+          set({ user: u, accessToken: DEMO_ACCESS_TOKEN, refreshToken: DEMO_REFRESH_TOKEN, loading: false });
+          rememberBoundIp(u);
+          syncPersistNow(get());
+          void import('../lib/ui-cache').then((m) => m.uiCacheClearAccount(DEMO_MAILER_ID)).catch(() => undefined);
+          return {};
+        }
         const data = await api.post<{
           requires2FA?: boolean;
           accessToken?: string;
@@ -94,6 +165,7 @@ export const useAuthStore = create<AuthState>()(
         const u = data.user ?? null;
         api.setTokens(access, refresh);
         set({ user: u, accessToken: access, refreshToken: refresh, loading: false });
+        rememberBoundIp(u);
         syncPersistNow(get());
         return {};
       },
@@ -127,14 +199,18 @@ export const useAuthStore = create<AuthState>()(
             window.localStorage.removeItem(STORAGE_FALLBACK_KEY);
           }
         } catch {}
+        void import('../lib/ui-cache').then((m) => m.uiCacheClearAll()).catch(() => undefined);
       },
       fetchMe: async (force = false) => {
         const state = get();
+        if (state.user?.id === DEMO_MAILER_ID || state.user?.id === DEMO_STAFF_ID) {
+          set({ loading: false, hydrated: true, _fetchPromise: null });
+          return;
+        }
         if (state.accessToken || state.refreshToken) {
           api.setTokens(state.accessToken, state.refreshToken);
         }
         if (!force && state._fetchPromise) return state._fetchPromise;
-        if (!force && !state.loading && state.user) return;
         const promise = (async () => {
           try {
             const data = await api.get<{ user: User }>('/api/auth/me');
@@ -143,21 +219,30 @@ export const useAuthStore = create<AuthState>()(
             const next = {
               user: data.user,
               loading: false,
+              hydrated: true,
               accessToken: freshAccess ?? cur.accessToken,
               refreshToken: freshRefresh ?? cur.refreshToken,
               _fetchPromise: null,
             };
             set(next);
+            rememberBoundIp(data.user);
             syncPersistNow({ ...cur, ...next });
-          } catch {
-            api.clearSession();
-            set({ user: null, loading: false, accessToken: null, refreshToken: null, _fetchPromise: null });
-            try {
-              if (typeof window !== 'undefined') {
-                window.sessionStorage.removeItem(PERSIST_KEY);
-                window.localStorage.removeItem(STORAGE_FALLBACK_KEY);
-              }
-            } catch {}
+          } catch (err) {
+            const status = (err as { status?: number }).status;
+            // Keep the cached session on network / server lag. Only a real 401 logs out.
+            if (status === 401) {
+              api.clearSession();
+              set({ user: null, loading: false, hydrated: true, accessToken: null, refreshToken: null, _fetchPromise: null });
+              try {
+                if (typeof window !== 'undefined') {
+                  window.sessionStorage.removeItem(PERSIST_KEY);
+                  window.localStorage.removeItem(STORAGE_FALLBACK_KEY);
+                }
+              } catch {}
+              void import('../lib/ui-cache').then((m) => m.uiCacheClearAll()).catch(() => undefined);
+              return;
+            }
+            set({ loading: false, hydrated: true, _fetchPromise: null });
           }
         })();
         set({ _fetchPromise: promise });
@@ -198,7 +283,7 @@ export const useAuthStore = create<AuthState>()(
         return (state) => {
           // INNER: fires AFTER zustand rehydrates the store state.
           if (state) {
-            (state as AuthState).hydrated = true;
+            useAuthStore.setState({ hydrated: true, loading: false });
             if (state.accessToken || state.refreshToken) {
               api.setTokens(state.accessToken, state.refreshToken);
             }

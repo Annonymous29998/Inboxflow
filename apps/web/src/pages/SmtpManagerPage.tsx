@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Eye, EyeOff, Loader2, Plus, Server, Trash2, Zap } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Check, Eye, EyeOff, Loader2, Plus, Trash2, X, Zap } from 'lucide-react';
 import { api } from '@/lib/api';
-import { smtpService, type SmtpProfile } from '@/services/smtp.service';
+import { parseFromIdentities, smtpService, type SmtpProfile } from '@/services/smtp.service';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { toast } from '@/stores/toast';
 import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
+import { useAuthStore } from '@/stores/auth';
+import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
 
 type FormState = {
   name: string;
@@ -18,6 +21,7 @@ type FormState = {
   pass: string;
   fromName: string;
   fromEmail: string;
+  senders: Array<{ email: string; name: string }>;
   replyTo: string;
   dailyLimit: string;
   hourlyLimit: string;
@@ -27,6 +31,13 @@ type FormState = {
   isDefault: boolean;
   /** Skip TLS cert hostname verification (self-signed / mismatched certs). */
   ignoreTLS: boolean;
+  /** Where this process opens the SMTP socket: this NIC, or SOCKS5. */
+  outboundPath: 'direct' | 'bind' | 'socks';
+  bindIp: string;
+  socksHost: string;
+  socksPort: string;
+  socksUser: string;
+  socksPass: string;
 };
 
 const QUICK_FILLS: { id: string; label: string; patch: Partial<FormState> }[] = [
@@ -72,6 +83,7 @@ const emptyForm: FormState = {
   pass: '',
   fromName: '',
   fromEmail: '',
+  senders: [{ email: '', name: '' }],
   replyTo: '',
   dailyLimit: '',
   hourlyLimit: '',
@@ -80,10 +92,31 @@ const emptyForm: FormState = {
   notes: '',
   isDefault: false,
   ignoreTLS: false,
+  outboundPath: 'direct',
+  bindIp: '',
+  socksHost: '',
+  socksPort: '',
+  socksUser: '',
+  socksPass: '',
 };
 
+function senderEmails(form: FormState) {
+  return form.senders.map((s) => s.email.trim()).filter(Boolean);
+}
+
 function autoSmtpName(form: FormState) {
-  return (form.fromEmail || form.user || form.host || 'SMTP').trim();
+  const custom = (form.name || form.label || '').trim();
+  if (custom) return custom;
+  const emails = senderEmails(form);
+  return (emails.join(', ') || form.fromEmail || form.user || form.host || 'SMTP').trim();
+}
+
+function profileDisplayName(p: SmtpProfile) {
+  const emails = parseFromIdentities(p.fromIdentities).map((s) => s.email);
+  const joined = emails.join(', ');
+  const custom = (p.label || p.name || '').trim();
+  if (custom && custom !== p.fromEmail && custom !== p.user) return custom;
+  return joined || custom || p.fromEmail || p.user || p.name || 'SMTP';
 }
 
 function statusTone(status?: string | null) {
@@ -98,6 +131,8 @@ function formHasInput(f: FormState) {
     Boolean(f.user?.trim()) ||
     Boolean(f.pass?.trim()) ||
     Boolean(f.fromEmail?.trim()) ||
+    f.senders.some((s) => s.email.trim() || s.name.trim()) ||
+    Boolean(f.name?.trim()) ||
     Boolean(f.label?.trim()) ||
     Boolean(f.fromName?.trim()) ||
     Boolean(f.replyTo?.trim()) ||
@@ -106,7 +141,12 @@ function formHasInput(f: FormState) {
 }
 
 export function SmtpManagerPage() {
-  const [providers, setProviders] = useState<SmtpProfile[]>([]);
+  const smtpAllowDirect = useAuthStore((s) => s.user?.smtpAllowDirect !== false);
+  const boundPcIp = useAuthStore((s) => String(s.user?.boundIp || '').trim());
+  const [providers, setProviders] = useState<SmtpProfile[]>(() => {
+    const cached = uiCacheGet<SmtpProfile[]>('smtp') ?? [];
+    return cached.map((p) => ({ ...p, fromIdentities: parseFromIdentities(p.fromIdentities) }));
+  });
   const [editingId, setEditingId] = useDraft<string | null>('smtp:editingId', null);
   const [form, setForm] = useDraft<FormState>('smtp:form', emptyForm);
   const [testTo, setTestTo] = useDraft<string>('smtp:testTo', '');
@@ -122,6 +162,7 @@ export function SmtpManagerPage() {
   const [busyRotate, setBusyRotate] = useState(false);
   const [showPass, setShowPass] = useDraft<boolean>('smtp:showPass', false);
   const [lastTestOk, setLastTestOk] = useDraft<boolean>('smtp:lastTestOk', false);
+  const [formOpen, setFormOpen] = useState(false);
   const [rotationEnabled, setRotationEnabled] = useState(true);
   const [rotationMode, setRotationMode] = useState<
     'failover' | 'round_robin' | 'weighted' | 'performance'
@@ -134,8 +175,9 @@ export function SmtpManagerPage() {
 
   async function load() {
     try {
-      const data = await smtpService.list();
+      const data = await smtpService.listSmtp();
       setProviders(data);
+      uiCacheSet('smtp', data);
     } catch (err) {
       toast.error('Could not load SMTP profiles', err instanceof Error ? err.message : undefined);
     }
@@ -199,33 +241,49 @@ export function SmtpManagerPage() {
     setLastTestOk(false);
   }
 
-  async function startCreate() {
-    if (!editingId && formHasInput(form)) {
+  async function closeForm() {
+    if (formOpen && formHasInput(form)) {
       const ok = await confirmDialog({
-        title: 'Discard draft?',
-        description: 'You have unsaved entries in this SMTP form. Starting a new profile will clear your changes.',
+        title: 'Close SMTP editor?',
+        description: 'Unsaved changes on this profile will be discarded.',
         tone: 'warning',
-        confirmText: 'Discard & start new',
+        confirmText: 'Close',
         cancelText: 'Keep editing',
       });
       if (!ok) return;
     }
+    setFormOpen(false);
+  }
+
+  async function startCreate() {
     setEditingId(null);
     setForm(emptyForm);
     setShowPass(false);
     setLastTestOk(false);
     setIssues([]);
+    setFormOpen(true);
   }
 
   async function startEdit(p: SmtpProfile) {
+    setFormOpen(true);
     setEditingId(p.id);
     setShowPass(false);
     setLastTestOk(p.lastTestStatus === 'Connected');
     const detail = await smtpService.get(p.id);
     const cfg = detail.config || {};
+    const listed = parseFromIdentities(detail.fromIdentities);
+    const senderRows = listed
+      .map((s) => ({ email: String(s.email || '').trim(), name: String(s.name || '').trim() }))
+      .filter((s) => s.email);
+    const firstEmail = senderRows[0]?.email || detail.fromEmail || '';
+    const storedName = (detail.label || detail.name || '').trim();
+    const customName =
+      storedName && storedName !== firstEmail && storedName !== detail.fromEmail && storedName !== detail.user
+        ? storedName
+        : '';
     setForm({
-      name: detail.name,
-      label: detail.label || '',
+      name: customName,
+      label: customName,
       host: cfg.host || detail.host || '',
       port: String(cfg.port || detail.port || '587'),
       encryption: cfg.encryption || detail.encryption || 'STARTTLS',
@@ -233,6 +291,7 @@ export function SmtpManagerPage() {
       pass: cfg.pass && cfg.pass !== '••••••••' ? cfg.pass : '',
       fromName: cfg.fromName || detail.fromName || '',
       fromEmail: cfg.fromEmail || detail.fromEmail || '',
+      senders: senderRows.length ? senderRows : [{ email: '', name: '' }],
       replyTo: cfg.replyTo || detail.replyTo || '',
       dailyLimit: detail.dailyLimit != null ? String(detail.dailyLimit) : '',
       hourlyLimit: detail.hourlyLimit != null ? String(detail.hourlyLimit) : '',
@@ -240,7 +299,14 @@ export function SmtpManagerPage() {
       priority: String(detail.priority ?? 0),
       notes: detail.notes || '',
       isDefault: detail.isDefault,
-      ignoreTLS: cfg.ignoreTLS === 'true' || cfg.ignoreTLS === true,
+      ignoreTLS: String(cfg.ignoreTLS || '').toLowerCase() === 'true',
+      outboundPath:
+        cfg.outboundPath === 'bind' || cfg.outboundPath === 'socks' ? cfg.outboundPath : 'direct',
+      bindIp: cfg.bindIp || '',
+      socksHost: cfg.socksHost || '',
+      socksPort: String(cfg.socksPort || ''),
+      socksUser: cfg.socksUser || '',
+      socksPass: cfg.socksPass && cfg.socksPass !== '••••••••' ? cfg.socksPass : '',
     });
     setIssues(detail.issues || []);
   }
@@ -259,9 +325,24 @@ export function SmtpManagerPage() {
       user: form.user,
       // Mask / empty keeps existing password on the server when editing
       pass: form.pass && form.pass !== '••••••••' ? form.pass : editingId ? '••••••••' : '',
-      fromEmail: form.fromEmail,
-      fromName: form.fromName,
+      fromEmail: (form.senders.find((s) => s.email.trim())?.email || form.fromEmail).trim(),
+      fromName: (form.senders.find((s) => s.email.trim())?.name || form.fromName).trim(),
+      fromIdentities: JSON.stringify(
+        form.senders
+          .map((s) => ({ email: s.email.trim(), name: s.name.trim() }))
+          .filter((s) => s.email.includes('@')),
+      ),
       replyTo: form.replyTo,
+      outboundPath: smtpAllowDirect
+        ? form.outboundPath || 'direct'
+        : (form.socksHost || '').trim()
+          ? 'socks'
+          : 'bind',
+      bindIp: smtpAllowDirect ? (form.bindIp || '').trim() : boundPcIp,
+      socksHost: (form.socksHost || '').trim(),
+      socksPort: (form.socksPort || '').trim(),
+      socksUser: (form.socksUser || '').trim(),
+      socksPass: form.socksPass && form.socksPass !== '••••••••' ? form.socksPass : editingId ? '••••••••' : '',
     };
   }
 
@@ -270,21 +351,21 @@ export function SmtpManagerPage() {
       if (sendEmail) setBusyTestSend(true);
       else setBusyTestVerify(true);
     }
-    if (!opts?.silent) toast.info(sendEmail ? 'Testing and sending…' : 'Testing connection…');
     type TestResult = {
       success: boolean;
       message: string;
       error?: string;
       messageId?: string;
+      sentCount?: number;
+      fromEmails?: string[];
       issues?: string[];
-      deliverabilityWarnings?: string[];
     };
     let result: TestResult = { success: false, message: 'Not run' };
     try {
       if (sendEmail && !testTo.trim()) {
         setLastTestOk(false);
-        if (!opts?.silent) toast.warning('Enter a recipient email for Test & send');
-        return { success: false, message: 'Recipient email required', error: 'Enter a recipient email for Test & send' } as TestResult;
+        if (!opts?.silent) toast.error('Enter a recipient email');
+        return { success: false, message: 'Recipient email required', error: 'Enter a recipient email' } as TestResult;
       }
 
       const r = await smtpService.testConnection({
@@ -299,35 +380,17 @@ export function SmtpManagerPage() {
       setLastTestOk(result.success);
       if (result.success) {
         if (!opts?.silent) {
-          toast.success(
-            sendEmail ? 'Test email handed to SMTP' : 'SMTP login OK — no email was sent',
-            sendEmail
-              ? `${result.message}. Check Inbox, Promotions, AND Spam for “SMTP connection test”. A login OK does not mean Gmail will show the message.`
-              : 'This only proves username/password/host work. Click Test & send and fill “Test email to” if you want a message in your inbox.',
-          );
-        }
-        if (result.deliverabilityWarnings?.length && !opts?.silent) {
-          toast.warning(
-            'Inbox placement warnings',
-            `Deliverability warnings:\n• ${result.deliverabilityWarnings.join('\n• ')}`,
-          );
+          toast.success(sendEmail ? 'Sent' : 'Connected');
         }
       } else if (!opts?.silent) {
-        const err = result.error || result.message || '';
-        toast.error('SMTP test failed', err);
-        if (/altnames|certificate|self[- ]signed|unable to verify/i.test(err) && !form.ignoreTLS) {
-          toast.warning(
-            'Certificate mismatch',
-            'Enable “Allow insecure TLS” on this profile if your provider uses a mismatched or self-signed certificate, then test again.',
-          );
-        }
+        toast.error(result.error || result.message || 'SMTP test failed');
       }
       if (editingId) await load();
       return result;
     } catch (err) {
       setLastTestOk(false);
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      if (!opts?.silent) toast.error('SMTP test failed', msg);
+      if (!opts?.silent) toast.error(msg);
       return { success: false, message: msg, error: msg } as TestResult;
     } finally {
       if (!opts?.silent) {
@@ -344,7 +407,9 @@ export function SmtpManagerPage() {
       if (!form.host.trim()) missing.push('SMTP host (e.g. smtp.yourdomain.com)');
       if (!form.user.trim()) missing.push('SMTP username (usually your login email)');
       if (!editingId && !form.pass.trim()) missing.push('SMTP password or app password');
-      if (!form.fromEmail.trim()) missing.push('Sender email address');
+      if (!form.senders.some((s) => s.email.trim().includes('@'))) {
+        missing.push('At least one sender / From email');
+      }
       if (missing.length) {
         toast.warning(
           'Required fields missing',
@@ -361,13 +426,10 @@ export function SmtpManagerPage() {
         String(selected?.port ?? '') !== String(form.port ?? '') ||
         selected?.fromEmail !== form.fromEmail.trim();
 
-      let warnings: string[] = [];
-
       if (activate) {
         if (!lastTestOk || changedCredentials) {
           toast.info('Verifying connection before activation…');
           const test = await testConnection(false, { silent: true });
-          warnings = Array.from(new Set([...(warnings || []), ...(test.deliverabilityWarnings || [])]));
           if (!test.success) {
             setLastTestOk(false);
             toast.error(
@@ -378,24 +440,11 @@ export function SmtpManagerPage() {
           }
           setLastTestOk(true);
         }
-      } else {
-        // Draft / Save changes — only compute static deliverability warnings, do NOT force a live SMTP handshake
-        // (Nexlogs parity: save always succeeds, test is optional via explicit Test button)
-        try {
-          const probe = await smtpService.testConnection({
-            providerId: editingId || undefined,
-            config: buildConfig(),
-            skipLiveVerify: true,
-          });
-          warnings = probe.deliverabilityWarnings ?? [];
-        } catch {
-          warnings = [];
-        }
       }
 
       const payload = {
         name: autoSmtpName(form),
-        label: form.label.trim() || null,
+        label: form.name.trim() || form.label.trim() || null,
         type: 'SMTP' as const,
         config: buildConfig(),
         isDefault: form.isDefault,
@@ -437,29 +486,15 @@ export function SmtpManagerPage() {
         }
         setLastTestOk(true);
         await smtpService.update(profileId, { isActive: true, isDefault: form.isDefault });
-        if (warnings.length) {
-          toast.warning(
-            'Saved & Activated — but inbox placement has warnings',
-            `Deliverability warnings:\n• ${warnings.join('\n• ')}`,
-          );
-        } else {
-          toast.success('SMTP saved and activated');
-        }
+        toast.success('SMTP saved and activated');
       } else {
-        if (warnings.length) {
-          toast.warning(
-            activate ? 'SMTP saved — watch inbox placement' : 'SMTP saved as draft',
-            `Deliverability warnings:\n• ${warnings.join('\n• ')}`,
-          );
-        } else {
-          toast.success(
-            activate ? 'SMTP saved (live connection confirmed)' : (editingId ? 'Changes saved' : 'SMTP draft saved'),
-            activate ? 'Inactive until activated after a successful test' : 'Click Activate or Test Connection when ready.',
-          );
-        }
+        toast.success(
+          activate ? 'SMTP saved (live connection confirmed)' : (editingId ? 'Changes saved' : 'SMTP draft saved'),
+        );
       }
       setLastTestOk(activate ? true : lastTestOk);
       await load();
+      setFormOpen(false);
     } catch (err) {
       toast.error('Save failed', err instanceof Error ? err.message : undefined);
     } finally {
@@ -496,7 +531,9 @@ export function SmtpManagerPage() {
     try {
       await smtpService.remove(id);
       if (editingId === id) {
-        startCreate();
+        setFormOpen(false);
+        setEditingId(null);
+        setForm(emptyForm);
         const clearDraft = useDraftStore.getState().clearDraft;
         clearDraft('smtp:editingId');
         clearDraft('smtp:form');
@@ -566,32 +603,23 @@ export function SmtpManagerPage() {
     }
   }
 
-  function meterLabel(used: number, limit?: number | null) {
-    if (limit == null) return `${used}`;
-    return `${used} / ${limit}`;
-  }
-
   return (
-    <div className="space-y-4 font-mono">
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+    <div className="mailer-root page-root space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-[0.18em] text-accent">system · smtp</p>
-          <h1 className="page-title text-primary">SMTP Manager</h1>
-          <p className="page-sub max-w-2xl">
-            Add your SMTP host, username, and password. Test the connection, then activate to send.
+          <p className="mailer-hint" style={{ marginTop: 0 }}>
+            system · smtp
           </p>
-          <div className="mt-3 max-w-2xl border border-accent/30 bg-accent/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-            <span className="text-accent">Sending:</span> Once an SMTP profile is saved and active,
-            Inbox Flow will send using that profile with whatever{' '}
-            <strong className="text-foreground">Sender Email</strong> you set (including Gmail) for
-            Test Connection, Test &amp; send, and campaigns. Your provider may still reject some
-            From addresses — that is their policy, not an Inbox Flow block.
-          </div>
+          <h1 className="page-title text-primary">SMTP Manager</h1>
+          <p className="page-sub">
+            {providers.length} profile{providers.length === 1 ? '' : 's'} · add or edit opens a form
+          </p>
         </div>
-        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void exportSmtp()} disabled={busyExport}>
+        <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={() => void exportSmtp()} disabled={busyExport}>
           {busyExport ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Export
         </Button>
-        <label className={cn('inline-flex w-full cursor-pointer items-center justify-center border border-border px-3 py-2 text-sm sm:w-auto', busyImport && 'pointer-events-none opacity-50')}>
+        <label className={cn('inline-flex h-8 cursor-pointer items-center justify-center border border-border px-3 text-sm', busyImport && 'pointer-events-none opacity-50')}>
           {busyImport ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Import
           <input
             type="file"
@@ -605,107 +633,134 @@ export function SmtpManagerPage() {
             }}
           />
         </label>
-        <Button className="w-full sm:w-auto" variant="outline" onClick={() => void startCreate()}>
-          <Plus className="h-4 w-4" /> New profile
+        <Button size="sm" onClick={() => void startCreate()}>
+          <Plus className="h-4 w-4" /> New SMTP
         </Button>
-      </div>
-
-      <div className="tui-box">
-        <div className="tui-box-title">SMTP rotation</div>
-        <div className="space-y-3 p-4 text-sm">
-          <p className="text-xs text-muted-foreground">
-            Spread load across multiple active SMTP accounts. Respects each profile’s daily/hourly
-            limits, then fails over if a send fails. This improves reliability — it is not for
-            evading provider policies.
-          </p>
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={rotationEnabled}
-              onChange={(e) => setRotationEnabled(e.target.checked)}
-            />
-            Enable automatic SMTP rotation
-          </label>
-          <div className="max-w-md">
-            <Label>Rotation mode</Label>
-            <Select
-              value={rotationMode}
-              onChange={(e) =>
-                setRotationMode(
-                  e.target.value as 'failover' | 'round_robin' | 'weighted' | 'performance',
-                )
-              }
-              disabled={!rotationEnabled}
-            >
-              <option value="round_robin">Round-robin — even distribution</option>
-              <option value="weighted">Weighted — higher priority sends more</option>
-              <option value="failover">Failover — prefer highest priority / default</option>
-              <option value="performance">Performance — prefer higher success rate</option>
-            </Select>
-          </div>
-          <Button size="sm" onClick={() => void saveRotation()} disabled={busyRotate}>
-            {busyRotate ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Save rotation settings
-          </Button>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:grid-cols-[340px_1fr]">
-        <div className="tui-box max-h-[40vh] overflow-auto lg:max-h-[70vh]">
-          <div className="tui-box-title">Profiles</div>
-          <div className="space-y-1 p-2">
+      <div className="mailer-panel">
+        <div className="mailer-pad flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+        <span className="text-[10px] uppercase tracking-wide text-accent">Rotation</span>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={rotationEnabled}
+            onChange={(e) => setRotationEnabled(e.target.checked)}
+          />
+          On
+        </label>
+        <Select
+          className="w-auto min-w-[12rem] max-w-xs"
+          value={rotationMode}
+          onChange={(e) =>
+            setRotationMode(
+              e.target.value as 'failover' | 'round_robin' | 'weighted' | 'performance',
+            )
+          }
+          disabled={!rotationEnabled}
+        >
+          <option value="round_robin">Round-robin</option>
+          <option value="weighted">Weighted</option>
+          <option value="failover">Failover</option>
+          <option value="performance">Performance</option>
+        </Select>
+        <Button size="sm" onClick={() => void saveRotation()} disabled={busyRotate}>
+          {busyRotate ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Save
+        </Button>
+        <span className="hidden text-[11px] text-muted-foreground xl:inline">
+          Spreads load across active SMTPs. Limits still apply.
+        </span>
+        </div>
+      </div>
+
+      <div className="space-y-2">
             {providers.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => void startEdit(p)}
-                className={cn(
-                  'flex w-full items-start gap-2 border px-2 py-2 text-left text-xs transition-colors',
-                  editingId === p.id
-                    ? 'border-primary/50 bg-primary/10'
-                    : 'border-border hover:bg-muted',
-                )}
-              >
-                <Server className="mt-0.5 h-3.5 w-3.5 text-primary" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{p.fromEmail || p.user || p.name}</div>
-                  <div className="truncate text-[10px] text-muted-foreground">
+              <div key={p.id} className="camp-row">
+                <button type="button" className="camp-row-main text-left" onClick={() => void startEdit(p)}>
+                  <strong>{profileDisplayName(p)}</strong>
+                  <div className="meta">
                     {p.host}
                     {p.port ? `:${p.port}` : ''}
+                    {p.outboundPath === 'bind' && p.bindIp ? ` · bind ${p.bindIp}` : ''}
+                    {p.outboundPath === 'socks' && p.socksHost
+                      ? ` · socks ${p.socksHost}${p.socksPort ? `:${p.socksPort}` : ''}`
+                      : ''}
+                    {` · ${p.lastTestStatus || 'Pending'}`}
+                    {p.isActive ? ' · Active' : ' · Off'}
+                    {p.isDefault ? ' · Default' : ''}
+                    {` · Total ${p.successCount ?? p.sentToday ?? 0}`}
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    <Badge tone={statusTone(p.lastTestStatus)}>{p.lastTestStatus || 'Pending'}</Badge>
-                    {p.isActive ? <Badge tone="success">Active</Badge> : <Badge>Off</Badge>}
-                    {p.isDefault ? <Badge tone="info">Default</Badge> : null}
-                  </div>
-                  <div className="mt-1.5 space-y-0.5 text-[10px] text-muted-foreground">
-                    <div>
-                      Today {meterLabel(p.sentToday ?? 0, p.dailyLimit)} · Hour{' '}
-                      {meterLabel(p.sentHour ?? 0, p.hourlyLimit)}
-                      {p.minuteLimit != null
-                        ? ` · Min ${meterLabel(p.sentMinute ?? 0, p.minuteLimit)}`
-                        : ''}
-                    </div>
-                    <div>
-                      Success {(p.successRate ?? 50).toFixed(1)}% (
-                      {p.successCount ?? 0}ok / {p.failCount ?? 0}fail)
-                    </div>
-                  </div>
+                </button>
+                <div className="camp-row-actions">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void startEdit(p)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busyToggle}
+                    onClick={() => void toggleActive(p)}
+                  >
+                    {p.isActive ? 'Disable' : 'Enable'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    disabled={busyDelete}
+                    onClick={() => void remove(p.id)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete
+                  </Button>
                 </div>
-              </button>
+              </div>
             ))}
             {!providers.length ? (
-              <p className="p-4 text-center text-xs text-muted-foreground">No SMTP profiles yet.</p>
+              <div className="mailer-panel">
+                <div className="mailer-pad">
+                  <p className="mailer-hint" style={{ marginTop: 0 }}>
+                    No SMTP profiles yet. Click New SMTP to add host, port, username, and password.
+                  </p>
+                </div>
+              </div>
             ) : null}
-          </div>
-        </div>
+      </div>
 
-        <div className="tui-box">
-          <div className="tui-box-title">
-            {editingId && selected
-              ? `Editing profile · ${selected.name || selected.fromEmail || selected.user || 'SMTP'}`
-              : 'New SMTP profile'}
+      {formOpen
+        ? createPortal(
+        <div className="mailer-root fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-3">
+          <button type="button" className="absolute inset-0" aria-label="Close" onClick={() => void closeForm()} />
+          <div className="mailer-panel relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col">
+          <div className="flex items-start justify-between gap-3 border-b border-[var(--mailer-stroke)] px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="mailer-hint" style={{ marginTop: 0 }}>
+                {editingId ? 'edit profile' : 'new profile'}
+              </p>
+              <Input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value, label: e.target.value })}
+                placeholder={senderEmails(form).join(', ') || 'SMTP name'}
+                aria-label="SMTP name"
+                className="mt-0.5 w-full border-transparent bg-transparent px-0 py-0.5 text-lg font-semibold text-primary placeholder:text-primary/50 focus:border-primary focus:bg-background focus:px-2"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void closeForm()}
+              className="border border-[var(--mailer-stroke)] p-2 text-[var(--mailer-dim)] hover:text-primary"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <div className="space-y-3 p-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             {selected ? (
               <div className="grid grid-cols-1 gap-1.5 border border-border bg-muted/40 p-3 text-[11px] sm:grid-cols-3">
                 <div>
@@ -725,9 +780,11 @@ export function SmtpManagerPage() {
                 <div>
                   <span className="text-muted-foreground">Sender</span>
                   <div className="mt-0.5 truncate font-medium text-foreground">
-                    {selected.fromName
-                      ? `${selected.fromName} <${selected.fromEmail || selected.user || '—'}>`
-                      : selected.fromEmail || selected.user || '—'}
+                    {(parseFromIdentities(selected.fromIdentities).length
+                      ? parseFromIdentities(selected.fromIdentities).map((s) => s.email).join(', ')
+                      : selected.fromName
+                        ? `${selected.fromName} <${selected.fromEmail || selected.user || '—'}>`
+                        : selected.fromEmail || selected.user || '—') || '—'}
                   </div>
                 </div>
                 <div>
@@ -783,17 +840,6 @@ export function SmtpManagerPage() {
                   <option value="TLS">TLS</option>
                   <option value="NONE">None (plain — when provider says Tls/Ssl = no)</option>
                 </Select>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Campaigns use this exact encryption, host, port, and From — same as Test &amp; send.
-                </p>
-              </div>
-              <div>
-                <Label>Label (optional)</Label>
-                <Input
-                  value={form.label}
-                  onChange={(e) => setForm({ ...form, label: e.target.value })}
-                  placeholder="e.g. Marketing, Transactional"
-                />
               </div>
               <div>
                 <Label>Username</Label>
@@ -824,21 +870,190 @@ export function SmtpManagerPage() {
                   </button>
                 </div>
               </div>
-              <div>
-                <Label>Sender name (optional)</Label>
-                <Input
-                  value={form.fromName}
-                  onChange={(e) => setForm({ ...form, fromName: e.target.value })}
-                  placeholder="Leave blank to show only the sender email"
-                />
+              <div className="md:col-span-2 border border-border bg-muted/20 p-3">
+                {smtpAllowDirect ? (
+                  <>
+                    <Label>Outbound path</Label>
+                    <p className="mt-0.5 mb-2 text-[11px] text-muted-foreground">Direct, Bind IP, or SOCKS5.</p>
+                    <Select
+                      value={form.outboundPath || 'direct'}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          outboundPath: e.target.value as FormState['outboundPath'],
+                        })
+                      }
+                    >
+                      <option value="direct">Direct</option>
+                      <option value="bind">Bind IP — localAddress on this machine</option>
+                      <option value="socks">SOCKS5 — proxy host / port / user</option>
+                    </Select>
+                    {(form.outboundPath || 'direct') === 'bind' ? (
+                      <div className="mt-3">
+                        <Label>Bind IP</Label>
+                        <Input
+                          value={form.bindIp || ''}
+                          onChange={(e) => setForm({ ...form, bindIp: e.target.value })}
+                          placeholder="203.0.113.10"
+                        />
+                      </div>
+                    ) : null}
+                    {(form.outboundPath || 'direct') === 'socks' ? (
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <Label>SOCKS host</Label>
+                          <Input
+                            value={form.socksHost || ''}
+                            onChange={(e) => setForm({ ...form, socksHost: e.target.value })}
+                            placeholder="127.0.0.1"
+                          />
+                        </div>
+                        <div>
+                          <Label>SOCKS port</Label>
+                          <Input
+                            value={form.socksPort || ''}
+                            onChange={(e) => setForm({ ...form, socksPort: e.target.value })}
+                            placeholder="Port"
+                          />
+                        </div>
+                        <div>
+                          <Label>SOCKS user (optional)</Label>
+                          <Input
+                            value={form.socksUser || ''}
+                            onChange={(e) => setForm({ ...form, socksUser: e.target.value })}
+                            placeholder="proxy user"
+                          />
+                        </div>
+                        <div>
+                          <Label>SOCKS password</Label>
+                          <Input
+                            type={showPass ? 'text' : 'password'}
+                            value={form.socksPass || ''}
+                            onChange={(e) => setForm({ ...form, socksPass: e.target.value })}
+                            placeholder={editingId ? '••••••••' : ''}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <Label>SOCKS5</Label>
+                    <p className="mt-0.5 mb-2 text-[11px] text-muted-foreground">
+                      Optional. Leave blank to send from this bound PC.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <Label>SOCKS host</Label>
+                        <Input
+                          value={form.socksHost || ''}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              socksHost: e.target.value,
+                              outboundPath: e.target.value.trim() ? 'socks' : 'bind',
+                            })
+                          }
+                          placeholder="127.0.0.1"
+                        />
+                      </div>
+                      <div>
+                        <Label>SOCKS port</Label>
+                        <Input
+                          value={form.socksPort || ''}
+                          onChange={(e) => setForm({ ...form, socksPort: e.target.value })}
+                          placeholder="Port"
+                        />
+                      </div>
+                      <div>
+                        <Label>SOCKS user (optional)</Label>
+                        <Input
+                          value={form.socksUser || ''}
+                          onChange={(e) => setForm({ ...form, socksUser: e.target.value })}
+                          placeholder="proxy user"
+                        />
+                      </div>
+                      <div>
+                        <Label>SOCKS password</Label>
+                        <Input
+                          type={showPass ? 'text' : 'password'}
+                          value={form.socksPass || ''}
+                          onChange={(e) => setForm({ ...form, socksPass: e.target.value })}
+                          placeholder={editingId ? '••••••••' : ''}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
-              <div>
-                <Label>Sender email</Label>
-                <Input
-                  value={form.fromEmail}
-                  onChange={(e) => setForm({ ...form, fromEmail: e.target.value })}
-                  placeholder="hello@yourdomain.com"
-                />
+              <div className="md:col-span-2 border border-border bg-muted/20 p-3">
+                <Label>Sender / From emails</Label>
+                <p className="mb-2 mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                  One SMTP login can send as several From addresses if the SMTP provider allows it.
+                  Campaigns can pin one or rotate these.
+                </p>
+                <div className="space-y-2">
+                  {form.senders.map((row, i) => (
+                    <div key={i} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                      <Input
+                        value={row.name}
+                        onChange={(e) => {
+                          const senders = form.senders.map((s, idx) =>
+                            idx === i ? { ...s, name: e.target.value } : s,
+                          );
+                          setForm({ ...form, senders, fromName: senders[0]?.name || '' });
+                        }}
+                        placeholder="From name (optional)"
+                      />
+                      <Input
+                        type="email"
+                        value={row.email}
+                        onChange={(e) => {
+                          const senders = form.senders.map((s, idx) =>
+                            idx === i ? { ...s, email: e.target.value } : s,
+                          );
+                          setForm({ ...form, senders, fromEmail: senders[0]?.email || '' });
+                          setLastTestOk(false);
+                        }}
+                        placeholder="hello@yourdomain.com"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-label="Add sender"
+                        onClick={() => {
+                          const senders = [
+                            ...form.senders.slice(0, i + 1),
+                            { email: '', name: '' },
+                            ...form.senders.slice(i + 1),
+                          ];
+                          setForm({ ...form, senders });
+                        }}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={form.senders.length <= 1}
+                        onClick={() => {
+                          const senders = form.senders.filter((_, idx) => idx !== i);
+                          setForm({
+                            ...form,
+                            senders: senders.length ? senders : [{ email: '', name: '' }],
+                            fromEmail: senders[0]?.email || '',
+                            fromName: senders[0]?.name || '',
+                          });
+                        }}
+                        aria-label="Remove sender"
+                      >
+                        −
+                      </Button>
+                    </div>
+                  ))}
+                </div>
               </div>
               <div>
                 <Label>Reply-To (optional)</Label>
@@ -952,48 +1167,50 @@ export function SmtpManagerPage() {
                   placeholder="you@gmail.com"
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Test Connection never sends mail. Test & send uses this address. Sender Email must
-                  be a From your SMTP provider allows (not @gmail.com unless you are using Gmail SMTP).
+                  Test Connection never sends mail. Test & send requires this address.
                 </p>
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              {!editingId ? (
-                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave} onClick={() => void save(true)}>
-                  {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Add & Activate SMTP
-                </Button>
-              ) : (
-                <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
-                  {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
-                </Button>
-              )}
-              <Button className="flex-1 sm:flex-none" disabled={busyTestVerify} onClick={() => void testConnection(false)}>
-                {busyTestVerify ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                Test Connection
-              </Button>
-              <Button className="flex-1 sm:flex-none" variant="outline" disabled={busyTestSend || !testTo} onClick={() => void testConnection(true)}>
-                {busyTestSend ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Test & send
-              </Button>
-              <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busySave} onClick={() => void save(false)}>
-                {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                {editingId ? 'Save changes' : 'Save draft'}
-              </Button>
-              {editingId ? (
-                <>
-                  <Button variant="outline" onClick={() => void toggleActive(selected!)} disabled={busyToggle}>
-                    {busyToggle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    {selected?.isActive ? 'Disable' : 'Enable'}
-                  </Button>
-                  <Button variant="danger" onClick={() => void remove(editingId)} disabled={busyDelete}>
-                    {busyDelete ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete
-                  </Button>
-                </>
-              ) : null}
-            </div>
           </div>
-        </div>
-      </div>
+          <div className="flex shrink-0 flex-wrap gap-2 border-t border-[var(--mailer-stroke)] px-4 py-2">
+            {!editingId ? (
+              <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave} onClick={() => void save(true)}>
+                {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Add & Activate SMTP
+              </Button>
+            ) : (
+              <Button className="flex-1 sm:flex-none" variant="primary" disabled={busySave || (!lastTestOk && selected?.lastTestStatus !== 'Connected')} onClick={() => void save(true)}>
+                {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Activate
+              </Button>
+            )}
+            <Button className="flex-1 sm:flex-none" disabled={busyTestVerify} onClick={() => void testConnection(false)}>
+              {busyTestVerify ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+              Test Connection
+            </Button>
+            <Button className="flex-1 sm:flex-none" variant="outline" disabled={busyTestSend || !testTo} onClick={() => void testConnection(true)}>
+              {busyTestSend ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Test & send
+            </Button>
+            <Button className="flex-1 sm:flex-none" variant="secondary" disabled={busySave} onClick={() => void save(false)}>
+              {busySave ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {editingId ? 'Save changes' : 'Save draft'}
+            </Button>
+            {editingId ? (
+              <>
+                <Button variant="outline" onClick={() => void toggleActive(selected!)} disabled={busyToggle}>
+                  {busyToggle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {selected?.isActive ? 'Disable' : 'Enable'}
+                </Button>
+                <Button variant="danger" onClick={() => void remove(editingId)} disabled={busyDelete}>
+                  {busyDelete ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete
+                </Button>
+              </>
+            ) : null}
+          </div>
+          </div>
+        </div>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }
