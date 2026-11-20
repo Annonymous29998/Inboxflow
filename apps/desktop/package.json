@@ -1,6 +1,6 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "private": true,
   "description": "Inbox Flow Windows desktop — connects to Lightsail",
   "author": "Inbox Flow",

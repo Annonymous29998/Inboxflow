@@ -1,5 +1,5 @@
 /** Layout fixtures for local Vite only. Production builds always hit the live API. */
-export const ADMIN_UI_DEMO = import.meta.env.DEV;
+export const ADMIN_UI_DEMO = false;
 
 function ago(ms: number) {
   return new Date(Date.now() - ms).toISOString();

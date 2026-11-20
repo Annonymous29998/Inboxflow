@@ -14,7 +14,7 @@ export const DEMO_STAFF_ID = 'demo-staff-user';
 export const DEMO_STAFF_ACCESS_TOKEN = 'demo-staff-access';
 export const DEMO_STAFF_REFRESH_TOKEN = 'demo-staff-refresh';
 
-export const MAILER_UI_DEMO = import.meta.env.DEV;
+export const MAILER_UI_DEMO = false;
 
 const BOUND_KEY = 'inboxflow-demo-bound';
 

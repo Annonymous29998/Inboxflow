@@ -14,7 +14,7 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const DEFAULT_REMOTE_URL = 'http://13.38.60.67';
+const DEFAULT_REMOTE_URL = 'https://novasreach.xyz';
 /** Local browser port — matches Kestrel V1.40 (http://localhost:5000). */
 const DEFAULT_LOCAL_PORT = 5000;
 const isDev = !app.isPackaged;

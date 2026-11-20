@@ -404,11 +404,23 @@ export function AdminDashboardPage() {
             <div className="mt-4 grid grid-cols-2 gap-3">
               <div className="if-admin-surface p-4">
                 <p className="if-admin-muted text-xs font-semibold uppercase tracking-wide">API</p>
-                <p className="mt-1 text-lg font-extrabold text-emerald-700">{data?.health.status || '…'}</p>
+                <p className="mt-1 text-lg font-extrabold text-emerald-700">
+                  {busy && !data
+                    ? 'Checking'
+                    : data?.health?.status === 'ok' || data?.health?.status === 'up'
+                      ? 'Up'
+                      : data?.health?.status || 'Down'}
+                </p>
               </div>
               <div className="if-admin-surface p-4">
                 <p className="if-admin-muted text-xs font-semibold uppercase tracking-wide">Database</p>
-                <p className="mt-1 text-lg font-extrabold text-emerald-700">{data?.health.database || '…'}</p>
+                <p className="mt-1 text-lg font-extrabold text-emerald-700">
+                  {busy && !data
+                    ? 'Checking'
+                    : data?.health?.database === 'up' || data?.health?.database === 'ok'
+                      ? 'Up'
+                      : data?.health?.database || 'Down'}
+                </p>
               </div>
             </div>
             <h3 className="if-admin-heading mt-6 text-xl font-semibold">Recent campaigns</h3>

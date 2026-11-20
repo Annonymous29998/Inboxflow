@@ -6,7 +6,7 @@ import http from 'http';
 import https from 'https';
 
 const LOCAL_PORT = Number(process.env.LOCAL_PORT || 5000);
-const REMOTE_BASE = process.env.REMOTE_APP_URL || 'http://13.38.60.67';
+const REMOTE_BASE = process.env.REMOTE_APP_URL || 'https://novasreach.xyz';
 
 const remote = new URL(REMOTE_BASE);
 const remoteLib = remote.protocol === 'https:' ? https : http;
@@ -53,7 +53,7 @@ const server = http.createServer((req, res) => {
       agent,
       timeout: sse ? 0 : heavy ? 300_000 : 120_000,
       rejectUnauthorized,
-    },)
+    },
     (up) => {
       const outHeaders = { ...up.headers };
       const localOrigin = `http://localhost:${LOCAL_PORT}`;
