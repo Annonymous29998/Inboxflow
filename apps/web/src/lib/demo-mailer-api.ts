@@ -2,6 +2,7 @@ import {
   DEMO_ACCESS_TOKEN,
   DEMO_STAFF_ACCESS_TOKEN,
   DEMO_STAFF_ID,
+  MAILER_UI_DEMO,
   demoMailerUser,
   demoStaffUser,
   readDemoBound,
@@ -92,7 +93,10 @@ function splitPath(path: string) {
 }
 
 export function isDemoAccessToken(token?: string | null) {
-  return token === DEMO_ACCESS_TOKEN || token === DEMO_STAFF_ACCESS_TOKEN;
+  return (
+    MAILER_UI_DEMO &&
+    (token === DEMO_ACCESS_TOKEN || token === DEMO_STAFF_ACCESS_TOKEN)
+  );
 }
 
 function demoSessionUser() {
