@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { api } from '@/lib/api';
+import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
 import { useAuthStore } from '@/stores/auth';
 import {
   DEMO_MAILER_IP,
@@ -47,6 +48,14 @@ export function ActivateBindPage() {
   const [bindOpen, setBindOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);
   const setUser = useAuthStore((s) => s.setUser);
+
+  useEffect(() => {
+    void loadDesktopLicenseConfig().then((cfg) => {
+      if (!cfg) return;
+      if (cfg.username) setUsername((prev) => prev || cfg.username || '');
+      if (cfg.license_key) setLicenseKey((prev) => prev || cfg.license_key || '');
+    });
+  }, []);
 
   useEffect(() => {
     const reset = params.get('reset') === '1';

@@ -12,6 +12,7 @@ import { useWhenVisiblePoll } from '@/lib/admin-poll';
 import { ADMIN_UI_DEMO, bumpSubscription, DEMO_SESSIONS, hydrateDemoUsers, isDemoId } from './admin-demo-data';
 import { describeUserAgent } from '@/lib/user-agent';
 import { subEndingSoon } from './admin-insights';
+import { licenseConfigJson } from '@/lib/desktop-license-config';
 
 type SubscriptionInfo = {
   status: string;
@@ -56,8 +57,7 @@ type AdminUser = {
 function generateLicenseKey() {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-  return `IF-${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}`;
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
 function usernameOf(u: AdminUser) {
@@ -698,7 +698,7 @@ export function AdminUsersPage() {
                         <span className="font-semibold text-teal-800">{issued.licenseKey}</span>
                       </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
                         className="if-admin-btn if-admin-btn-ghost"
@@ -711,6 +711,17 @@ export function AdminUsersPage() {
                       >
                         <Copy className="h-4 w-4" />
                         Copy
+                      </button>
+                      <button
+                        type="button"
+                        className="if-admin-btn if-admin-btn-ghost"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(licenseConfigJson(issued.username, issued.licenseKey));
+                          toast.success('Copied config.json');
+                        }}
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy config.json
                       </button>
                       <button type="button" className="if-admin-btn if-admin-btn-primary" onClick={() => setModalOpen(false)}>
                         Done
@@ -761,7 +772,7 @@ export function AdminUsersPage() {
                           className="if-admin-input min-w-0 flex-1 font-mono"
                           value={licenseKey}
                           onChange={(e) => setLicenseKey(e.target.value)}
-                          placeholder="Click Generate"
+                          placeholder="9065C339DA0723E8"
                           autoComplete="off"
                         />
                         <button
@@ -1034,7 +1045,7 @@ export function AdminUsersPage() {
                       License key: <span className="font-semibold text-teal-800">{resetIssued.licenseKey}</span>
                     </p>
                   </div>
-                  <div className="flex justify-end gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
                     <button
                       type="button"
                       className="if-admin-btn if-admin-btn-ghost"
@@ -1047,6 +1058,19 @@ export function AdminUsersPage() {
                     >
                       <Copy className="h-4 w-4" />
                       Copy
+                    </button>
+                    <button
+                      type="button"
+                      className="if-admin-btn if-admin-btn-ghost"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          licenseConfigJson(resetIssued.username, resetIssued.licenseKey),
+                        );
+                        toast.success('Copied config.json');
+                      }}
+                    >
+                      <Copy className="h-4 w-4" />
+                      Copy config.json
                     </button>
                     <button type="button" className="if-admin-btn if-admin-btn-primary" onClick={() => setResetIssued(null)}>
                       Done

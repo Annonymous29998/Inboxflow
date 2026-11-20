@@ -17,8 +17,7 @@ const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
 const LICENSE_LOGIN_DOMAIN = 'inboxflow.io';
 
 function generateLicenseKey(): string {
-  const hex = randomBytes(8).toString('hex').toUpperCase();
-  return `IF-${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}`;
+  return randomBytes(8).toString('hex').toUpperCase();
 }
 
 function addCalendarMonths(from: Date, months: number) {

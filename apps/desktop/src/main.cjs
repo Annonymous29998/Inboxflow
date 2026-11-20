@@ -73,6 +73,67 @@ function envPath() {
   return path.join(userDataDir(), 'inboxflow.env');
 }
 
+function configJsonCandidates() {
+  const names = ['config.json'];
+  const dirs = [
+    path.dirname(process.execPath),
+    userDataDir(),
+    process.resourcesPath || '',
+    path.join(__dirname, '..', 'resources'),
+  ];
+  const out = [];
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const name of names) out.push(path.join(dir, name));
+  }
+  return out;
+}
+
+function readLicenseConfigFile() {
+  for (const p of configJsonCandidates()) {
+    try {
+      if (!fs.existsSync(p) || path.basename(p) === 'config.example.json') continue;
+      const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (!raw || typeof raw !== 'object') continue;
+      const username = String(raw.username || raw.user || '').trim();
+      const license_key = String(raw.license_key || raw.licenseKey || raw.license || '').trim();
+      return { path: p, username, license_key };
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+function ensureConfigJson() {
+  const dest = path.join(userDataDir(), 'config.json');
+  if (fs.existsSync(dest) || readLicenseConfigFile()) return dest;
+  fs.mkdirSync(userDataDir(), { recursive: true });
+  fs.writeFileSync(
+    dest,
+    `${JSON.stringify({ username: '', license_key: '' }, null, 4)}\n`,
+    'utf8',
+  );
+  return dest;
+}
+
+function serveLocalConfigJson(req, res) {
+  const urlPath = String(req.url || '').split('?')[0];
+  if (req.method !== 'GET' || urlPath !== '/config.json') return false;
+  const found = readLicenseConfigFile();
+  const body = JSON.stringify(
+    found
+      ? { username: found.username, license_key: found.license_key }
+      : { username: '', license_key: '' },
+  );
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+  return true;
+}
+
 function randomSecret(bytes = 32) {
   return crypto.randomBytes(bytes).toString('hex');
 }
@@ -337,6 +398,7 @@ function startRemoteProxy(localPort, remoteBase, localWorkspaceOrigin) {
   });
 
   proxyServer = http.createServer((req, res) => {
+    if (serveLocalConfigJson(req, res)) return;
     const urlPath = req.url || '/';
     const sse = isSsePath(urlPath);
     const heavy = isHeavyApiPath(urlPath);
@@ -744,6 +806,7 @@ async function boot() {
     pct: 8,
   });
   const envFile = ensureEnvFile();
+  ensureConfigJson();
   const fileEnv = parseEnvFile(envFile);
   const mode = String(fileEnv.INBOXFLOW_MODE || 'remote').toLowerCase();
   const localSend = mode === 'local' || mode === 'rdp';

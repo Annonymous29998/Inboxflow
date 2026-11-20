@@ -89,6 +89,11 @@ if (!existsSync(join(resources, 'env.desktop.example'))) {
 }
 ok('env.desktop.example packed');
 
+if (!existsSync(join(unpacked, 'config.json'))) {
+  fail('win-unpacked/config.json missing — zip must ship config.json next to InboxFlow.exe');
+}
+ok('config.json packed next to InboxFlow.exe');
+
 if (existsSync(join(resources, 'api', 'node_modules'))) {
   fail('api/node_modules is packed — install will be slow again');
 }
@@ -105,6 +110,7 @@ if (unpackedMb > 350) {
 
 const listing = zipListing(zipPath);
 if (!listing.includes('InboxFlow.exe')) fail('zip does not contain InboxFlow.exe');
+if (!/\bconfig\.json\b/.test(listing)) fail('zip does not contain config.json');
 if (listing.includes('api/node_modules') || listing.includes('node/node.exe')) {
   fail('zip still contains API/node payload');
 }

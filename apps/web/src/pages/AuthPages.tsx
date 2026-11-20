@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayout';
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
+import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
 import { tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
@@ -20,6 +21,14 @@ export function LoginPage() {
   useEffect(() => {
     setBindWarn(tenantNeedsBind(sessionUser));
   }, [sessionUser]);
+
+  useEffect(() => {
+    void loadDesktopLicenseConfig().then((cfg) => {
+      if (!cfg) return;
+      if (cfg.username) setEmail((prev) => prev || cfg.username || '');
+      if (cfg.license_key) setPassword((prev) => prev || cfg.license_key || '');
+    });
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();

@@ -1,6 +1,6 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "private": true,
   "description": "Inbox Flow Windows desktop — connects to Lightsail",
   "author": "Inbox Flow",
@@ -31,10 +31,24 @@
       "package.json"
     ],
     "icon": "resources/icon.png",
+    "extraFiles": [
+      {
+        "from": "resources/config.json",
+        "to": "config.json"
+      }
+    ],
     "extraResources": [
       {
         "from": "resources/env.desktop.example",
         "to": "env.desktop.example"
+      },
+      {
+        "from": "resources/config.example.json",
+        "to": "config.example.json"
+      },
+      {
+        "from": "resources/config.json",
+        "to": "config.json"
       }
     ],
     "asar": true,
