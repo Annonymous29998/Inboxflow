@@ -1,0 +1,66 @@
+name: Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - .github/workflows/windows-exe.yml
+      - package.json
+      - package-lock.json
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build NSIS installer
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:win
+
+      - name: Verify thin package
+        run: node apps/desktop/scripts/verify-installer.mjs
+
+      - name: Icon, silent install, launch
+        shell: pwsh
+        run: ./apps/desktop/scripts/windows-smoke.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InboxFlow-Setup-1.2.2
+          path: |
+            apps/desktop/release/InboxFlow-Setup-*.exe
+            apps/desktop/release/InboxFlow-Setup-*.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-1.2.2
+          name: Inbox Flow desktop 1.2.2
+          body: |
+            Windows installer built and smoke-tested on GitHub `windows-latest`.
+            Custom Inbox Flow IF icon (not Electron default). Unsigned — SmartScreen may warn.
+            Connects to Lightsail `http://13.38.60.67`. Bind PC after first sign-in.
+          files: |
+            apps/desktop/release/InboxFlow-Setup-1.2.2.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.2.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

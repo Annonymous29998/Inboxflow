@@ -2,6 +2,7 @@
 /**
  * Checks the Windows installer is a thin Lightsail client (fast extract)
  * and that the packaged app contains the launcher + env template.
+ * Works on macOS and GitHub windows-latest (no du/unzip required).
  */
 import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
@@ -20,6 +21,24 @@ function fail(msg) {
 
 function ok(msg) {
   console.log(`OK   ${msg}`);
+}
+
+function dirSizeBytes(dir) {
+  let total = 0;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) total += dirSizeBytes(p);
+    else total += statSync(p).size;
+  }
+  return total;
+}
+
+function zipListing(zipPath) {
+  try {
+    return execSync(`tar -tf "${zipPath}"`, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  } catch {
+    return execSync(`unzip -l "${zipPath}"`, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  }
 }
 
 if (!existsSync(releaseDir)) fail('release/ missing — run npm run dist:win first');
@@ -78,21 +97,18 @@ if (existsSync(join(resources, 'node', 'node.exe'))) {
 }
 ok('no API node_modules / portable Node in package');
 
-const unpackedMb = Number(
-  execSync(`du -sm "${unpacked}" | awk '{print $1}'`, { encoding: 'utf8' }).trim(),
-);
-ok(`win-unpacked ${unpackedMb} MB`);
+const unpackedMb = dirSizeBytes(unpacked) / (1024 * 1024);
+ok(`win-unpacked ${unpackedMb.toFixed(1)} MB`);
 if (unpackedMb > 350) {
-  fail(`unpacked tree is ${unpackedMb} MB — extract will stall on Windows`);
+  fail(`unpacked tree is ${unpackedMb.toFixed(1)} MB — extract will stall on Windows`);
 }
 
-const listing = execSync(`unzip -l "${zipPath}"`, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+const listing = zipListing(zipPath);
 if (!listing.includes('InboxFlow.exe')) fail('zip does not contain InboxFlow.exe');
 if (listing.includes('api/node_modules') || listing.includes('node/node.exe')) {
   fail('zip still contains API/node payload');
 }
 ok('zip listing contains InboxFlow.exe only (thin client)');
 
-console.log('\nInstaller package looks complete and thin. NSIS silent-run needs Windows;');
-console.log('this Mac cannot execute the setup EXE (no Wine).');
+console.log('\nInstaller package looks complete and thin.');
 process.exit(0);
