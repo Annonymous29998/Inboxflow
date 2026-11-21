@@ -317,6 +317,7 @@ function shouldUseLocalWorkspace(req, hasLocal) {
   if (isCloudLoginPath(p)) return false;
   const payload = decodeJwtPayload(jwtFromRequest(req));
   const role = payload && payload.role;
+  if (payload && payload.workspaceLocal === true) return true;
   if (!role || role === 'SUPER_ADMIN') return false;
   return true;
 }

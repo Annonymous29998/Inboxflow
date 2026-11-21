@@ -22,7 +22,7 @@ Stack: React + Vite · Supabase Postgres · Supabase Edge Functions (email) · o
 
 Normal Windows installer that opens your Lightsail app (same login, campaigns, SMTP).
 
-**Send this file:** `apps/desktop/release/InboxFlow-Setup-1.0.0.exe`
+**Send this file:** `apps/desktop/release/InboxFlow-Setup-1.2.5.exe` (GitHub Release `desktop-1.2.5`)
 
 See **[docs/DESKTOP_WINDOWS.md](docs/DESKTOP_WINDOWS.md)**.
 

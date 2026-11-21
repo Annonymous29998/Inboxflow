@@ -43,7 +43,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: InboxFlow-Setup-1.2.4
+          name: InboxFlow-Setup-1.2.5
           path: |
             apps/desktop/release/InboxFlow-Setup-*.exe
             apps/desktop/release/InboxFlow-Setup-*.zip
@@ -52,15 +52,15 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-1.2.4
-          name: Inbox Flow desktop 1.2.4
+          tag_name: desktop-1.2.5
+          name: Inbox Flow desktop 1.2.5
           body: |
             Windows installer built and smoke-tested on GitHub `windows-latest`.
             Zip includes `config.json` next to InboxFlow.exe (`username` + `license_key`).
             Connects to `https://novasreach.xyz`. Bind PC after first sign-in (`http://localhost:5000/bind-pc`).
           files: |
-            apps/desktop/release/InboxFlow-Setup-1.2.4.exe
-            apps/desktop/release/InboxFlow-Setup-1.2.4.zip
+            apps/desktop/release/InboxFlow-Setup-1.2.5.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.5.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
