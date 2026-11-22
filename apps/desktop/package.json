@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "electron .",
     "pack": "electron-builder --dir",
-    "dist:win": "electron-builder --win nsis zip --x64",
+    "dist:win": "electron-builder --win nsis zip --x64 --publish never",
     "verify:win": "node scripts/verify-installer.mjs"
   },
   "dependencies": {},
@@ -68,8 +68,6 @@
     "win": {
       "icon": "resources/icon.ico",
       "executableName": "InboxFlow",
-      "signAndEditExecutable": false,
-      "signDlls": false,
       "requestedExecutionLevel": "asInvoker",
       "target": [
         {
