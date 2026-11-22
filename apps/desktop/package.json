@@ -59,10 +59,6 @@
         "to": "api/node_modules"
       },
       {
-        "from": ".stage-api/node_modules",
-        "to": "api/node_modules"
-      },
-      {
         "from": "../web/dist",
         "to": "web"
       },
