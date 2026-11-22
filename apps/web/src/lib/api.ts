@@ -13,6 +13,7 @@ class ApiClient {
   /** In-memory only — prefer httpOnly cookies; keep for Bearer fallback / smoke tools */
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
+  private tokenListener: ((access: string | null, refresh: string | null) => void) | null = null;
 
   constructor() {
     // Migrate away from legacy localStorage tokens (XSS risk)
@@ -24,9 +25,14 @@ class ApiClient {
     }
   }
 
+  onTokenChange(fn: (access: string | null, refresh: string | null) => void) {
+    this.tokenListener = fn;
+  }
+
   setTokens(access: string | null, refresh?: string | null) {
     this.accessToken = access;
     if (refresh !== undefined) this.refreshToken = refresh;
+    this.tokenListener?.(this.accessToken, this.refreshToken);
   }
 
   getToken() {
@@ -99,7 +105,7 @@ class ApiClient {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        if (res.status === 401 || res.status === 403) this.clearSession();
+        // Keep the current Bearer pair. A 401 here is often a blip, not Sign out.
         return false;
       }
       const data = await res.json();

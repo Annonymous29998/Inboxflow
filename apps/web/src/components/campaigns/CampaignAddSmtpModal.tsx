@@ -256,11 +256,14 @@ export function CampaignAddSmtpModal({
               {smtpAllowDirect ? (
                 <>
                   <Label>Outbound path</Label>
+                  <p className="mailer-hint mb-2 mt-0.5 text-[11px]">
+                    Default is Lightsail. Bind IP or SOCKS5 only if you need them.
+                  </p>
                   <Select
                     value={path}
                     onChange={(e) => setOutboundPath(e.target.value as 'direct' | 'bind' | 'socks')}
                   >
-                    <option value="direct">Direct</option>
+                    <option value="direct">Default</option>
                     <option value="bind">Bind IP — localAddress on this machine</option>
                     <option value="socks">SOCKS5 — proxy host / port / user</option>
                   </Select>

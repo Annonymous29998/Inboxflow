@@ -16,6 +16,47 @@ export const DEMO_STAFF_REFRESH_TOKEN = 'demo-staff-refresh';
 
 export const MAILER_UI_DEMO = false;
 
+export function isDemoIdentity(userId?: string | null, accessToken?: string | null) {
+  return (
+    userId === DEMO_MAILER_ID ||
+    userId === DEMO_STAFF_ID ||
+    accessToken === DEMO_ACCESS_TOKEN ||
+    accessToken === DEMO_STAFF_ACCESS_TOKEN ||
+    accessToken === DEMO_REFRESH_TOKEN ||
+    accessToken === DEMO_STAFF_REFRESH_TOKEN
+  );
+}
+
+/** Drop leftover demo sessions so mailer/admin always hit the live API. */
+export function purgeStaleDemoSession(): boolean {
+  if (MAILER_UI_DEMO || typeof window === 'undefined') return false;
+  let found = false;
+  try {
+    const keys = ['inboxflow-auth', 'inboxflow-auth-fallback'];
+    for (const key of keys) {
+      for (const store of [window.localStorage, window.sessionStorage]) {
+        const raw = store.getItem(key);
+        if (!raw) continue;
+        if (
+          raw.includes(DEMO_MAILER_ID) ||
+          raw.includes(DEMO_STAFF_ID) ||
+          raw.includes(DEMO_ACCESS_TOKEN) ||
+          raw.includes(DEMO_STAFF_ACCESS_TOKEN)
+        ) {
+          store.removeItem(key);
+          found = true;
+        }
+      }
+    }
+    window.sessionStorage.removeItem('inboxflow-demo-workspace');
+    window.sessionStorage.removeItem('inboxflow-demo-workspace-v');
+    window.sessionStorage.removeItem('inboxflow-demo-bound');
+  } catch {
+    /* ignore */
+  }
+  return found;
+}
+
 const BOUND_KEY = 'inboxflow-demo-bound';
 
 export function isDemoMailerLogin(username: string, license: string) {

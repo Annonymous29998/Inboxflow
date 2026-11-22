@@ -259,7 +259,7 @@ html[data-shell='admin'] .if-admin-surface {
   }
 }
 
-html[data-shell='admin'] .if-admin-boot-bar {
+.if-admin-boot-bar {
   width: 30%;
   animation: if-admin-boot-scan 1.4s ease-in-out infinite;
 }

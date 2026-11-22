@@ -1,12 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma.js';
+import { env } from '../../config/env.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { requireOrg } from '../../utils/org.js';
 import { authenticate } from '../../middleware/auth.js';
 import { isPlatformOperator } from '../../services/email/workspace-residency.js';
 import { mergeOperatorPulse } from '../../services/admin/operator-pulse.js';
-import { mergeLicenseBind, parseTypedBindIp } from '../../services/admin/license-bind.js';
+import {
+  mergeLicenseBind,
+  mergeOperatorBind,
+  parseTypedBindIp,
+  bindIpMustMatchRequest,
+  publicClientIp,
+} from '../../services/admin/license-bind.js';
 
 const campaignSchema = z.object({
   id: z.string().min(1).max(80),
@@ -104,6 +111,78 @@ export async function workspacePulseRoutes(app: FastifyInstance) {
       });
       process.env.BOUND_IP = boundIp;
       return reply.send({ ok: true, boundIp });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  /** Operator Settings: Bind PC on this RDP/VPS, or return send to Lightsail. */
+  app.post('/operator-bind', async (request, reply) => {
+    try {
+      if (!isPlatformOperator({ role: request.user.role, email: request.user.email })) {
+        throw new AppError(403, 'Only the operator can toggle Bind PC here');
+      }
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z
+        .object({
+          enabled: z.boolean(),
+          boundIp: z.string().min(1).max(64).optional(),
+        })
+        .parse(request.body || {});
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { sendSettings: true },
+      });
+      if (!org) throw new AppError(404, 'Workspace not found');
+
+      if (!body.enabled) {
+        await prisma.organization.update({
+          where: { id: orgId },
+          data: { sendSettings: mergeOperatorBind(org.sendSettings, { enabled: false }) as object },
+        });
+        const accessToken = await app.jwt.sign(
+          {
+            sub: request.user.id,
+            email: request.user.email,
+            role: request.user.role,
+            organizationId: request.user.organizationId,
+            workspaceLocal: false,
+          },
+          { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
+        );
+        return reply.send({ ok: true, enabled: false, boundIp: null, accessToken });
+      }
+
+      const boundIp = parseTypedBindIp(String(body.boundIp || ''));
+      if (!boundIp) throw new AppError(400, 'Enter the public IP of this RDP / Windows VPS.');
+      const mismatch = bindIpMustMatchRequest(
+        boundIp,
+        publicClientIp({ ip: request.ip, headers: request.headers as Record<string, unknown> }),
+      );
+      if (mismatch) throw new AppError(403, mismatch);
+
+      await prisma.organization.update({
+        where: { id: orgId },
+        data: {
+          sendSettings: mergeOperatorBind(org.sendSettings, {
+            enabled: true,
+            boundIp,
+            boundAt: new Date().toISOString(),
+          }) as object,
+        },
+      });
+      process.env.BOUND_IP = boundIp;
+      const accessToken = await app.jwt.sign(
+        {
+          sub: request.user.id,
+          email: request.user.email,
+          role: request.user.role,
+          organizationId: request.user.organizationId,
+          workspaceLocal: true,
+        },
+        { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
+      );
+      return reply.send({ ok: true, enabled: true, boundIp, accessToken });
     } catch (error) {
       return sendError(reply, error);
     }

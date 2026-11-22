@@ -47,14 +47,7 @@ export function BindRequiredModal({
             >
               Stay on sign in
             </button>
-          ) : (
-            <Link
-              to="/login"
-              className="block w-full border border-border px-3 py-2 text-center text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
-            >
-              Back to sign in
-            </Link>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

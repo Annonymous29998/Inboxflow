@@ -13,7 +13,7 @@ describe('workspace residency', () => {
     expect(isPlatformOperator({ role: 'USER', email: 'client@shop.com' })).toBe(false);
   });
 
-  it('keeps platform admin on the shared database', () => {
+  it('keeps platform admin on the shared database unless Bind PC is on', () => {
     expect(
       orgKeepsWorkspaceOnDevice({
         role: 'SUPER_ADMIN',
@@ -22,6 +22,12 @@ describe('workspace residency', () => {
       }),
     ).toBe(false);
     expect(orgKeepsWorkspaceOnDevice({ email: 'admin@inboxflow.com' })).toBe(false);
+    expect(
+      orgKeepsWorkspaceOnDevice({
+        role: 'SUPER_ADMIN',
+        sendSettings: { operatorBindEnabled: true, boundIp: '203.0.113.40' },
+      }),
+    ).toBe(true);
   });
 
   it('keeps admin-created users on-device', () => {

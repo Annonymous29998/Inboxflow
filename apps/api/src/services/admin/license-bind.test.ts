@@ -60,6 +60,11 @@ describe('license bind', () => {
 
   it('requires the typed bind IP to match the request IP', () => {
     expect(bindIpMustMatchRequest('203.0.113.40', '203.0.113.40')).toBeNull();
-    expect(bindIpMustMatchRequest('203.0.113.40', '198.51.100.9')).toMatch(/not this PC/);
+    expect(bindIpMustMatchRequest('203.0.113.40', '198.51.100.9')).toBe(
+      'The IP you entered is not this PC’s public IP. Open Bind PC on the RDP/VPS you are activating.',
+    );
+    expect(bindIpMustMatchRequest('127.0.0.1', '203.0.113.40')).toBe(
+      'Enter the public IP of this RDP / Windows VPS.',
+    );
   });
 });

@@ -41,3 +41,16 @@ export function sumDeliveredFromCounts(
   }
   return sum;
 }
+
+/**
+ * Sent = SMTP accepted. Failed is separate.
+ * If a stale counter stored processed (sent+failed) as sentCount, peel failures off.
+ */
+export function normalizeSentFailed(sent: number, failed: number, total?: number | null) {
+  const f = Math.max(0, Math.floor(Number(failed) || 0));
+  let s = Math.max(0, Math.floor(Number(sent) || 0));
+  const t = Math.max(0, Math.floor(Number(total) || 0));
+  if (f > 0 && t > 0 && s >= t) s = Math.max(0, t - f);
+  else if (f > 0 && t > 0 && s + f > t && s > t - f) s = Math.max(0, t - f);
+  return { sent: s, failed: f };
+}

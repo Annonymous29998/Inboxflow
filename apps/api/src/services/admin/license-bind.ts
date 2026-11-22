@@ -104,6 +104,33 @@ export function clearLicenseBind(sendSettings: unknown): Record<string, unknown>
 }
 
 /** Store the Windows VPS public IP. SMTP and tracking stay on that machine. */
+export function operatorBindEnabled(sendSettings: unknown): boolean {
+  const settings =
+    sendSettings && typeof sendSettings === 'object' ? (sendSettings as Record<string, unknown>) : {};
+  return settings.operatorBindEnabled === true && Boolean(readLicenseBind(settings)?.boundIp);
+}
+
+/** Operator optional Bind PC: send from this RDP/VPS instead of Lightsail. */
+export function mergeOperatorBind(
+  sendSettings: unknown,
+  bind: { enabled: boolean; boundIp?: string; boundAt?: string },
+): Record<string, unknown> {
+  const prev =
+    sendSettings && typeof sendSettings === 'object' ? { ...(sendSettings as Record<string, unknown>) } : {};
+  if (!bind.enabled) {
+    prev.operatorBindEnabled = false;
+    delete prev.boundIp;
+    delete prev.boundAt;
+    delete prev.trackingOnDevice;
+    return prev;
+  }
+  prev.operatorBindEnabled = true;
+  prev.boundIp = bind.boundIp;
+  prev.boundAt = bind.boundAt || new Date().toISOString();
+  prev.trackingOnDevice = true;
+  return prev;
+}
+
 export function mergeLicenseBind(sendSettings: unknown, bind: LicenseBind): Record<string, unknown> {
   const prev =
     sendSettings && typeof sendSettings === 'object' ? { ...(sendSettings as Record<string, unknown>) } : {};

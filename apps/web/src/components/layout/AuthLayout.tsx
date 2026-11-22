@@ -38,11 +38,6 @@ export function AuthLayout({
         <p className="mb-2 text-center text-sm font-bold tracking-widest text-primary sm:hidden">
           INBOX FLOW
         </p>
-        <p className="mb-6 text-center text-[11px] text-accent">
-          {typeof window !== 'undefined' && (window as Window & { inboxflowDesktop?: { isDesktop?: boolean } }).inboxflowDesktop?.isDesktop
-            ? '*> Inbox Flow · Desktop · local *'
-            : '*> Inbox Flow · inboxflow.io · TUI *'}
-        </p>
         <div className="tui-box">
           <div className="tui-box-title">{title}</div>
           <div className="space-y-4 p-4">

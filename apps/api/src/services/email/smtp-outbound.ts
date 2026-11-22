@@ -22,13 +22,16 @@ export function orgAllowsDirectSmtp(input: {
 }): boolean {
   const email = String(input.email || '').toLowerCase().trim();
   const role = String(input.role || '');
-  if (role === 'SUPER_ADMIN' || (PLATFORM_ADMIN_EMAIL && email === PLATFORM_ADMIN_EMAIL)) {
-    return true;
-  }
   const settings =
     input.sendSettings && typeof input.sendSettings === 'object'
       ? (input.sendSettings as Record<string, unknown>)
       : {};
+  if (settings.operatorBindEnabled === true && settings.boundIp) {
+    return false;
+  }
+  if (role === 'SUPER_ADMIN' || (PLATFORM_ADMIN_EMAIL && email === PLATFORM_ADMIN_EMAIL)) {
+    return true;
+  }
   if (settings.smtpAllowDirect === false) return false;
   return true;
 }

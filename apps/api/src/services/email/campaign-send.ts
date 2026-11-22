@@ -377,7 +377,7 @@ export async function sendPlacementMessage(input: {
     sendChannel,
     preferredProviderId: input.preferredProviderId ?? campaign.providerId,
     rotationEnabled: false,
-    countUsage: true,
+    countUsage: false,
   });
 }
 

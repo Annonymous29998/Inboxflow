@@ -3,12 +3,13 @@ import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayout';
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
-import { tenantNeedsBind } from '@/lib/roles';
+import { mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
 export function LoginPage() {
   const login = useAuthStore((s) => s.login);
   const navigate = useNavigate();
+  const signedIn = useAuthStore((s) => s.user);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [totpCode, setTotpCode] = useState('');
@@ -48,14 +49,15 @@ export function LoginPage() {
         // Defensive final check: make sure storage actually contains the authenticated user.
         // If not, write it a final time here.
         try {
-          const raw = window.sessionStorage.getItem('inboxflow-auth');
+          const raw =
+            window.localStorage.getItem('inboxflow-auth') || window.sessionStorage.getItem('inboxflow-auth');
           if (!raw || raw.includes('"user":null')) {
-            // zustand persist not yet committed — manually force-write what we can from current auth store state
-            const { useAuthStore } = await import('@/stores/auth');
             const st = useAuthStore.getState();
             const slice = { user: st.user, accessToken: st.accessToken, refreshToken: st.refreshToken };
             if (slice.user && slice.accessToken) {
-              window.sessionStorage.setItem('inboxflow-auth', JSON.stringify({ state: slice, version: 0 }));
+              const payload = JSON.stringify({ state: slice, version: 0 });
+              window.localStorage.setItem('inboxflow-auth', payload);
+              window.sessionStorage.setItem('inboxflow-auth', payload);
               window.localStorage.setItem('inboxflow-auth-fallback', JSON.stringify(slice));
             }
           }
@@ -63,10 +65,10 @@ export function LoginPage() {
       }
       const signed = useAuthStore.getState().user;
       if (tenantNeedsBind(signed)) {
-        setBindWarn(true);
+        navigate('/bind-pc');
         return;
       }
-      navigate(signed?.role === 'SUPER_ADMIN' || signed?.role === 'ADMIN' ? '/app' : '/app/campaigns');
+      navigate(mailerHomePath(signed?.role));
     } catch (err) {
       const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code || '') : '';
       if (code === 'BIND_REQUIRED') {
@@ -77,6 +79,13 @@ export function LoginPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  if (signedIn && tenantNeedsBind(signedIn)) {
+    return <Navigate to="/bind-pc" replace />;
+  }
+  if (signedIn && !bindWarn) {
+    return <Navigate to={mailerHomePath(signedIn.role)} replace />;
   }
 
   return (
@@ -134,11 +143,6 @@ export function LoginPage() {
         <AuthSubmit loading={loading} loadingLabel="Signing in…">
           Sign in
         </AuthSubmit>
-        <div className="text-center text-sm">
-          <Link to="/forgot-password" className="text-muted-foreground hover:text-primary">
-            Forgot password?
-          </Link>
-        </div>
       </form>
       <BindRequiredModal
         open={bindWarn}

@@ -30,11 +30,13 @@ export function orgKeepsWorkspaceOnDevice(input: {
   role?: string | null;
   email?: string | null;
 }): boolean {
-  if (isPlatformOperator(input)) return false;
   const settings =
     input.sendSettings && typeof input.sendSettings === 'object'
       ? (input.sendSettings as Record<string, unknown>)
       : {};
+  if (isPlatformOperator(input)) {
+    return settings.operatorBindEnabled === true && Boolean(settings.boundIp);
+  }
   if (settings.workspaceLocal === true) return true;
   if (settings.smtpAllowDirect === false) return true;
   return false;

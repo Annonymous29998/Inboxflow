@@ -41,6 +41,10 @@ export const MAILER_EXTRA = [
 
 export type MailerTab = (typeof MAILER_WIZARD)[number]['id'] | (typeof MAILER_EXTRA)[number]['id'];
 
+function tabOpenDuringSend(id: MailerTab) {
+  return id === 'logs';
+}
+
 export function MailerWorkspace({
   tab,
   onTab,
@@ -52,6 +56,8 @@ export function MailerWorkspace({
   alreadySent,
   liveProgress,
   onOpenLive,
+  onPauseSend,
+  onResumeSend,
   onSendOrStop,
   onPlacementTest,
   placementBusy,
@@ -72,8 +78,11 @@ export function MailerWorkspace({
     total: number;
     lastEmail?: string | null;
     stage?: string;
+    paused?: boolean;
   } | null;
   onOpenLive?: () => void;
+  onPauseSend?: () => void;
+  onResumeSend?: () => void;
   onSendOrStop: () => void;
   onPlacementTest?: () => void;
   placementBusy?: boolean;
@@ -85,44 +94,84 @@ export function MailerWorkspace({
         <Input
           value={name}
           placeholder="Name this campaign"
+          disabled={sending}
           onChange={(e) => onName(e.target.value)}
         />
         {onPlacementTest ? (
-          <Button type="button" variant="outline" size="sm" onClick={onPlacementTest} disabled={placementBusy}>
+          <Button type="button" variant="outline" size="sm" onClick={onPlacementTest} disabled={placementBusy || sending}>
             {placementBusy ? 'Sending…' : 'Placement test'}
           </Button>
         ) : null}
-        <Button type="button" variant="outline" size="sm" onClick={onSave} disabled={saving}>
+        <Button type="button" variant="outline" size="sm" onClick={onSave} disabled={saving || sending}>
           Save
         </Button>
       </div>
       <div className="mailer-tabs">
-        {MAILER_WIZARD.map((t, i) => (
-          <button key={t.id} type="button" onClick={() => onTab(t.id)} className={cn(tab === t.id && 'on')}>
-            {i + 1} {t.label}
-          </button>
-        ))}
-        {MAILER_EXTRA.map((t) => (
-          <button key={t.id} type="button" onClick={() => onTab(t.id)} className={cn(tab === t.id && 'on')}>
-            {t.label}
-          </button>
-        ))}
+        {MAILER_WIZARD.map((t, i) => {
+          const locked = Boolean(sending) && !tabOpenDuringSend(t.id);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              disabled={locked}
+              aria-disabled={locked}
+              onClick={() => {
+                if (locked) return;
+                onTab(t.id);
+              }}
+              className={cn(tab === t.id && 'on', locked && 'off')}
+            >
+              {i + 1} {t.label}
+            </button>
+          );
+        })}
+        {MAILER_EXTRA.map((t) => {
+          const locked = Boolean(sending) && !tabOpenDuringSend(t.id);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              disabled={locked}
+              aria-disabled={locked}
+              onClick={() => {
+                if (locked) return;
+                onTab(t.id);
+              }}
+              className={cn(tab === t.id && 'on', locked && 'off')}
+            >
+              {t.label}
+            </button>
+          );
+        })}
       </div>
       {sending && liveProgress ? (
-        <button type="button" className="mailer-live" onClick={onOpenLive}>
-          <span>
-            {liveProgress.sent + liveProgress.failed}/{Math.max(liveProgress.total, liveProgress.sent + liveProgress.failed)}
-            {' · '}
-            {liveProgress.sent} sent
-            {' · '}
-            {liveProgress.failed} failed
-            {' · '}
-            {liveProgress.pending} left
-          </span>
-          <span>
-            {liveProgress.lastEmail || liveProgress.stage || 'sending'}
-          </span>
-        </button>
+        <div className="mailer-live">
+          <button type="button" className="min-w-0 flex-1 text-left" onClick={onOpenLive}>
+            <span>
+              {liveProgress.sent + liveProgress.failed}/{Math.max(liveProgress.total, liveProgress.sent + liveProgress.failed)}
+              {' · '}
+              {liveProgress.sent} sent
+              {' · '}
+              {liveProgress.failed} failed
+              {' · '}
+              {liveProgress.pending} left
+            </span>
+            <span>
+              {liveProgress.paused
+                ? 'paused'
+                : liveProgress.lastEmail || liveProgress.stage || 'sending'}
+            </span>
+          </button>
+          {liveProgress.paused && onResumeSend ? (
+            <Button type="button" size="sm" variant="outline" onClick={onResumeSend}>
+              Resume
+            </Button>
+          ) : onPauseSend ? (
+            <Button type="button" size="sm" variant="outline" onClick={onPauseSend}>
+              Pause
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       <div className="mailer-stage">
         {(Object.keys(panels) as MailerTab[]).map((id) => {
@@ -148,10 +197,37 @@ export function MailerWorkspace({
       </div>
       <button
         type="button"
-        className={cn('mailer-fab', sending && 'mailer-fab-stop mailer-fab-pulse')}
+        className={cn(
+          'mailer-fab',
+          sending && 'mailer-fab-stop mailer-fab-pulse',
+          sending && liveProgress && 'mailer-fab-live',
+        )}
         onClick={onSendOrStop}
+        aria-label={
+          sending && liveProgress
+            ? `Stop sending — ${liveProgress.sent + liveProgress.failed} of ${Math.max(liveProgress.total, liveProgress.sent + liveProgress.failed)}`
+            : sending
+              ? 'Stop sending'
+              : alreadySent
+                ? 'Resend campaign'
+                : 'Send campaign'
+        }
       >
-        {sending ? 'STOP' : alreadySent ? 'RESEND' : 'SEND'}
+        {sending ? (
+          <span className="mailer-fab-stack">
+            <span>STOP</span>
+            {liveProgress ? (
+              <span className="mailer-fab-count">
+                {liveProgress.sent + liveProgress.failed}/
+                {Math.max(liveProgress.total, liveProgress.sent + liveProgress.failed)}
+              </span>
+            ) : null}
+          </span>
+        ) : alreadySent ? (
+          'RESEND'
+        ) : (
+          'SEND'
+        )}
       </button>
     </div>
   );

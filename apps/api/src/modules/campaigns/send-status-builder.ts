@@ -1,6 +1,6 @@
 import { prisma } from '../../config/prisma.js';
 import { maybeFinalizeCampaignSend } from '../../services/email/campaign-finalize.js';
-import { deliveredRecipientFilter, inboxDeliveredFilter } from './recipient-stats.js';
+import { deliveredRecipientFilter, inboxDeliveredFilter, normalizeSentFailed } from './recipient-stats.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { countHumanClicks, countHumanOpens } from '../../services/tracking/recount.js';
 import { normalizeBatchSize } from '../../services/email/queue-settings.js';
@@ -59,7 +59,11 @@ function aggregateEngagementRows(
     }));
 }
 
-export async function buildCampaignSendStatus(organizationId: string, campaignId: string) {
+export async function buildCampaignSendStatus(
+  organizationId: string,
+  campaignId: string,
+  opts?: { activityLimit?: number },
+) {
   let campaign = await prisma.campaign.findFirst({
     where: { id: campaignId, organizationId },
   });
@@ -106,7 +110,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
         createdAt: true,
         contact: { select: { email: true } },
       },
-      orderBy: [{ sentAt: 'asc' }, { createdAt: 'asc' }],
+      orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+      take: Math.max(20, Math.min(8_000, opts?.activityLimit ?? 120)),
     }),
     prisma.trackingEvent.findMany({
       where: { campaignId, type: 'OPENED' },
@@ -139,7 +144,8 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
   );
   const countableClicks = filterCountableClicks(clickEvents, verifiedOpenIds);
 
-  const sendActivity: SendActivityRow[] = processedRecipients.map((r) => {
+  const logRows = [...processedRecipients].reverse();
+  const sendActivity: SendActivityRow[] = logRows.map((r) => {
     if (r.status === 'FAILED') {
       return {
         email: r.contact.email,
@@ -163,25 +169,23 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
       at: r.sentAt?.toISOString() || r.createdAt.toISOString(),
     };
   });
-  const recentDelivered = processedRecipients.filter(
-    (r) => r.status === 'SENT' || r.status === 'DELIVERED',
-  );
-  const recentFailures = processedRecipients.filter((r) => r.status === 'FAILED');
-  const recentBounces = processedRecipients.filter((r) => r.status === 'BOUNCED');
+  const recentDelivered = logRows.filter((r) => r.status === 'SENT' || r.status === 'DELIVERED');
+  const recentFailures = logRows.filter((r) => r.status === 'FAILED');
+  const recentBounces = logRows.filter((r) => r.status === 'BOUNCED');
 
   const engagementActivity: SendActivityRow[] = [
     ...aggregateEngagementRows(humanOpens, 'OPENED', 40),
     ...aggregateEngagementRows(countableClicks, 'CLICKED', 40),
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
 
-  const recentSent = recentDelivered.map((r) => ({
+  const recentSent = recentDelivered.slice(-40).map((r) => ({
     email: r.contact.email,
     at: r.sentAt,
     smtpResponse: r.smtpResponse || null,
   }));
 
   const lastProcessedEmail =
-    processedRecipients.at(-1)?.contact.email ??
+    processedRecipients[0]?.contact.email ??
     [...sendActivity].reverse().find((a) => a.status === 'SENT' || a.status === 'DELIVERED')?.email ??
     null;
 
@@ -201,6 +205,7 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
   const batchNumber = asFiniteNumber(jobMeta.batchNumber, null);
   const queueBatchSize =
     normalizeBatchSize(asFiniteNumber(jobMeta.batchSize, null) ?? asFiniteNumber(qs.batchSize, 10));
+  const counts = normalizeSentFailed(sentCount, failedCount, campaign.totalRecipients);
 
   return {
     success: true,
@@ -209,10 +214,10 @@ export async function buildCampaignSendStatus(organizationId: string, campaignId
     subject: campaign.subject,
     senderEmail: campaign.senderEmail,
     totalRecipients: campaign.totalRecipients,
-    sentCount,
+    sentCount: counts.sent,
     /** SMTP accept confirmed by ESP (or engagement). Not the same as sentCount. */
     deliveredCount,
-    failedCount,
+    failedCount: counts.failed,
     bouncedCount,
     pendingCount,
     openedCount: humanOpened,

@@ -116,6 +116,7 @@ export type JwtPayload = {
   email: string;
   role: string;
   organizationId: string | null;
+  workspaceLocal?: boolean;
 };
 
 declare module '@fastify/jwt' {

@@ -64,8 +64,27 @@ function clearAuthCookies(reply: FastifyReply) {
 }
 
 async function createTokens(app: FastifyInstance, user: { id: string; email: string; role: string; organizationId: string | null }, meta: { userAgent?: string; ip?: string }) {
+  let workspaceLocal = false;
+  if (user.organizationId) {
+    const org = await prisma.organization.findUnique({
+      where: { id: user.organizationId },
+      select: { sendSettings: true },
+    });
+    const { orgKeepsWorkspaceOnDevice } = await import('../../services/email/workspace-residency.js');
+    workspaceLocal = orgKeepsWorkspaceOnDevice({
+      sendSettings: org?.sendSettings,
+      role: user.role,
+      email: user.email,
+    });
+  }
   const accessToken = await app.jwt.sign(
-    { sub: user.id, email: user.email, role: user.role, organizationId: user.organizationId },
+    {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      organizationId: user.organizationId,
+      workspaceLocal,
+    },
     { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
   );
   const refreshToken = generateToken(48);
@@ -326,6 +345,9 @@ export async function authRoutes(app: FastifyInstance) {
             organization: {
               select: {
                 id: true,
+                name: true,
+                slug: true,
+                physicalAddress: true,
                 sendSettings: true,
                 subscription: { select: { status: true, currentPeriodEnd: true } },
               },
@@ -378,7 +400,16 @@ export async function authRoutes(app: FastifyInstance) {
           data: { lastLoginAt: new Date() },
         });
 
+        const tokens = await createTokens(app, user, {
+          userAgent: request.headers['user-agent'],
+          ip: request.ip,
+        });
+        setAuthCookies(reply, tokens);
+
         const username = (user.firstName || user.email.split('@')[0] || user.email).trim();
+        const { orgAllowsDirectSmtp } = await import('../../services/email/smtp-outbound.js');
+        const { orgKeepsWorkspaceOnDevice } = await import('../../services/email/workspace-residency.js');
+        const nextSettings = mergeLicenseBind(user.organization?.sendSettings, { boundIp, boundAt });
         return reply.send({
           success: true,
           activated: true,
@@ -386,6 +417,35 @@ export async function authRoutes(app: FastifyInstance) {
           boundIp,
           validUntil: sub!.currentPeriodEnd.toISOString(),
           subscriptionStatus: sub!.status,
+          user: {
+            id: user.id,
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            role: user.role,
+            organizationId: user.organizationId,
+            status: user.status,
+            smtpAllowDirect: orgAllowsDirectSmtp({
+              sendSettings: nextSettings,
+              role: user.role,
+              email: user.email,
+            }),
+            workspaceLocal: orgKeepsWorkspaceOnDevice({
+              sendSettings: nextSettings,
+              role: user.role,
+              email: user.email,
+            }),
+            boundIp,
+            organization: user.organization
+              ? {
+                  id: user.organization.id,
+                  name: user.organization.name,
+                  slug: user.organization.slug,
+                  physicalAddress: user.organization.physicalAddress ?? undefined,
+                }
+              : undefined,
+          },
+          ...tokens,
         });
       } catch (error) {
         return sendError(reply, error);

@@ -12,6 +12,7 @@ export type DashboardData = {
     bounceRate: number;
     openRate: number;
     clickRate: number;
+    clickToOpenRate?: number;
     spamComplaintRate: number;
     domainHealth: string;
     senderReputationScore: number;

@@ -58,11 +58,39 @@ export function DashboardPage() {
     },
     { label: 'Active Campaigns', value: formatNumber(stats?.activeCampaigns ?? 0), icon: Mail },
     { label: 'Scheduled', value: formatNumber(stats?.scheduledCampaigns ?? 0), icon: Calendar },
-    { label: 'Emails Sent', value: formatNumber(stats?.emailsSent ?? 0), icon: Send },
-    { label: 'Delivery Rate', value: formatPercent(stats?.deliveryRate ?? 0), icon: TrendingUp },
-    { label: 'Bounce Rate', value: formatPercent(stats?.bounceRate ?? 0), icon: AlertTriangle },
-    { label: 'Open Rate', value: formatPercent(stats?.openRate ?? 0), icon: Mail },
-    { label: 'Click Rate', value: formatPercent(stats?.clickRate ?? 0), icon: MousePointerClick },
+    {
+      label: 'Emails Sent',
+      value: formatNumber(stats?.emailsSent ?? 0),
+      hint: 'SMTP accepted',
+      icon: Send,
+    },
+    {
+      label: 'Delivery Rate',
+      value: formatPercent(stats?.deliveryRate ?? 0),
+      hint: '(sent − bounces) ÷ sent',
+      icon: TrendingUp,
+    },
+    {
+      label: 'Bounce Rate',
+      value: formatPercent(stats?.bounceRate ?? 0),
+      hint: 'Bounces ÷ sent',
+      icon: AlertTriangle,
+    },
+    {
+      label: 'Open Rate',
+      value: formatPercent(stats?.openRate ?? 0),
+      hint: 'Unique verified opens ÷ delivered',
+      icon: Mail,
+    },
+    {
+      label: 'Click Rate',
+      value: formatPercent(stats?.clickRate ?? 0),
+      hint:
+        stats?.clickToOpenRate != null
+          ? `Unique clicks ÷ delivered · CTOR ${formatPercent(stats.clickToOpenRate)} of openers`
+          : 'Unique clicks ÷ delivered',
+      icon: MousePointerClick,
+    },
     { label: 'Spam Complaints', value: formatPercent(stats?.spamComplaintRate ?? 0), icon: ShieldAlert },
     {
       label: 'Domain Health',
@@ -90,9 +118,7 @@ export function DashboardPage() {
           </div>
           <p className="page-sub">
             {workspace ? `${workspace} · ` : ''}
-            {import.meta.env.DEV
-              ? 'Local Vite fixtures — production uses the live queue and verified opens/clicks'
-              : 'Real-time from queue + verified opens/clicks (bots excluded)'}
+            {'Live queue + verified opens/clicks (bots excluded)'}
           </p>
         </div>
         <Link

@@ -33,6 +33,12 @@ describe('smtp outbound path', () => {
 
   it('lets platform admin use Direct; tenant orgs must bind or SOCKS', () => {
     expect(orgAllowsDirectSmtp({ role: 'SUPER_ADMIN', email: 'anyone@x.com' })).toBe(true);
+    expect(
+      orgAllowsDirectSmtp({
+        role: 'SUPER_ADMIN',
+        sendSettings: { operatorBindEnabled: true, boundIp: '203.0.113.40' },
+      }),
+    ).toBe(false);
     expect(orgAllowsDirectSmtp({ email: 'admin@inboxflow.com' })).toBe(true);
     expect(
       orgAllowsDirectSmtp({

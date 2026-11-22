@@ -1,6 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import {
   deliveredRecipientFilter,
+  normalizeSentFailed,
   sumDeliveredFromCounts,
 } from '../../modules/campaigns/recipient-stats.js';
 import { readLifetimeStats } from '../org-lifetime-stats.js';
@@ -35,14 +36,24 @@ export async function getCampaignLiveStats(
         openedCount: true,
         clickedCount: true,
         bouncedCount: true,
+        totalRecipients: true,
       },
     }),
   ]);
 
+  const hasRows = accepted + failed + pending + bounced > 0;
+  const rawSent = hasRows ? accepted : stored?.sentCount ?? 0;
+  const rawFailed = Math.max(failed, stored?.failedCount ?? 0);
+  const { sent, failed: failedNorm } = normalizeSentFailed(
+    rawSent,
+    rawFailed,
+    stored?.totalRecipients ?? totalRecipients,
+  );
+
   return {
-    sentCount: Math.max(accepted, stored?.sentCount ?? 0),
-    deliveredCount: Math.max(accepted, stored?.deliveredCount ?? 0, stored?.sentCount ?? 0),
-    failedCount: Math.max(failed, stored?.failedCount ?? 0),
+    sentCount: sent,
+    deliveredCount: Math.max(sent, stored?.deliveredCount ?? 0),
+    failedCount: failedNorm,
     pendingCount: pending,
     openedCount: stored?.openedCount ?? 0,
     clickedCount: stored?.clickedCount ?? 0,
@@ -84,6 +95,7 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
         openedCount: true,
         clickedCount: true,
         bouncedCount: true,
+        totalRecipients: true,
       },
     }),
   ]);
@@ -96,11 +108,20 @@ export async function getCampaignsListStats(campaignIds: string[]): Promise<Map<
   const storedById = new Map(storedRows.map((c) => [c.id, c]));
   for (const id of campaignIds) {
     const stored = storedById.get(id);
-    const sent = Math.max(sumDeliveredFromCounts(counts, id), stored?.sentCount ?? 0);
+    const liveSent = sumDeliveredFromCounts(counts, id);
+    const liveFailed = counts.get(`${id}:FAILED` as K) ?? 0;
+    const liveQueued = counts.get(`${id}:QUEUED` as K) ?? 0;
+    const liveBounced = counts.get(`${id}:BOUNCED` as K) ?? 0;
+    const hasRows = liveSent + liveFailed + liveQueued + liveBounced > 0;
+    const { sent, failed } = normalizeSentFailed(
+      hasRows ? liveSent : stored?.sentCount ?? 0,
+      Math.max(liveFailed, stored?.failedCount ?? 0),
+      stored?.totalRecipients,
+    );
     out.set(id, {
       sentCount: sent,
       deliveredCount: Math.max(sent, stored?.deliveredCount ?? 0),
-      failedCount: Math.max(counts.get(`${id}:FAILED` as K) ?? 0, stored?.failedCount ?? 0),
+      failedCount: failed,
       pendingCount: counts.get(`${id}:QUEUED` as K) ?? 0,
       bouncedCount: Math.max(counts.get(`${id}:BOUNCED` as K) ?? 0, stored?.bouncedCount ?? 0),
       openedCount: stored?.openedCount ?? 0,
@@ -135,7 +156,9 @@ export async function getOrgLiveEngagement(organizationId: string) {
   const lifetime = readLifetimeStats(org?.sendSettings);
   const sum = agg._sum;
   const sent = (sum.sentCount ?? 0) + lifetime.sent;
-  const delivered = Math.max(sum.deliveredCount ?? 0, sum.sentCount ?? 0) + lifetime.delivered;
+  const bounced = (sum.bouncedCount ?? 0) + lifetime.bounced;
+  // ESP standard: delivered = accepted minus bounces (do not coerce to sent → 100% delivery).
+  const delivered = Math.max(0, sent - bounced);
 
   return {
     sent,
@@ -143,7 +166,7 @@ export async function getOrgLiveEngagement(organizationId: string) {
     failed: (sum.failedCount ?? 0) + lifetime.failed,
     opened: (sum.openedCount ?? 0) + lifetime.opened,
     clicked: (sum.clickedCount ?? 0) + lifetime.clicked,
-    bounced: (sum.bouncedCount ?? 0) + lifetime.bounced,
+    bounced,
     complained: (sum.complainedCount ?? 0) + lifetime.complained,
   };
 }

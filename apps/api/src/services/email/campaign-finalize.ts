@@ -26,6 +26,7 @@ async function requeueOrphans(campaignId: string): Promise<void> {
   const orphans = await prisma.campaignRecipient.findMany({
     where: { campaignId, status: 'QUEUED' },
     select: { id: true, contactId: true, contact: { select: { email: true } } },
+    take: 40,
   });
   for (const row of orphans) {
     const to = row.contact?.email;

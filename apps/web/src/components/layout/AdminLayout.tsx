@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Activity, ChevronDown, ChevronLeft, ChevronRight, HeartPulse, LayoutDashboard, LogOut, Mail, Menu, Users, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { cn } from '@/lib/utils';
+import { ShellHandoff } from '@/components/layout/ShellHandoff';
 import '@/styles/admin-web.css';
 
 type NavChild = { to: string; label: string; end?: boolean };
@@ -38,6 +39,7 @@ export function AdminLayout() {
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia(DESKTOP).matches : false,
   );
+  const [leavingToMailer, setLeavingToMailer] = useState(false);
 
   const title = useMemo(() => {
     for (const item of NAV) {
@@ -81,7 +83,13 @@ export function AdminLayout() {
   }
 
   function exitAdmin() {
-    navigate('/app');
+    if (leavingToMailer) return;
+    setLeavingToMailer(true);
+    window.setTimeout(() => navigate('/app'), 1400);
+  }
+
+  if (leavingToMailer) {
+    return <ShellHandoff title="Opening operator dashboard" lede="Loading the mailer" />;
   }
 
   const initial = (user?.firstName || user?.email || 'A').slice(0, 1).toUpperCase();

@@ -10,8 +10,10 @@ import {
   DEMO_STAFF_REFRESH_TOKEN,
   demoMailerUser,
   demoStaffUser,
+  isDemoIdentity,
   isDemoMailerLogin,
   isDemoStaffLogin,
+  purgeStaleDemoSession,
   readDemoBound,
 } from '@/lib/demo-mailer';
 
@@ -34,7 +36,7 @@ export type User = {
 
 function rememberBoundIp(user: User | null) {
   const ip = user?.boundIp;
-  if (!ip || user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN') return;
+  if (!ip) return;
   try {
     window.inboxflowDesktop?.saveBoundIp?.(ip);
   } catch {
@@ -50,6 +52,7 @@ type AuthState = {
   refreshToken: string | null;
   _fetchPromise: Promise<void> | null;
   setUser: (user: User | null) => void;
+  acceptSession: (data: { user: User; accessToken: string; refreshToken?: string | null }) => void;
   login: (email: string, password: string, totpCode?: string) => Promise<{ requires2FA?: boolean }>;
   register: (data: {
     email: string;
@@ -67,7 +70,15 @@ const STORAGE_FALLBACK_KEY = 'inboxflow-auth-fallback';
 
 function getStorage(): Storage | null {
   if (typeof window === 'undefined') return null;
-  try { return window.sessionStorage; } catch { return null; }
+  try {
+    return window.localStorage;
+  } catch {
+    try {
+      return window.sessionStorage;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function readPersisted(): { user: User | null; accessToken: string | null; refreshToken: string | null } | null {
@@ -77,7 +88,7 @@ function readPersisted(): { user: User | null; accessToken: string | null; refre
     const raw = storage.getItem(PERSIST_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as { state?: { user?: User | null; accessToken?: string | null; refreshToken?: string | null } } | null;
-      if (parsed?.state) {
+      if (parsed?.state?.user && (parsed.state.accessToken || parsed.state.refreshToken)) {
         return {
           user: parsed.state.user ?? null,
           accessToken: parsed.state.accessToken ?? null,
@@ -85,12 +96,23 @@ function readPersisted(): { user: User | null; accessToken: string | null; refre
         };
       }
     }
-    // Fallback: window.localStorage (backup written during login before navigation race)
+    try {
+      const sessionRaw = window.sessionStorage.getItem(PERSIST_KEY);
+      if (sessionRaw) {
+        const parsed = JSON.parse(sessionRaw) as { state?: { user?: User | null; accessToken?: string | null; refreshToken?: string | null } } | null;
+        if (parsed?.state?.user) {
+          return {
+            user: parsed.state.user ?? null,
+            accessToken: parsed.state.accessToken ?? null,
+            refreshToken: parsed.state.refreshToken ?? null,
+          };
+        }
+      }
+    } catch {}
     try {
       const fb = window.localStorage.getItem(STORAGE_FALLBACK_KEY);
       if (fb) {
         const p = JSON.parse(fb) as { user?: User | null; accessToken?: string | null; refreshToken?: string | null };
-        // Write the fallback to sessionStorage to make future reads consistent
         storage.setItem(PERSIST_KEY, JSON.stringify({ state: p, version: 0 }));
         return { user: p.user ?? null, accessToken: p.accessToken ?? null, refreshToken: p.refreshToken ?? null };
       }
@@ -113,7 +135,25 @@ export const useAuthStore = create<AuthState>()(
       accessToken: boot?.accessToken ?? null,
       refreshToken: boot?.refreshToken ?? null,
       _fetchPromise: null,
-      setUser: (user) => set({ user }),
+      setUser: (user) => {
+        set({ user });
+        const cur = get();
+        syncPersistNow({ ...cur, user });
+      },
+      acceptSession: (data) => {
+        const refresh = data.refreshToken ?? get().refreshToken;
+        api.setTokens(data.accessToken, refresh);
+        const next = {
+          user: data.user,
+          accessToken: data.accessToken,
+          refreshToken: refresh,
+          loading: false,
+          hydrated: true,
+        };
+        set(next);
+        rememberBoundIp(data.user);
+        syncPersistNow({ ...get(), ...next });
+      },
       login: async (email, password, totpCode) => {
         if (isDemoStaffLogin(email, password)) {
           try {
@@ -196,6 +236,7 @@ export const useAuthStore = create<AuthState>()(
         try {
           if (typeof window !== 'undefined') {
             window.sessionStorage.removeItem(PERSIST_KEY);
+            window.localStorage.removeItem(PERSIST_KEY);
             window.localStorage.removeItem(STORAGE_FALLBACK_KEY);
           }
         } catch {}
@@ -203,8 +244,17 @@ export const useAuthStore = create<AuthState>()(
       },
       fetchMe: async (force = false) => {
         const state = get();
-        if (state.user?.id === DEMO_MAILER_ID || state.user?.id === DEMO_STAFF_ID) {
-          set({ loading: false, hydrated: true, _fetchPromise: null });
+        if (isDemoIdentity(state.user?.id, state.accessToken) || isDemoIdentity(state.user?.id, state.refreshToken)) {
+          purgeStaleDemoSession();
+          api.clearSession();
+          set({
+            user: null,
+            accessToken: null,
+            refreshToken: null,
+            loading: false,
+            hydrated: true,
+            _fetchPromise: null,
+          });
           return;
         }
         if (state.accessToken || state.refreshToken) {
@@ -213,6 +263,7 @@ export const useAuthStore = create<AuthState>()(
         if (!force && state._fetchPromise) return state._fetchPromise;
         const promise = (async () => {
           try {
+            set({ loading: true });
             const data = await api.get<{ user: User }>('/api/auth/me');
             const cur = get();
             const { accessToken: freshAccess, refreshToken: freshRefresh } = api.getTokens();
@@ -229,17 +280,23 @@ export const useAuthStore = create<AuthState>()(
             syncPersistNow({ ...cur, ...next });
           } catch (err) {
             const status = (err as { status?: number }).status;
-            // Keep the cached session on network / server lag. Only a real 401 logs out.
-            if (status === 401) {
+            const cur = get();
+            // Stay signed in while using the app. 401 on /me (expired JWT, refresh blip,
+            // Bind PC 403 race) must not dump admin/mailer/EXE back to login.
+            if (status === 401 && cur.user) {
+              set({ loading: false, hydrated: true, _fetchPromise: null });
+              return;
+            }
+            if (status === 401 && !cur.user) {
               api.clearSession();
               set({ user: null, loading: false, hydrated: true, accessToken: null, refreshToken: null, _fetchPromise: null });
               try {
                 if (typeof window !== 'undefined') {
                   window.sessionStorage.removeItem(PERSIST_KEY);
+                  window.localStorage.removeItem(PERSIST_KEY);
                   window.localStorage.removeItem(STORAGE_FALLBACK_KEY);
                 }
               } catch {}
-              void import('../lib/ui-cache').then((m) => m.uiCacheClearAll()).catch(() => undefined);
               return;
             }
             set({ loading: false, hydrated: true, _fetchPromise: null });
@@ -252,7 +309,8 @@ export const useAuthStore = create<AuthState>()(
     {
       name: PERSIST_KEY,
       storage: createJSONStorage(() => {
-        if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
+        const storage = getStorage();
+        if (storage) return storage;
         return {
           getItem: () => null,
           setItem: () => undefined,
@@ -266,11 +324,15 @@ export const useAuthStore = create<AuthState>()(
         // first render's Protected useEffect(fetchMe) has the Bearer token already set.
         if (typeof window !== 'undefined') {
           try {
+            purgeStaleDemoSession();
             const stored = readPersisted();
-            if (stored && (stored.accessToken || stored.refreshToken)) {
+            if (stored && isDemoIdentity(stored.user?.id, stored.accessToken ?? stored.refreshToken)) {
+              api.clearSession();
+            } else if (stored && (stored.accessToken || stored.refreshToken)) {
               api.setTokens(stored.accessToken ?? null, stored.refreshToken ?? null);
             }
-            const raw = window.sessionStorage.getItem(PERSIST_KEY);
+            const raw =
+              window.localStorage.getItem(PERSIST_KEY) || window.sessionStorage.getItem(PERSIST_KEY);
             if (raw) {
               const parsed = JSON.parse(raw) as { state?: { accessToken?: string | null; refreshToken?: string | null } } | null;
               const st = parsed?.state;
@@ -283,6 +345,17 @@ export const useAuthStore = create<AuthState>()(
         return (state) => {
           // INNER: fires AFTER zustand rehydrates the store state.
           if (state) {
+            if (isDemoIdentity(state.user?.id, state.accessToken) || isDemoIdentity(state.user?.id, state.refreshToken)) {
+              api.clearSession();
+              useAuthStore.setState({
+                user: null,
+                accessToken: null,
+                refreshToken: null,
+                hydrated: true,
+                loading: false,
+              });
+              return;
+            }
             useAuthStore.setState({ hydrated: true, loading: false });
             if (state.accessToken || state.refreshToken) {
               api.setTokens(state.accessToken, state.refreshToken);
@@ -318,6 +391,20 @@ function syncPersistNow(s: Pick<AuthState, 'user' | 'accessToken' | 'refreshToke
     const stateSlice = { user: s.user, accessToken: s.accessToken, refreshToken: s.refreshToken };
     const payload = JSON.stringify({ state: stateSlice, version: 0 });
     try { window.sessionStorage.setItem(PERSIST_KEY, payload); } catch {}
+    try { window.localStorage.setItem(PERSIST_KEY, payload); } catch {}
     try { window.localStorage.setItem(STORAGE_FALLBACK_KEY, JSON.stringify(stateSlice)); } catch {}
   } catch {}
 }
+
+api.onTokenChange((access, refresh) => {
+  const cur = useAuthStore.getState();
+  if (!cur.user) return;
+  if (!access && !refresh) return;
+  const next = {
+    accessToken: access ?? cur.accessToken,
+    refreshToken: refresh ?? cur.refreshToken,
+  };
+  if (next.accessToken === cur.accessToken && next.refreshToken === cur.refreshToken) return;
+  useAuthStore.setState(next);
+  syncPersistNow({ user: cur.user, ...next });
+});

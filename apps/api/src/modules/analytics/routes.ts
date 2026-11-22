@@ -170,7 +170,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       const live = await getCampaignLiveStats(id, campaign.totalRecipients);
       const campaignOut = {
         ...campaign,
-        sentCount: Math.max(live.sentCount, campaign.totalRecipients, campaign.sentCount),
+        sentCount: live.sentCount,
         openedCount: live.openedCount,
         clickedCount: live.clickedCount,
         bouncedCount: live.bouncedCount || campaign.bouncedCount,
@@ -320,6 +320,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
           include: {
             contact: { select: { email: true, firstName: true, lastName: true } },
           },
+          take: 8_000,
         }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'FAILED' } }),
         prisma.campaignRecipient.count({ where: { campaignId: id, status: 'BOUNCED' } }),
@@ -400,7 +401,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       return reply.send({
         summary: {
-          sent: campaign.totalRecipients || smtpAccepted || campaign.sentCount,
+          sent: smtpAccepted || campaign.sentCount,
           accepted: smtpAccepted,
           delivered: smtpAccepted,
           inboxDelivered,

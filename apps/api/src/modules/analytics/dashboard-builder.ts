@@ -1,5 +1,6 @@
 import { prisma } from '../../config/prisma.js';
 import { getCampaignsListStats, getOrgLiveEngagement } from '../../services/campaigns/live-stats.js';
+import { standardEmailRates } from './engagement-rates.js';
 
 export type DashboardPayload = {
   stats: {
@@ -13,6 +14,7 @@ export type DashboardPayload = {
     bounceRate: number;
     openRate: number;
     clickRate: number;
+    clickToOpenRate: number;
     spamComplaintRate: number;
     domainHealth: string;
     senderReputationScore: number;
@@ -37,8 +39,6 @@ export type DashboardPayload = {
     updatedAt: Date;
   }>;
 };
-
-const rate = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 10000) / 100 : 0);
 
 /** Live dashboard payload from queue rows + verified tracking (never cached demo data). */
 export async function buildDashboardPayload(organizationId: string): Promise<DashboardPayload> {
@@ -113,6 +113,8 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
       ? Math.round(domains.reduce((s, d) => s + d.reputationScore, 0) / domains.length)
       : 0;
 
+  const engagement = standardEmailRates(totals);
+
   return {
     stats: {
       totalContacts,
@@ -120,12 +122,13 @@ export async function buildDashboardPayload(organizationId: string): Promise<Das
       unsubscribedContacts,
       activeCampaigns,
       scheduledCampaigns,
-      emailsSent: totals.delivered,
-      deliveryRate: rate(totals.delivered, totals.sent),
-      bounceRate: rate(totals.bounced, totals.sent),
-      openRate: rate(totals.opened, totals.delivered || totals.sent),
-      clickRate: rate(totals.clicked, totals.opened || totals.delivered || totals.sent),
-      spamComplaintRate: rate(totals.complained, totals.sent),
+      emailsSent: engagement.sent,
+      deliveryRate: engagement.deliveryRate,
+      bounceRate: engagement.bounceRate,
+      openRate: engagement.openRate,
+      clickRate: engagement.clickRate,
+      clickToOpenRate: engagement.clickToOpenRate,
+      spamComplaintRate: engagement.spamComplaintRate,
       domainHealth: verifiedDomains.length
         ? verifiedDomains.every((d) => d.spfValid && d.dkimValid && d.dmarcValid)
           ? 'healthy'

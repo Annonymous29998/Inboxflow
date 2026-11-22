@@ -539,6 +539,7 @@ export function demoOverview() {
 }
 
 export function isDemoId(id?: string) {
+  if (!ADMIN_UI_DEMO) return false;
   return Boolean(id && id.startsWith('demo-'));
 }
 
