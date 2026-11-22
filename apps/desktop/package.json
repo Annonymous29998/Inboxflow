@@ -1,6 +1,6 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.11",
+  "version": "1.2.12",
   "private": true,
   "description": "Inbox Flow Windows desktop — local hybrid mailer",
   "author": "Inbox Flow",
@@ -11,7 +11,9 @@
     "dist:win": "electron-builder --win nsis zip --x64 --publish never",
     "verify:win": "node scripts/verify-installer.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "tar": "7.5.22"
+  },
   "devDependencies": {
     "electron": "35.7.5",
     "electron-builder": "26.15.3"

@@ -17,7 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const crypto = require('crypto');
 const { URL } = require('url');
 
@@ -234,12 +234,16 @@ async function ensureApiModules() {
   await sleep(400);
   fs.mkdirSync(dest, { recursive: true });
   let last = 'unpack failed';
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
     try {
-      execFileSync('tar', ['-xf', archive, '-C', dest], { windowsHide: true, timeout: 600000 });
+      const tar = await import('tar');
+      const extract = tar.x || (tar.default && tar.default.x);
+      if (!extract) throw new Error('tar extract is unavailable');
+      await extract({ file: archive, cwd: dest, strict: false });
       if (fs.existsSync(marker)) return;
       last = 'fastify missing after unpack';
     } catch (err) {
+      if (fs.existsSync(marker)) return;
       last = err instanceof Error ? err.message : String(err);
     }
     await sleep(800 * attempt);
