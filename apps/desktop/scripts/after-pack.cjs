@@ -1,11 +1,11 @@
 /**
- * Pack API node_modules as one zip after electron-builder finishes.
- * A loose node_modules tree makes NSIS look frozen (tens of thousands of files).
- * The EXE extracts the zip on first launch.
+ * Pack API node_modules as one tar after electron-builder finishes.
+ * A loose tree makes NSIS look frozen. Windows tar.exe also fails on long paths,
+ * so this uses the Node tar package (PAX headers).
  */
-const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const tar = require('tar');
 
 exports.default = async function afterPack(context) {
   const src = path.join(context.packager.projectDir, '.stage-api-modules');
@@ -15,11 +15,15 @@ exports.default = async function afterPack(context) {
   const dest = path.join(context.appOutDir, 'resources', 'api', 'node_modules.tar');
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
-  // One uncompressed archive. NSIS then copies a single file instead of tens of thousands.
-  execFileSync('tar', ['-cf', dest, '-C', src, '.'], {
-    stdio: 'inherit',
-    windowsHide: true,
-  });
+  await tar.c(
+    {
+      file: dest,
+      cwd: src,
+      portable: true,
+      noMtime: true,
+    },
+    ['.'],
+  );
   const loose = path.join(context.appOutDir, 'resources', 'api', 'node_modules');
   if (fs.existsSync(loose)) fs.rmSync(loose, { recursive: true, force: true });
   if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024 * 1024) {
