@@ -11,9 +11,7 @@
     "dist:win": "electron-builder --win nsis zip --x64",
     "verify:win": "node scripts/verify-installer.mjs"
   },
-  "dependencies": {
-    "@sentry/electron": "^8.4.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "electron": "35.7.5",
     "electron-builder": "26.15.3"
