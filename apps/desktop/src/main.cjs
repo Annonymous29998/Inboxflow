@@ -17,7 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { URL } = require('url');
 
@@ -215,6 +215,23 @@ REMOTE_APP_URL=${DEFAULT_REMOTE_URL}
   fs.mkdirSync(userDataDir(), { recursive: true });
   fs.writeFileSync(dest, filled, 'utf8');
   return dest;
+}
+
+/** NSIS ships one zip so install does not freeze on thousands of files. Expand once. */
+function ensureApiModules() {
+  if (isDev) return;
+  const res = process.resourcesPath;
+  const dest = path.join(res, 'api', 'node_modules');
+  const zip = path.join(res, 'api', 'node_modules.zip');
+  const marker = path.join(dest, 'fastify', 'package.json');
+  if (fs.existsSync(marker)) return;
+  if (!fs.existsSync(zip)) return;
+  setSplash({ stage: 'Preparing', line: 'Unpacking the mailer…', pct: 30 });
+  fs.mkdirSync(dest, { recursive: true });
+  execFileSync('tar', ['-xf', zip, '-C', dest], { windowsHide: true, timeout: 600000 });
+  if (!fs.existsSync(marker)) {
+    throw new Error('Could not unpack the mailer (node_modules.zip). Reinstall Inbox Flow.');
+  }
 }
 
 function resolvePaths() {
@@ -954,6 +971,7 @@ async function boot() {
       line: firstRun ? 'Writing local config…' : 'Reading local config…',
       pct: 22,
     });
+    ensureApiModules();
     if (localSend) {
       setSplash({ line: 'Starting local host…', pct: 45 });
       appUrl = startLocalApi(fileEnv);

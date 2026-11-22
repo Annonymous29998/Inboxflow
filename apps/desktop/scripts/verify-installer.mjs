@@ -98,13 +98,15 @@ if (!existsSync(join(resources, 'api', 'dist', 'index.js'))) {
 }
 ok('bundled API packed');
 
-if (!existsSync(join(resources, 'api', 'node_modules'))) {
-  fail('resources/api/node_modules missing — local API cannot start');
+const modulesZip = join(resources, 'api', 'node_modules.zip');
+if (!existsSync(modulesZip)) {
+  fail('resources/api/node_modules.zip missing — local API cannot start');
 }
-if (!existsSync(join(resources, 'api', 'node_modules', 'fastify'))) {
-  fail('API node_modules incomplete — fastify missing (thin zip)');
+const modulesList = zipListing(modulesZip);
+if (!modulesList.includes('fastify/package.json') && !modulesList.includes('fastify\\package.json')) {
+  fail('API node_modules.zip incomplete — fastify missing');
 }
-ok('API node_modules packed');
+ok('API node_modules.zip packed (one file so NSIS does not stall)');
 
 if (!existsSync(join(resources, 'web', 'index.html'))) {
   fail('resources/web/index.html missing — in-app window needs the local mailer UI');
@@ -128,8 +130,8 @@ if (!/\bconfig\.json\b/.test(listing)) fail('zip does not contain config.json');
 if (!listing.includes('api/dist/index.js') && !listing.includes('api\\dist\\index.js')) {
   fail('zip does not contain the bundled API');
 }
-if (!listing.includes('api/node_modules') && !listing.includes('api\\node_modules')) {
-  fail('zip does not contain API node_modules');
+if (!listing.includes('api/node_modules.zip') && !listing.includes('api\\node_modules.zip')) {
+  fail('zip does not contain API node_modules.zip');
 }
 ok('zip listing contains InboxFlow.exe + hybrid API');
 
