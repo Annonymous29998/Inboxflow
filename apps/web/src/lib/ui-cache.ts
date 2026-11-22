@@ -37,6 +37,31 @@ export function uiCacheSet(key: string, value: unknown): void {
   }
 }
 
+export function uiCacheRemove(key: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(accountPrefix() + key);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Drop campaign list snapshots so a new draft is not hidden behind a stale first page. */
+export function uiCacheInvalidateCampaigns(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const prefix = accountPrefix() + 'campaigns:';
+    const keys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const k = window.localStorage.key(i);
+      if (k?.startsWith(prefix)) keys.push(k);
+    }
+    for (const k of keys) window.localStorage.removeItem(k);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function uiCacheClearAccount(accountId: string): void {
   if (typeof window === 'undefined' || !accountId) return;
   try {

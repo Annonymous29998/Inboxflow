@@ -13,3 +13,7 @@ export function isMailerTenant(role?: string | null) {
 export function tenantNeedsBind(user?: { role?: string | null; boundIp?: string | null } | null) {
   return isMailerTenant(user?.role) && !user?.boundIp;
 }
+
+export function mailerHomePath(role?: string | null) {
+  return isStaffRole(role) ? '/app' : '/app/campaigns';
+}
