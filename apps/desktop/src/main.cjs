@@ -1,10 +1,10 @@
 /**
  * Inbox Flow desktop launcher (Kestrel-style).
  *
- * Starts a local host, then opens the mailer in an in-app window.
+ * Starts a local proxy, then opens the mailer in an in-app window.
  * Tray can still open http://localhost:LOCAL_PORT in Chrome.
- * Default: local port proxies to Lightsail — same login, DB, campaigns, SMTP.
- * Bind IP / SOCKS follow the send process: remote = Lightsail, local = this PC.
+ * Default remote: proxy to Lightsail — no bundled API required.
+ * rdp/local: spawn resources/api when present. Bind IP / SOCKS follow send.
  */
 const { app, BrowserWindow, dialog, shell, Tray, Menu, nativeImage, ipcMain, powerSaveBlocker } = require('electron');
 let sentryMain = null;
@@ -473,6 +473,7 @@ function startRemoteProxy(localPort, remoteBase, localWorkspaceOrigin) {
           const loc = new URL(String(outHeaders.location), remoteBase);
           if (
             loc.hostname === remote.hostname ||
+            /novasreach\.xyz$/i.test(loc.hostname) ||
             /inboxingsend\.xyz$/i.test(loc.hostname) ||
             loc.hostname === '13.38.60.67'
           ) {
@@ -892,23 +893,29 @@ async function boot() {
       await waitForUrl(`${appUrl}/health`);
     } else {
       persistMissingSecrets(fileEnv);
-      const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);
-      setSplash({ line: 'Starting local host…', pct: 40 });
-      startLocalApi(
-        {
-          ...fileEnv,
-          LOCAL_PORT: String(workspacePort),
-          API_PORT: String(workspacePort),
-          DATABASE_URL: sqliteFileUrl(),
-        },
-        { hybrid: true, browserOrigin, publishedPort: localPort },
-      );
-      setSplash({ line: 'Connecting workspace…', pct: 58 });
-      await waitForUrl(`http://127.0.0.1:${workspacePort}/health`);
+      const paths = resolvePaths();
+      const hasLocalApi = fs.existsSync(paths.apiEntry);
+      let workspaceOrigin = '';
+      if (hasLocalApi) {
+        const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);
+        setSplash({ line: 'Starting local host…', pct: 40 });
+        startLocalApi(
+          {
+            ...fileEnv,
+            LOCAL_PORT: String(workspacePort),
+            API_PORT: String(workspacePort),
+            DATABASE_URL: sqliteFileUrl(),
+          },
+          { hybrid: true, browserOrigin, publishedPort: localPort },
+        );
+        setSplash({ line: 'Connecting workspace…', pct: 58 });
+        await waitForUrl(`http://127.0.0.1:${workspacePort}/health`);
+        workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
+      }
       setSplash({ line: 'Connecting Inbox Flow…', pct: 72 });
       await waitForUrl(`${remoteBase}/health`);
       setSplash({ line: `Binding http://localhost:${localPort}…`, pct: 84 });
-      appUrl = await startRemoteProxy(localPort, remoteBase, `http://127.0.0.1:${workspacePort}`);
+      appUrl = await startRemoteProxy(localPort, remoteBase, workspaceOrigin || null);
       await waitForUrl(`${appUrl}/health`);
     }
   } catch (err) {
