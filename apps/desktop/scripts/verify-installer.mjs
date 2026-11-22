@@ -125,6 +125,9 @@ if (!/\bconfig\.json\b/.test(listing)) fail('zip does not contain config.json');
 if (!listing.includes('api/dist/index.js') && !listing.includes('api\\dist\\index.js')) {
   fail('zip does not contain the bundled API');
 }
+if (!listing.includes('api/node_modules') && !listing.includes('api\\node_modules')) {
+  fail('zip does not contain API node_modules');
+}
 ok('zip listing contains InboxFlow.exe + hybrid API');
 
 console.log('\nInstaller package looks complete (hybrid local mailer).');

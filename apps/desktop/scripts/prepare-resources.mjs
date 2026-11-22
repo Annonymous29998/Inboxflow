@@ -38,6 +38,10 @@ execSync('npm install --omit=dev --ignore-scripts', {
   stdio: 'inherit',
   env: { ...process.env, npm_config_production: 'true' },
 });
+mustExist(
+  join(stage, 'node_modules'),
+  'npm install --omit=dev did not create .stage-api/node_modules',
+);
 
 console.log('Generating Prisma clients for staged API…');
 execSync('npx prisma generate', {
