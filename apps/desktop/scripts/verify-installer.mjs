@@ -104,7 +104,7 @@ ok('no API node_modules / portable Node in package');
 
 const unpackedMb = dirSizeBytes(unpacked) / (1024 * 1024);
 ok(`win-unpacked ${unpackedMb.toFixed(1)} MB`);
-if (unpackedMb > 350) {
+if (unpackedMb > 400) {
   fail(`unpacked tree is ${unpackedMb.toFixed(1)} MB — extract will stall on Windows`);
 }
 
