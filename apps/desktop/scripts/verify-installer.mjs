@@ -70,7 +70,7 @@ const zipMb = statSync(zipPath).size / (1024 * 1024);
 ok(`${setup}  ${setupMb.toFixed(1)} MB`);
 ok(`${zip}  ${zipMb.toFixed(1)} MB`);
 
-if (setupMb > 280) {
+if (setupMb > 320) {
   fail(`installer is ${setupMb.toFixed(1)} MB — larger than the hybrid package budget`);
 }
 if (setupMb < 40) {

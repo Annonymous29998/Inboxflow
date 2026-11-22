@@ -55,6 +55,10 @@
         "to": "api"
       },
       {
+        "from": ".stage-api-modules",
+        "to": "api/node_modules"
+      },
+      {
         "from": ".stage-api/node_modules",
         "to": "api/node_modules"
       },

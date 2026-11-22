@@ -58,5 +58,13 @@ if (existsSync(sqliteGen)) {
   cpSync(sqliteGen, join(stage, 'dist/generated'), { recursive: true });
 }
 
+// electron-builder skips gitignored node_modules/; copy under a different name.
+const vendor = join(desktopRoot, '.stage-api-modules');
+const stagedMods = join(stage, 'node_modules');
+mustExist(stagedMods, 'npm install in .stage-api did not create node_modules');
+rmSync(vendor, { recursive: true, force: true });
+cpSync(stagedMods, vendor, { recursive: true });
+
 console.log('Desktop API resources staged at', stage);
+console.log('API node_modules staged at', vendor);
 console.log('Web dist ready at', webDist);
