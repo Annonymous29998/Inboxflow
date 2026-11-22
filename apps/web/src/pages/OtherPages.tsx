@@ -285,8 +285,53 @@ export function TemplatesPage() {
       )
     : templates;
 
+  if (editingId) {
+    return (
+      <div className="mailer-root flex h-full min-h-0 flex-1 flex-col">
+        <div className="mailer-top">
+          <div className="min-w-0 flex-1">
+            <p className="mailer-hint" style={{ marginTop: 0 }}>
+              library · edit letter
+            </p>
+            <Input
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              aria-label="Template name"
+            />
+          </div>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setEditingId(null)}>
+            Close
+          </Button>
+          <Button type="button" size="sm" disabled={saving || editLoading} onClick={() => void saveEditor()}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+        <div className="mailer-stage">
+          <div className="mailer-panel overflow-hidden">
+            {editLoading ? (
+              <PageLoading label="Loading letter…" />
+            ) : (
+              <LetterPane
+                html={editHtml}
+                onHtmlChange={setEditHtml}
+                placeholderMap={placeholderMap}
+                onPlaceholderMap={setPlaceholderMap}
+                attachments={editAttachments}
+                onAttachments={setEditAttachments}
+                previewContacts={previewContacts}
+                senderName={user?.firstName}
+                physicalAddress={user?.organization?.physicalAddress}
+                showPlaceholderTab
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="mailer-root page-root space-y-4">
+    <div className="mailer-root page-root flex h-full min-h-0 flex-col space-y-4 overflow-y-auto px-3 py-4 sm:px-4 sm:py-5 lg:px-6 lg:py-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <p className="mailer-hint" style={{ marginTop: 0 }}>
@@ -379,49 +424,6 @@ export function TemplatesPage() {
         </div>
       )}
 
-      {editingId ? (
-        <div className="mailer-root fixed inset-0 z-[80] flex flex-col bg-[var(--mailer-bg,#0b0d10)]">
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--mailer-stroke)] px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <p className="mailer-hint" style={{ marginTop: 0 }}>
-                library · edit letter
-              </p>
-              <Input
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                className="max-w-md"
-                aria-label="Template name"
-              />
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button type="button" variant="ghost" onClick={() => setEditingId(null)}>
-                Close
-              </Button>
-              <Button type="button" disabled={saving || editLoading} onClick={() => void saveEditor()}>
-                {saving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            {editLoading ? (
-              <PageLoading label="Loading letter…" />
-            ) : (
-              <LetterPane
-                html={editHtml}
-                onHtmlChange={setEditHtml}
-                placeholderMap={placeholderMap}
-                onPlaceholderMap={setPlaceholderMap}
-                attachments={editAttachments}
-                onAttachments={setEditAttachments}
-                previewContacts={previewContacts}
-                senderName={user?.firstName}
-                physicalAddress={user?.organization?.physicalAddress}
-                showPlaceholderTab
-              />
-            )}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

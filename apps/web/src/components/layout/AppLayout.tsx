@@ -135,6 +135,7 @@ export function AppLayout() {
   const visibleNav = useMemo(() => navForRole(user?.role), [user?.role]);
   const flatNav = useMemo(() => visibleNav.flatMap((g) => g.items), [visibleNav]);
   const isMailer = isMailerTenant(user?.role);
+  const fillWorkspace = /^\/app\/(campaigns|templates)(\/|$)/.test(location.pathname);
   const sidebarPerson = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() || user?.email || '';
   const sidebarWorkspace = String(user?.organization?.name || '').trim();
   const showSidebarWorkspace =
@@ -508,9 +509,7 @@ export function AppLayout() {
           ref={mainRef}
           className={cn(
             'min-h-0 flex-1 overflow-x-hidden',
-            /^\/app\/campaigns(\/|$)/.test(location.pathname)
-              ? 'overflow-hidden'
-              : 'overflow-y-auto',
+            fillWorkspace ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
           )}
         >
           {user?.workspaceLocal &&
@@ -521,8 +520,8 @@ export function AppLayout() {
               Windows app after Bind PC.
             </div>
           ) : null}
-          {/^\/app\/campaigns(\/|$)/.test(location.pathname) ? (
-            <div className="flex h-full min-h-0 flex-col">
+          {fillWorkspace ? (
+            <div className="flex min-h-0 flex-1 flex-col">
               <Outlet />
             </div>
           ) : (
