@@ -83,6 +83,8 @@ function setSplash(payload) {
   const next = {
     stage: payload.stage,
     line: payload.line,
+    detail: payload.detail,
+    hint: payload.hint,
     pct: payload.pct,
   };
   if (splashWindow && !splashWindow.isDestroyed() && splashReady) {
@@ -234,8 +236,32 @@ async function ensureApiModules() {
   if (!fs.existsSync(archive)) return;
   const countFile = path.join(res, 'api', 'node_modules.tar.entries');
   const total = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0;
-  setSplash({ stage: 'Preparing', line: 'Unpacking the mailer…', pct: 30 });
-  await sleep(400);
+  const started = Date.now();
+  const paintUnpack = (done, force) => {
+    const now = Date.now();
+    if (!force && now - paintUnpack.last < 200) return;
+    paintUnpack.last = now;
+    const ratio = total > 0 ? Math.min(1, done / total) : Math.min(0.97, done / 50000);
+    const elapsed = Math.max(1, (now - started) / 1000);
+    let remain = '';
+    if (total > 0 && done > 400) {
+      const sec = Math.max(1, Math.round(((total - done) * elapsed) / done));
+      remain = sec >= 90 ? ` · about ${Math.ceil(sec / 60)} min left` : ` · about ${sec}s left`;
+    }
+    const count = total > 0
+      ? `${done.toLocaleString()} of ${total.toLocaleString()} files${remain}`
+      : `${done.toLocaleString()} files`;
+    setSplash({
+      stage: 'Setting up Inbox Flow',
+      line: 'Copying the mailer onto this PC',
+      detail: count,
+      hint: 'This happens once. The next open goes straight in.',
+      pct: Math.round(10 + ratio * 76),
+    });
+  };
+  paintUnpack.last = 0;
+  paintUnpack(0, true);
+  await sleep(200);
   fs.mkdirSync(dest, { recursive: true });
   let last = 'unpack failed';
   for (let attempt = 1; attempt <= 4; attempt += 1) {
@@ -244,23 +270,17 @@ async function ensureApiModules() {
       const extract = tar.x || (tar.default && tar.default.x);
       if (!extract) throw new Error('tar extract is unavailable');
       let done = 0;
-      let lastPaint = 0;
       await extract({
         file: archive,
         cwd: dest,
         strict: false,
         onentry() {
           done += 1;
-          const now = Date.now();
-          if (now - lastPaint < 250 && (!total || done < total)) return;
-          lastPaint = now;
-          const pct = total > 0 ? 30 + Math.min(24, Math.round((done / total) * 24)) : 32;
-          const line = total > 0
-            ? `Unpacking the mailer… ${done.toLocaleString()} / ${total.toLocaleString()}`
-            : `Unpacking the mailer… ${done.toLocaleString()} files`;
-          setSplash({ stage: 'Preparing', line, pct });
+          paintUnpack(done, done === total);
+          if (done % 200 === 0) return new Promise((resolve) => setImmediate(resolve));
         },
       });
+      paintUnpack(total || done, true);
       if (fs.existsSync(marker)) return;
       last = 'fastify missing after unpack';
     } catch (err) {
@@ -843,8 +863,8 @@ function showMailerWindow() {
 function createSplashWindow(firstRun) {
   const icon = appIconImage();
   splashWindow = new BrowserWindow({
-    width: 520,
-    height: 340,
+    width: 560,
+    height: 400,
     resizable: false,
     maximizable: false,
     minimizable: false,
@@ -863,6 +883,7 @@ function createSplashWindow(firstRun) {
     },
   });
   splashWindow.setMenuBarVisibility(false);
+  splashWindow.setAlwaysOnTop(true, 'floating');
   splashWindow.once('ready-to-show', () => {
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.show();
   });
@@ -985,6 +1006,9 @@ ipcMain.on('inboxflow:save-bound-ip', (_evt, ip) => {
 ipcMain.on('inboxflow:bind-blocked', () => {
   void showBindBlockedDialog();
 });
+ipcMain.on('inboxflow:splash-minimize', () => {
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.minimize();
+});
 ipcMain.on('inboxflow:quit', () => {
   shuttingDown = true;
   app.quit();
@@ -1016,9 +1040,11 @@ function stopAll() {
 async function boot() {
   const firstRun = !fs.existsSync(envPath());
   setSplash({
-    stage: firstRun ? 'Installing Inbox Flow' : 'Starting Inbox Flow',
-    line: firstRun ? 'Preparing this PC…' : 'Loading workspace…',
-    pct: 8,
+    stage: firstRun ? 'Setting up Inbox Flow' : 'Starting Inbox Flow',
+    line: firstRun ? 'Preparing this PC…' : 'Loading your workspace…',
+    detail: '',
+    hint: 'Inbox Flow opens when ready',
+    pct: 4,
   });
   const envFile = ensureEnvFile();
   ensureConfigJson();
@@ -1031,14 +1057,16 @@ async function boot() {
 
   try {
     setSplash({
-      line: firstRun ? 'Writing local config…' : 'Reading local config…',
-      pct: 22,
+      line: firstRun ? 'Saving settings on this PC…' : 'Reading settings…',
+      detail: '',
+      hint: 'Inbox Flow opens when ready',
+      pct: 6,
     });
     await ensureApiModules();
     if (localSend) {
-      setSplash({ line: 'Starting local host…', pct: 45 });
+      setSplash({ line: 'Starting the mailer…', detail: '', hint: 'Inbox Flow opens when ready', pct: 90 });
       appUrl = startLocalApi(fileEnv);
-      setSplash({ line: `Waiting for http://localhost:${localPort}…`, pct: 70 });
+      setSplash({ line: 'Opening your workspace…', pct: 96 });
       await waitForUrl(`${appUrl}/health`);
     } else {
       persistMissingSecrets(fileEnv);
@@ -1049,7 +1077,7 @@ async function boot() {
         );
       }
       const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);
-      setSplash({ line: 'Starting local host…', pct: 40 });
+      setSplash({ line: 'Starting the mailer…', detail: '', hint: 'Inbox Flow opens when ready', pct: 90 });
       startLocalApi(
         {
           ...fileEnv,
@@ -1059,16 +1087,16 @@ async function boot() {
         },
         { hybrid: true, browserOrigin, publishedPort: localPort },
       );
-      setSplash({ line: 'Connecting workspace…', pct: 58 });
+      setSplash({ line: 'Opening your workspace…', pct: 94 });
       await waitForUrl(`http://127.0.0.1:${workspacePort}/health`);
       const workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
-      setSplash({ line: `Binding http://localhost:${localPort}…`, pct: 78 });
+      setSplash({ line: 'Preparing the window…', pct: 97 });
       appUrl = await startRemoteProxy(localPort, remoteBase, workspaceOrigin);
       await waitForUrl(`${appUrl}/health`);
 
       const license = readLicenseConfigFile();
       if (license?.username && license?.license_key) {
-        setSplash({ line: 'Checking Bind PC…', pct: 90 });
+        setSplash({ line: 'Checking this PC…', pct: 99 });
         const status = await fetchBindStatus(remoteBase, license.username, license.license_key);
         if (status.ok && !status.staff && !status.bound) {
           setSplash({ stage: 'PC not bound yet', line: 'PC not bound yet', pct: 100 });

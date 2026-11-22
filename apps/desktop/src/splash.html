@@ -17,10 +17,17 @@
       .wrap {
         box-sizing: border-box;
         height: 100%;
-        padding: 28px 32px 24px;
+        padding: 22px 28px 20px;
         display: flex;
         flex-direction: column;
         border: 1px solid #1f2a1f;
+        -webkit-app-region: drag;
+      }
+      .top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
       }
       .brand {
         display: flex;
@@ -46,72 +53,141 @@
         font-size: 12px;
         color: #9bb09b;
       }
+      button {
+        -webkit-app-region: no-drag;
+        appearance: none;
+        border: 1px solid #2a3d2a;
+        background: #101810;
+        color: #d7e0d7;
+        font: inherit;
+        font-size: 12px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: #7cff9a;
+        color: #7cff9a;
+      }
       .stage {
-        margin: 28px 0 10px;
-        font-size: 18px;
+        margin: 36px 0 8px;
+        font-size: 20px;
         color: #e8ffe8;
       }
       .line {
         min-height: 18px;
-        font-size: 12px;
-        color: #9bb09b;
+        margin: 0;
+        font-size: 13px;
+        color: #c9dcc9;
+      }
+      .detail {
+        min-height: 18px;
+        margin: 8px 0 0;
+        font-size: 13px;
+        color: #7cff9a;
       }
       .bar {
-        margin-top: 16px;
-        height: 6px;
+        margin-top: 22px;
+        height: 10px;
         background: #122016;
         border: 1px solid #2a3d2a;
         overflow: hidden;
+        position: relative;
       }
       .fill {
         height: 100%;
-        width: 8%;
+        width: 4%;
         background: #7cff9a;
         box-shadow: 0 0 12px rgba(124, 255, 154, 0.45);
-        transition: width 0.35s ease;
+        transition: width 0.25s linear;
+        position: relative;
+      }
+      .fill::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(255, 255, 255, 0.35),
+          transparent
+        );
+        transform: translateX(-100%);
+        animation: slide 1.4s linear infinite;
+      }
+      @keyframes slide {
+        to {
+          transform: translateX(100%);
+        }
       }
       .foot {
         margin-top: auto;
         display: flex;
         justify-content: space-between;
-        font-size: 11px;
-        color: #6d856d;
-        letter-spacing: 0.04em;
+        gap: 16px;
+        font-size: 12px;
+        color: #8ea88e;
+      }
+      #pct {
+        color: #7cff9a;
       }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <div class="brand">
-        <img class="mark" src="icon.png" alt="Inbox Flow" />
-        <div>
-          <h1>Inbox Flow</h1>
-          <p class="sub" id="sub">inboxflow.io · desktop host</p>
+      <div class="top">
+        <div class="brand">
+          <img class="mark" src="icon.png" alt="" />
+          <div>
+            <h1>Inbox Flow</h1>
+            <p class="sub" id="sub">Desktop mailer</p>
+          </div>
         </div>
+        <button type="button" id="min" title="Minimize">Minimize</button>
       </div>
-      <p class="stage" id="stage">Installing Inbox Flow</p>
-      <p class="line" id="line">Preparing this PC…</p>
+      <p class="stage" id="stage">Starting Inbox Flow</p>
+      <p class="line" id="line">Loading your workspace…</p>
+      <p class="detail" id="detail"></p>
       <div class="bar" aria-hidden="true"><div class="fill" id="fill"></div></div>
       <div class="foot">
-        <span id="pct">0%</span>
-        <span>Inbox Flow opens when ready</span>
+        <span id="pct">4%</span>
+        <span id="hint">Inbox Flow opens when ready</span>
       </div>
     </div>
     <script>
       const first = new URLSearchParams(location.search).get("first") === "1";
       const stage = document.getElementById("stage");
       const line = document.getElementById("line");
+      const detail = document.getElementById("detail");
       const fill = document.getElementById("fill");
       const pctEl = document.getElementById("pct");
-      stage.textContent = first ? "Installing Inbox Flow" : "Starting Inbox Flow";
+      const hint = document.getElementById("hint");
+      if (first) {
+        stage.textContent = "Setting up Inbox Flow";
+        line.textContent = "Preparing this PC…";
+      }
+      document.getElementById("min").addEventListener("click", () => {
+        if (window.inboxflowDesktop && window.inboxflowDesktop.splashMinimize) {
+          window.inboxflowDesktop.splashMinimize();
+        }
+      });
 
       function apply(payload) {
         if (!payload) return;
         if (payload.stage) stage.textContent = payload.stage;
         if (payload.line) line.textContent = payload.line;
+        if (payload.detail != null) detail.textContent = payload.detail;
+        else if (payload.line) detail.textContent = "";
+        if (payload.hint) hint.textContent = payload.hint;
+        else if (payload.line) hint.textContent = "Inbox Flow opens when ready";
+        if (payload.pct == null) return;
         const pct = Math.max(0, Math.min(100, Number(payload.pct) || 0));
         fill.style.width = pct + "%";
         pctEl.textContent = Math.round(pct) + "%";
+        fill.style.display = pct >= 100 ? "none" : "";
+        if (pct >= 100) {
+          const bar = document.querySelector(".bar");
+          bar.style.background = "#7cff9a";
+        }
       }
 
       if (window.inboxflowDesktop && window.inboxflowDesktop.onSplash) {

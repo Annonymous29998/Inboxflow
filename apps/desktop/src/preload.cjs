@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('inboxflowDesktop', {
   saveBoundIp: (ip) => ipcRenderer.send('inboxflow:save-bound-ip', ip),
   bindBlocked: () => ipcRenderer.send('inboxflow:bind-blocked'),
   quitApp: () => ipcRenderer.send('inboxflow:quit'),
+  splashMinimize: () => ipcRenderer.send('inboxflow:splash-minimize'),
   onSplash: (cb) => {
     ipcRenderer.on('inboxflow:splash', (_evt, payload) => {
       try {
