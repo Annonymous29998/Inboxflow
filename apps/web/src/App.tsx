@@ -27,24 +27,31 @@ import { QueueConsolePage } from '@/pages/QueueConsolePage';
 import { useAuthStore } from '@/stores/auth';
 import { Toaster } from '@/components/ui/Toaster';
 import { ConfirmViewport } from '@/components/ui/ConfirmViewport';
-import { isMailerTenant, isStaffRole, tenantNeedsBind } from '@/lib/roles';
+import { isMailerTenant, isStaffRole, mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { documentTitle, shellFromPath } from '@/lib/shell';
 import { useToastStore } from '@/stores/toast';
 import { useConfirmStore } from '@/stores/confirm';
 import { AppErrorBoundary } from '@/components/layout/AppErrorBoundary';
 import { ActivateBindPage } from '@/pages/ActivateBindPage';
+import { SentryTestErrorPage } from '@/pages/SentryTestErrorPage';
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 
 const queryClient = new QueryClient();
 
 function Protected({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
+  const loading = useAuthStore((s) => s.loading);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const refreshToken = useAuthStore((s) => s.refreshToken);
   const fetchMe = useAuthStore((s) => s.fetchMe);
 
   useEffect(() => {
     void fetchMe();
   }, [fetchMe]);
 
+  if (!user && (loading || accessToken || refreshToken)) {
+    return <div className="min-h-dvh bg-background" />;
+  }
   if (!user) return <Navigate to="/login" replace />;
   if (tenantNeedsBind(user)) {
     return (
@@ -54,6 +61,13 @@ function Protected({ children }: { children: React.ReactNode }) {
     );
   }
   return <>{children}</>;
+}
+
+function SignedInHome() {
+  const user = useAuthStore((s) => s.user);
+  if (user && tenantNeedsBind(user)) return <Navigate to="/bind-pc" replace />;
+  if (user) return <Navigate to={mailerHomePath(user.role)} replace />;
+  return <Navigate to="/login" replace />;
 }
 
 function MailerHome() {
@@ -122,7 +136,7 @@ export default function App() {
         <SessionFence />
         <AppErrorBoundary>
         <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/" element={<SignedInHome />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/bind-pc" element={<ActivateBindPage />} />
           <Route path="/bind-ip" element={<Navigate to="/bind-pc" replace />} />
@@ -132,6 +146,9 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/verify-email" element={<VerifyEmailPage />} />
+          {import.meta.env.DEV ? (
+            <Route path="/sentry-test-error" element={<SentryTestErrorPage />} />
+          ) : null}
           <Route
             path="/app"
             element={
@@ -195,7 +212,7 @@ export default function App() {
             <Route path="activity" element={<AdminActivityPage />} />
             <Route path="*" element={<Navigate to="/admin" replace />} />
           </Route>
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<SignedInHome />} />
         </Routes>
         </AppErrorBoundary>
         <Toaster />

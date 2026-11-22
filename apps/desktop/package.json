@@ -1,6 +1,6 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "private": true,
   "description": "Inbox Flow Windows desktop — connects to Lightsail",
   "author": "Inbox Flow",
@@ -11,7 +11,9 @@
     "dist:win": "electron-builder --win nsis zip --x64",
     "verify:win": "node scripts/verify-installer.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@sentry/electron": "^8.4.0"
+  },
   "devDependencies": {
     "electron": "35.7.5",
     "electron-builder": "26.15.3"

@@ -1,3 +1,5 @@
+import './instrument.js';
+import * as Sentry from '@sentry/node';
 import { buildApp } from './app.js';
 import { env } from './config/env.js';
 import { isDesktopHybrid } from './config/db-kind.js';
@@ -7,10 +9,12 @@ import { startInboxFlowSmtpServer } from './services/email/inboxflow-smtp.js';
 
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
+  Sentry.captureException(reason);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err);
+  Sentry.captureException(err);
   const desktop = isDesktopHybrid() || process.env.INBOXFLOW_DESKTOP === '1';
   if (!desktop) process.exit(1);
 });
@@ -49,5 +53,6 @@ async function main() {
 
 main().catch((err) => {
   console.error(err);
+  Sentry.captureException(err);
   process.exit(1);
 });

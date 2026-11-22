@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { env } from './config/env.js';
 import { sendError } from './utils/errors.js';
+import { Sentry } from './instrument.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -22,6 +23,17 @@ export async function buildApp() {
   // /health registered BEFORE any middleware or heavy imports.
   // Railway 30s healthcheck window needs 200 OK on attempt 1;
   // we can't afford to load 14 route modules + Prisma client + heavy deps inside first few seconds on free tier 512MB.
+  Sentry.setupFastifyErrorHandler(app);
+
+  if (env.NODE_ENV !== 'production') {
+    app.get('/api/sentry-test-error', async () => {
+      const err = new Error(`Sentry test error ${Date.now()}`);
+      Sentry.captureException(err);
+      await Sentry.flush(2000);
+      throw err;
+    });
+  }
+
   app.get('/health', async () => ({
     status: 'ok',
     service: env.APP_NAME,
@@ -31,6 +43,7 @@ export async function buildApp() {
       adminNote: true,
       resetLicense: true,
       subscriptions: true,
+      sentry: Boolean(Sentry.getClient()),
     },
   }));
 

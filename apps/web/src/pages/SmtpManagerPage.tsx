@@ -10,6 +10,8 @@ import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
 import { useAuthStore } from '@/stores/auth';
 import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
+import { WorkspaceOnDeviceNotice } from '@/components/campaigns/WorkspaceOnDeviceNotice';
+import { isWorkspaceOnDeviceError, reportWorkspaceOnDevice } from '@/lib/workspace-on-device';
 
 type FormState = {
   name: string;
@@ -167,6 +169,7 @@ export function SmtpManagerPage() {
   const [rotationMode, setRotationMode] = useState<
     'failover' | 'round_robin' | 'weighted' | 'performance'
   >('round_robin');
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
 
   const selected = useMemo(
     () => providers.find((p) => p.id === editingId) || null,
@@ -176,9 +179,16 @@ export function SmtpManagerPage() {
   async function load() {
     try {
       const data = await smtpService.listSmtp();
+      setWorkspaceOnDevice(false);
       setProviders(data);
       uiCacheSet('smtp', data);
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        setProviders([]);
+        reportWorkspaceOnDevice(err);
+        return;
+      }
       toast.error('Could not load SMTP profiles', err instanceof Error ? err.message : undefined);
     }
   }
@@ -256,6 +266,10 @@ export function SmtpManagerPage() {
   }
 
   async function startCreate() {
+    if (workspaceOnDevice) {
+      reportWorkspaceOnDevice();
+      return;
+    }
     setEditingId(null);
     setForm(emptyForm);
     setShowPass(false);
@@ -612,7 +626,9 @@ export function SmtpManagerPage() {
           </p>
           <h1 className="page-title text-primary">SMTP Manager</h1>
           <p className="page-sub">
-            {providers.length} profile{providers.length === 1 ? '' : 's'} · add or edit opens a form
+            {workspaceOnDevice
+              ? 'SMTP profiles live on this PC'
+              : `${providers.length} profile${providers.length === 1 ? '' : 's'} · add or edit opens a form`}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -633,7 +649,7 @@ export function SmtpManagerPage() {
             }}
           />
         </label>
-        <Button size="sm" onClick={() => void startCreate()}>
+        <Button size="sm" onClick={() => void startCreate()} disabled={workspaceOnDevice}>
           <Plus className="h-4 w-4" /> New SMTP
         </Button>
         </div>
@@ -723,6 +739,9 @@ export function SmtpManagerPage() {
               </div>
             ))}
             {!providers.length ? (
+              workspaceOnDevice ? (
+                <WorkspaceOnDeviceNotice />
+              ) : (
               <div className="mailer-panel">
                 <div className="mailer-pad">
                   <p className="mailer-hint" style={{ marginTop: 0 }}>
@@ -730,6 +749,7 @@ export function SmtpManagerPage() {
                   </p>
                 </div>
               </div>
+              )
             ) : null}
       </div>
 
@@ -874,7 +894,9 @@ export function SmtpManagerPage() {
                 {smtpAllowDirect ? (
                   <>
                     <Label>Outbound path</Label>
-                    <p className="mt-0.5 mb-2 text-[11px] text-muted-foreground">Direct, Bind IP, or SOCKS5.</p>
+                    <p className="mt-0.5 mb-2 text-[11px] text-muted-foreground">
+                      Default is Lightsail. Bind IP or SOCKS5 only if you need them.
+                    </p>
                     <Select
                       value={form.outboundPath || 'direct'}
                       onChange={(e) =>
@@ -884,7 +906,7 @@ export function SmtpManagerPage() {
                         })
                       }
                     >
-                      <option value="direct">Direct</option>
+                      <option value="direct">Default</option>
                       <option value="bind">Bind IP — localAddress on this machine</option>
                       <option value="socks">SOCKS5 — proxy host / port / user</option>
                     </Select>

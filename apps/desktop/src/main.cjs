@@ -1,11 +1,18 @@
 /**
  * Inbox Flow desktop launcher (Kestrel-style).
  *
- * Opens http://localhost:LOCAL_PORT in your browser (same as Kestrel V1.40).
+ * Starts a local host, then opens the mailer in an in-app window.
+ * Tray can still open http://localhost:LOCAL_PORT in Chrome.
  * Default: local port proxies to Lightsail — same login, DB, campaigns, SMTP.
  * Bind IP / SOCKS follow the send process: remote = Lightsail, local = this PC.
  */
 const { app, BrowserWindow, dialog, shell, Tray, Menu, nativeImage, ipcMain, powerSaveBlocker } = require('electron');
+let sentryMain = null;
+try {
+  sentryMain = require('@sentry/electron/main');
+} catch {
+  sentryMain = null;
+}
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -20,6 +27,7 @@ const DEFAULT_LOCAL_PORT = 5000;
 const isDev = !app.isPackaged;
 
 let statusWindow = null;
+let mailerWindow = null;
 let splashWindow = null;
 let splashReady = false;
 const splashQueue = [];
@@ -29,6 +37,19 @@ let proxyServer = null;
 let shuttingDown = false;
 let appUrl = `http://localhost:${DEFAULT_LOCAL_PORT}`;
 let sleepBlockerId = null;
+
+const DEFAULT_ELECTRON_DSN =
+  'https://1209c769168bfb674074cc0f21bf6e1e@o4512474524352512.ingest.de.sentry.io/4512474541457488';
+const ELECTRON_SENTRY_DSN = String(
+  process.env.SENTRY_ELECTRON_DSN || process.env.SENTRY_DSN || DEFAULT_ELECTRON_DSN,
+).trim();
+if (sentryMain && ELECTRON_SENTRY_DSN) {
+  sentryMain.init({
+    dsn: ELECTRON_SENTRY_DSN,
+    environment: app.isPackaged ? 'production' : 'development',
+    tracesSampleRate: 0.1,
+  });
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -630,6 +651,49 @@ function openInBrowser() {
   shell.openExternal(browserStartUrl());
 }
 
+function showMailerWindow() {
+  if (mailerWindow && !mailerWindow.isDestroyed()) {
+    if (mailerWindow.isMinimized()) mailerWindow.restore();
+    mailerWindow.show();
+    mailerWindow.focus();
+    return;
+  }
+  const icon = appIconImage();
+  mailerWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 640,
+    title: 'Inbox Flow',
+    backgroundColor: '#0b0f14',
+    autoHideMenuBar: true,
+    icon: icon.isEmpty() ? undefined : icon,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  mailerWindow.setMenuBarVisibility(false);
+  mailerWindow.once('ready-to-show', () => {
+    if (mailerWindow && !mailerWindow.isDestroyed()) mailerWindow.show();
+  });
+  mailerWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      shell.openExternal(url);
+    } catch {
+      /* ignore */
+    }
+    return { action: 'deny' };
+  });
+  mailerWindow.loadURL(browserStartUrl());
+  mailerWindow.on('closed', () => {
+    mailerWindow = null;
+  });
+}
+
 function createSplashWindow(firstRun) {
   const icon = appIconImage();
   splashWindow = new BrowserWindow({
@@ -675,7 +739,7 @@ function closeSplashSoon() {
   setTimeout(() => {
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
     splashWindow = null;
-    if (statusWindow && !statusWindow.isDestroyed()) statusWindow.show();
+    showMailerWindow();
   }, 1600);
 }
 
@@ -746,7 +810,8 @@ function createTray() {
     tray.setToolTip('Inbox Flow');
     tray.setContextMenu(
       Menu.buildFromTemplate([
-        { label: `Open ${browserStartUrl()}`, click: () => openInBrowser() },
+        { label: 'Open Inbox Flow', click: () => showMailerWindow() },
+        { label: 'Open in browser', click: () => openInBrowser() },
         { type: 'separator' },
         {
           label: 'Quit',
@@ -757,7 +822,7 @@ function createTray() {
         },
       ]),
     );
-    tray.on('double-click', () => openInBrowser());
+    tray.on('double-click', () => showMailerWindow());
   } catch {
     /* tray optional */
   }
@@ -870,25 +935,18 @@ async function boot() {
   }
 
   createTray();
-  createStatusWindow();
   setSplash({
     stage: firstRun ? 'Install complete' : 'Ready',
-    line: `Opening ${browserStartUrl()}`,
+    line: 'Opening Inbox Flow',
     pct: 100,
   });
-  openInBrowser();
   closeSplashSoon();
 }
 
 if (gotLock) {
   app.on('second-instance', () => {
     try {
-      if (statusWindow) {
-        if (statusWindow.isMinimized()) statusWindow.restore();
-        statusWindow.show();
-        statusWindow.focus();
-      }
-      openInBrowser();
+      showMailerWindow();
     } catch (err) {
       console.error('[desktop] second instance', err);
     }

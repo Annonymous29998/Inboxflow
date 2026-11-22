@@ -135,6 +135,12 @@ export function AppLayout() {
   const visibleNav = useMemo(() => navForRole(user?.role), [user?.role]);
   const flatNav = useMemo(() => visibleNav.flatMap((g) => g.items), [visibleNav]);
   const isMailer = isMailerTenant(user?.role);
+  const sidebarPerson = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() || user?.email || '';
+  const sidebarWorkspace = String(user?.organization?.name || '').trim();
+  const showSidebarWorkspace =
+    Boolean(sidebarWorkspace) &&
+    sidebarWorkspace.toLowerCase().replace(/[^a-z0-9]/g, '') !==
+      sidebarPerson.toLowerCase().replace(/[^a-z0-9]/g, '');
 
   // Client-side navigation keeps the <main> overflow scroll. Reset so a new
   // screen (e.g. campaign editor) opens at the top, not where the list was.
@@ -394,11 +400,13 @@ export function AppLayout() {
           )}
         >
           <div className={cn('truncate text-xs', desktopCollapsed && 'lg:hidden')}>
-            {user?.firstName} {user?.lastName}
+            {sidebarPerson}
           </div>
-          <div className={cn('truncate text-[10px] text-primary', desktopCollapsed && 'lg:hidden')}>
-            {user?.organization?.name || 'Workspace'}
-          </div>
+          {showSidebarWorkspace ? (
+            <div className={cn('truncate text-[10px] text-primary', desktopCollapsed && 'lg:hidden')}>
+              {sidebarWorkspace}
+            </div>
+          ) : null}
           <div className={cn('truncate text-[10px] text-muted-foreground', desktopCollapsed && 'lg:hidden')}>
             {user?.email}
           </div>
@@ -505,6 +513,14 @@ export function AppLayout() {
               : 'overflow-y-auto',
           )}
         >
+          {user?.workspaceLocal &&
+          typeof window !== 'undefined' &&
+          !window.inboxflowDesktop?.isDesktop ? (
+            <div className="border-b border-amber-500/40 bg-amber-950/80 px-3 py-2 text-xs text-amber-100 sm:px-4">
+              Campaigns, contacts, and SMTP stay on this PC. The browser cannot open them — use the Inbox Flow
+              Windows app after Bind PC.
+            </div>
+          ) : null}
           {/^\/app\/campaigns(\/|$)/.test(location.pathname) ? (
             <div className="flex h-full min-h-0 flex-col">
               <Outlet />

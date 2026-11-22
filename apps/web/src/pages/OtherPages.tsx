@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
+import { isStaffRole } from '@/lib/roles';
 import { api } from '@/lib/api';
 import { smtpService } from '@/services/smtp.service';
 import { templateService } from '@/services/template.service';
@@ -11,8 +12,10 @@ import { Button, Card, Input, Label, PageLoading, Select, Textarea } from '@/com
 import { cn } from '@/lib/utils';
 import { ChevronDown, Copy, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { toast } from '@/stores/toast';
-import { confirmDialog } from '@/stores/confirm';
+import { confirmDialog, promptDialog } from '@/stores/confirm';
 import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
+import { WorkspaceOnDeviceNotice } from '@/components/campaigns/WorkspaceOnDeviceNotice';
+import { isWorkspaceOnDeviceError, reportWorkspaceOnDevice } from '@/lib/workspace-on-device';
 
 const TYPES = [
   'subject_lines',
@@ -141,13 +144,21 @@ export function TemplatesPage() {
   const [previewContacts, setPreviewContacts] = useState<
     Array<{ email: string; firstName?: string | null; lastName?: string | null }>
   >([]);
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
 
   async function load() {
     try {
       const d = await api.get<{ templates: typeof templates }>('/api/templates');
+      setWorkspaceOnDevice(false);
       setTemplates(Array.isArray(d.templates) ? d.templates : []);
       uiCacheSet('templates', d.templates);
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        setTemplates([]);
+        reportWorkspaceOnDevice(err);
+        return;
+      }
       toast.error('Could not load templates', err instanceof Error ? err.message : undefined);
     } finally {
       setLoading(false);
@@ -286,7 +297,17 @@ export function TemplatesPage() {
             {templates.length} letter{templates.length === 1 ? '' : 's'} · import HTML or start blank · merge tags, spin, preview as a contact — same tools as the campaign Letter tab
           </p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={() => setNewTemplateOpen(true)}>
+        <Button
+          className="w-full sm:w-auto"
+          disabled={workspaceOnDevice}
+          onClick={() => {
+            if (workspaceOnDevice) {
+              reportWorkspaceOnDevice();
+              return;
+            }
+            setNewTemplateOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" /> New template
         </Button>
       </div>
@@ -335,6 +356,8 @@ export function TemplatesPage() {
             </div>
           ))}
         </div>
+      ) : workspaceOnDevice ? (
+        <WorkspaceOnDeviceNotice />
       ) : !templates.length ? (
         <div className="mailer-panel">
           <div className="mailer-pad space-y-3">
@@ -441,6 +464,12 @@ function SettingsFold({
 }
 
 export function SettingsPage() {
+  const user = useAuthStore((s) => s.user);
+  const fetchMe = useAuthStore((s) => s.fetchMe);
+  const acceptSession = useAuthStore((s) => s.acceptSession);
+  const staff = isStaffRole(user?.role);
+  const bindOn = staff && Boolean(user?.boundIp) && user?.smtpAllowDirect === false;
+  const [bindBusy, setBindBusy] = useState(false);
   const [keys, setKeys] = useState<Array<{ id: string; name: string; keyPrefix: string; createdAt: string }>>([]);
   const [providers, setProviders] = useState<
     Array<{
@@ -466,18 +495,33 @@ export function SettingsPage() {
   const [apiFromEmail, setApiFromEmail] = useState('');
   const [apiFromName, setApiFromName] = useState('');
   const [savingSendKey, setSavingSendKey] = useState(false);
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
 
   async function load() {
-    const [k, pvd, s, me] = await Promise.all([
-      api.get<{ keys: typeof keys }>('/api/api-keys'),
-      api.get<{ providers: typeof providers }>('/api/providers'),
-      api.get<{ sessions: typeof sessions }>('/api/auth/sessions'),
-      api.get<{ user: { organization?: { physicalAddress?: string } } }>('/api/auth/me'),
-    ]);
-    setKeys(Array.isArray(k.keys) ? k.keys : []);
-    setProviders(Array.isArray(pvd.providers) ? pvd.providers : []);
-    setSessions(Array.isArray(s.sessions) ? s.sessions : []);
-    setAddress(me.user?.organization?.physicalAddress || '');
+    try {
+      const [k, s, me] = await Promise.all([
+        api.get<{ keys: typeof keys }>('/api/api-keys'),
+        api.get<{ sessions: typeof sessions }>('/api/auth/sessions'),
+        api.get<{ user: { organization?: { physicalAddress?: string } } }>('/api/auth/me'),
+      ]);
+      setKeys(Array.isArray(k.keys) ? k.keys : []);
+      setSessions(Array.isArray(s.sessions) ? s.sessions : []);
+      setAddress(me.user?.organization?.physicalAddress || '');
+    } catch (err) {
+      toast.error('Could not load settings', err instanceof Error ? err.message : undefined);
+    }
+    try {
+      const pvd = await api.get<{ providers: typeof providers }>('/api/providers');
+      setWorkspaceOnDevice(false);
+      setProviders(Array.isArray(pvd.providers) ? pvd.providers : []);
+    } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        setProviders([]);
+        return;
+      }
+      toast.error('Could not load SMTP profiles', err instanceof Error ? err.message : undefined);
+    }
   }
 
   useEffect(() => {
@@ -557,6 +601,65 @@ export function SettingsPage() {
     }
   }
 
+  async function toggleOperatorBind() {
+    if (!staff || bindBusy) return;
+    setBindBusy(true);
+    try {
+      if (bindOn) {
+        const ok = await confirmDialog({
+          title: 'Use Lightsail again?',
+          description: 'SMTP will leave from Lightsail, not this RDP/VPS.',
+          confirmText: 'Use Lightsail',
+        });
+        if (!ok) return;
+        const off = await api.post<{ accessToken?: string }>('/api/workspace/operator-bind', { enabled: false });
+        if (off.accessToken && user) {
+          acceptSession({ user: { ...user, boundIp: null, smtpAllowDirect: true, workspaceLocal: false }, accessToken: off.accessToken });
+        }
+        await fetchMe(true);
+        toast.success('Bind PC off', 'Send path is Lightsail default again');
+        return;
+      }
+      let hint = '';
+      try {
+        const seen = await api.get<{ ip?: string }>('/api/auth/bind-ip');
+        hint = String(seen.ip || '').trim();
+      } catch {
+        hint = '';
+      }
+      const typed = await promptDialog('Bind this RDP / VPS', {
+        description: 'SMTP will leave from this PC instead of Lightsail. Enter this machine’s public IP.',
+        placeholder: '203.0.113.10',
+        defaultValue: hint,
+        confirmText: 'Bind PC',
+        validate: (v) => (v.trim() ? null : 'Enter the public IP'),
+      });
+      if (!typed?.trim()) return;
+      const data = await api.post<{ boundIp?: string; accessToken?: string }>('/api/workspace/operator-bind', {
+        enabled: true,
+        boundIp: typed.trim(),
+      });
+      window.inboxflowDesktop?.saveBoundIp?.(data.boundIp || typed.trim());
+      if (data.accessToken && user) {
+        acceptSession({
+          user: {
+            ...user,
+            boundIp: data.boundIp || typed.trim(),
+            smtpAllowDirect: false,
+            workspaceLocal: true,
+          },
+          accessToken: data.accessToken,
+        });
+      }
+      await fetchMe(true);
+      toast.success('PC bound', `Send uses ${data.boundIp || typed.trim()}`);
+    } catch (err) {
+      toast.error('Bind PC failed', err instanceof Error ? err.message : undefined);
+    } finally {
+      setBindBusy(false);
+    }
+  }
+
   async function saveOrg(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -576,6 +679,33 @@ export function SettingsPage() {
         <h1 className="page-title text-primary">Settings</h1>
         <p className="page-sub">Organization, API keys, and sessions</p>
       </div>
+
+      {staff ? (
+        <div className="mailer-panel">
+          <div className="mailer-pad flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm uppercase tracking-wide text-[var(--mailer-dim)]">Bind PC</h2>
+              <p className="mt-1 text-sm text-ink-muted">
+                {bindOn
+                  ? `On · SMTP leaves from ${user?.boundIp}`
+                  : 'Off · SMTP leaves from Lightsail'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={bindOn}
+              disabled={bindBusy}
+              title="Bind PC"
+              onClick={() => void toggleOperatorBind()}
+              className={cn('mailer-switch', bindOn && 'on')}
+            >
+              <span className="mailer-switch-knob" />
+              <span className="sr-only">Bind PC</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mailer-panel">
         <div className="mailer-pad">
@@ -612,7 +742,11 @@ export function SettingsPage() {
             </div>
           ))}
           {!providers.length ? (
-            <p className="text-sm text-muted-foreground">No providers configured yet.</p>
+            workspaceOnDevice ? (
+              <WorkspaceOnDeviceNotice />
+            ) : (
+              <p className="text-sm text-muted-foreground">No providers configured yet.</p>
+            )
           ) : null}
         </div>
         <Link to="/app/smtp" className="inline-flex text-primary underline">

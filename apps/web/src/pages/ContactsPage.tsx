@@ -12,6 +12,8 @@ import {
   type ContactImportRow,
 } from '@/lib/parse-contact-import';
 import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
+import { WorkspaceOnDeviceNotice } from '@/components/campaigns/WorkspaceOnDeviceNotice';
+import { isWorkspaceOnDeviceError, reportWorkspaceOnDevice } from '@/lib/workspace-on-device';
 
 type Contact = {
   id: string;
@@ -84,6 +86,7 @@ export function ContactsPage() {
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState<ImportProgressState>(emptyImportProgress);
   const [clearingAll, setClearingAll] = useState(false);
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
   const [listModal, setListModal] = useState<{ id: string; name: string } | null>(null);
   const [modalContacts, setModalContacts] = useState<Contact[]>([]);
   const [modalPage, setModalPage] = useState(1);
@@ -224,6 +227,7 @@ export function ContactsPage() {
       if (page === 1 && !search && !status && !activeListId) {
         uiCacheSet('contacts:home', { contacts: data.contacts, total: data.total });
       }
+      setWorkspaceOnDevice(false);
       if (typeof data.pages === 'number') setPages(Math.max(1, data.pages));
       else setPages(Math.max(1, Math.ceil(data.total / (pageLimit || 50))));
       if (activeListId === '__unassigned__') {
@@ -237,6 +241,13 @@ export function ContactsPage() {
         void totalCount;
       }
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        setContacts([]);
+        setTotal(0);
+        reportWorkspaceOnDevice(err);
+        return;
+      }
       toast.error('Could not load contacts', err instanceof Error ? err.message : undefined);
     } finally {
       setLoading(false);
@@ -703,6 +714,8 @@ export function ContactsPage() {
       <div className="space-y-3">
         {loading ? (
           <PageLoading label="Loading contacts…" />
+        ) : workspaceOnDevice ? (
+          <WorkspaceOnDeviceNotice />
         ) : visibleGroups.length === 0 ? (
           <div className="mailer-panel">
             <div className="mailer-pad py-12 text-center">

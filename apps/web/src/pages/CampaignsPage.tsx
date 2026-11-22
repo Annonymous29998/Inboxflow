@@ -16,16 +16,21 @@ import {
   useCampaignDeliverability,
 } from '@/components/campaigns/CampaignDeliverabilityPanel';
 import { scrubCampaignEditorContent } from '@/lib/spam-content-filter';
-import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
+import { uiCacheGet, uiCacheInvalidateCampaigns, uiCacheSet } from '@/lib/ui-cache';
 import { Button, Card, Input, Label, PageLoading, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { SendProgressModal, type SendFlowPhase } from '@/components/campaigns/SendProgressModal';
+import type { SendFlowPhase } from '@/components/campaigns/SendProgressModal';
 import { CampaignAudiencePane } from '@/components/campaigns/CampaignAudiencePane';
 import { CampaignResultsPane } from '@/components/campaigns/CampaignResultsPane';
 import { LetterPane } from '@/components/campaigns/LetterPane';
 import { PlaceholderPane } from '@/components/campaigns/LetterMergePanel';
 import { MailerFold, MailerWorkspace, type MailerTab } from '@/components/campaigns/MailerWorkspace';
 import { MailerWelcome } from '@/components/campaigns/MailerWelcome';
+import {
+  isWorkspaceOnDeviceError,
+  reportWorkspaceOnDevice,
+  WORKSPACE_ON_DEVICE_COPY,
+} from '@/lib/workspace-on-device';
 import { CampaignAddSmtpModal } from '@/components/campaigns/CampaignAddSmtpModal';
 import { CampaignImportRecipientsModal } from '@/components/campaigns/CampaignImportRecipientsModal';
 import { CampaignLetterImportModal } from '@/components/campaigns/CampaignLetterImportModal';
@@ -268,13 +273,30 @@ const RESEND_NAME_SUFFIX = /\s·\sresend(?:\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2})?$/i
 function campaignListTitle(c: { name?: string | null; utmCampaign?: string | null }) {
   const tagged =
     RESEND_NAME_SUFFIX.test(c.name || '') || String(c.utmCampaign || '').startsWith('resend');
-  const name =
-    (c.name || '').replace(RESEND_NAME_SUFFIX, '').trim() || 'Name this campaign';
+  const name = (c.name || '').trim() || 'Name this campaign';
   return { name, tagged };
 }
 
 function campaignAlreadySent(status?: string | null) {
   return ['SENT', 'FAILED', 'CANCELLED'].includes(String(status || ''));
+}
+
+function campaignSendLive(status?: string | null, sendPhase?: string) {
+  if (sendPhase === 'success') return false;
+  return status === 'SENDING' || status === 'PAUSED';
+}
+
+function campaignListCounts(c: {
+  sentCount?: number | null;
+  failedCount?: number | null;
+  openedCount?: number | null;
+  totalRecipients?: number | null;
+}) {
+  const failed = Math.max(0, Number(c.failedCount) || 0);
+  const total = Math.max(0, Number(c.totalRecipients) || 0);
+  let sent = Math.max(0, Number(c.sentCount) || 0);
+  if (failed > 0 && total > 0 && sent >= total) sent = Math.max(0, total - failed);
+  return { sent, failed, opened: Math.max(0, Number(c.openedCount) || 0) };
 }
 
 export function CampaignsPage() {
@@ -285,6 +307,7 @@ export function CampaignsPage() {
   const [busyCreate, setBusyCreate] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(() => cached?.total ?? 0);
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
   const navigate = useNavigate();
   const pages = Math.max(1, Math.ceil(total / CAMPAIGN_PAGE_SIZE));
   const role = useAuthStore((s) => s.user?.role);
@@ -295,12 +318,18 @@ export function CampaignsPage() {
       const d = await api.get<{ campaigns: Campaign[]; total: number; page: number; limit: number }>(
         `/api/campaigns?page=${page}&limit=${CAMPAIGN_PAGE_SIZE}`,
       );
+      setWorkspaceOnDevice(false);
       setCampaigns(d.campaigns);
       setTotal(d.total);
       uiCacheSet(`campaigns:${page}`, { campaigns: d.campaigns, total: d.total });
       const lastPage = Math.max(1, Math.ceil(d.total / (d.limit || CAMPAIGN_PAGE_SIZE)));
       if (page > lastPage) setPage(lastPage);
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        if (!isPoll) reportWorkspaceOnDevice(err);
+        return;
+      }
       if (!isPoll) flash(err instanceof Error ? err.message : 'Could not load campaigns', 'error');
     } finally {
       setLoading(false);
@@ -323,9 +352,15 @@ export function CampaignsPage() {
         type: 'REGULAR',
         status: 'DRAFT',
       });
+      uiCacheInvalidateCampaigns();
       await load();
       navigate(`/app/campaigns/${created.campaign.id}?tab=setup`);
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        setWorkspaceOnDevice(true);
+        reportWorkspaceOnDevice(err);
+        return;
+      }
       flash(err instanceof Error ? err.message : 'Failed to create draft campaign', 'error');
     } finally {
       setBusyCreate(false);
@@ -359,7 +394,13 @@ export function CampaignsPage() {
   }
 
   if (showWelcome) {
-    return <MailerWelcome busy={busyCreate} onStart={() => void createNewDraftCampaign()} />;
+    return (
+      <MailerWelcome
+        busy={busyCreate}
+        error={workspaceOnDevice ? WORKSPACE_ON_DEVICE_COPY : null}
+        onStart={() => void createNewDraftCampaign()}
+      />
+    );
   }
 
   return (
@@ -381,6 +422,7 @@ export function CampaignsPage() {
           <>
         {campaigns.map((c) => {
           const title = campaignListTitle(c);
+          const counts = campaignListCounts(c);
           return (
           <div key={c.id} className="camp-row">
             <Link to={`/app/campaigns/${c.id}?tab=setup`} className="camp-row-main">
@@ -391,7 +433,7 @@ export function CampaignsPage() {
               <div className="meta">
                 {c.subject || 'No subject'}
                 {['SENT', 'SENDING', 'PAUSED'].includes(c.status)
-                  ? ` · ${c.sentCount ?? 0}/${c.totalRecipients ?? 0} sent · ${c.failedCount ?? 0} failed · ${c.openedCount ?? 0} opened`
+                  ? ` · ${counts.sent} sent · ${counts.failed} failed · ${counts.opened} opened`
                   : ''}
                 {` · ${c.status}`}
               </div>
@@ -515,9 +557,9 @@ export function CampaignEditorPage() {
   const [report, setReport] = useState<DeliverabilityReport | null>(null);
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
   const [sendPhase, setSendPhase] = useState<SendFlowPhase>('confirm');
   const [sendAsResend, setSendAsResend] = useState(false);
+  const [busyCreate, setBusyCreate] = useState(false);
   const [fabChoice, setFabChoice] = useState<'send' | 'resend' | 'stop' | null>(null);
   const [resendListId, setResendListId] = useState('');
   const [sendCount, setSendCount] = useState(0);
@@ -591,10 +633,17 @@ export function CampaignEditorPage() {
       ? rawTab
       : 'setup';
   function setMailerTab(next: MailerTab) {
+    const live = campaignSendLive(campaign.status, sendPhase);
+    const tab = live && next !== 'logs' ? 'logs' : next;
     const p = new URLSearchParams(searchParams);
-    p.set('tab', next);
+    p.set('tab', tab);
     setSearchParams(p, { replace: true });
   }
+  useEffect(() => {
+    if (!campaignSendLive(campaign.status, sendPhase)) return;
+    if (mailerTab === 'logs') return;
+    setMailerTab('logs');
+  }, [campaign.status, sendPhase, mailerTab]);
   const [busyPlacementTest, setBusyPlacementTest] = useState(false);
   const [busyTestMatrix, setBusyTestMatrix] = useState(false);
   const [importStatus, setImportStatus] = useState('');
@@ -642,7 +691,7 @@ export function CampaignEditorPage() {
   }
 
   function campaignLocked(status?: string | null) {
-    return status === 'SENDING';
+    return status === 'SENDING' || status === 'PAUSED';
   }
 
   const templatePoolIds = selectedTemplateIds(campaign);
@@ -855,6 +904,30 @@ export function CampaignEditorPage() {
           setFromNamePoolText(names.join('\n'));
           setOpenedCount(d.campaign.openedCount ?? 0);
           setClickedCount(d.campaign.clickedCount ?? 0);
+          if (d.campaign.status === 'SENDING' || d.campaign.status === 'PAUSED') {
+            setMailerTab('logs');
+            setSendPaused(d.campaign.status === 'PAUSED');
+            setSendPhase('background');
+          }
+          void campaignSendService
+            .getSendStatus(id)
+            .then((status) => {
+              const n = campaignListCounts(status);
+              setSentCount(n.sent);
+              setFailedCount(n.failed);
+              setPendingCount(status.pendingCount);
+              if (status.openedCount != null) setOpenedCount(status.openedCount);
+              if (status.clickedCount != null) setClickedCount(status.clickedCount);
+              if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
+              if (status.lastEmail) setLastEmail(status.lastEmail);
+              if (status.activity?.length) {
+                setSendActivity(
+                  [...status.activity].sort((a, b) => String(a.at).localeCompare(String(b.at))),
+                );
+              }
+              if (status.status === 'PAUSED') setSendPaused(true);
+            })
+            .catch(() => undefined);
           setHydrated(true);
           setAutoSaveState('idle');
           window.setTimeout(() => {
@@ -890,7 +963,6 @@ export function CampaignEditorPage() {
     resendStartedRef.current = true;
     setSearchParams({}, { replace: true });
     setSendAsResend(true);
-    setSendOpen(true);
     setResendListId(campaign.listId || '');
     setSendCount(lists.find((l) => l.id === campaign.listId)?._count?.members ?? campaign.totalRecipients ?? 0);
     setSentCount(0);
@@ -898,12 +970,13 @@ export function CampaignEditorPage() {
     setRecentFailures([]);
     setRecentSent([]);
     setSendActivity([]);
+    setMailerTab('logs');
     if (campaign.status === 'SENDING') {
       sendProgressArmedRef.current = true;
       setSendPhase('background');
       return;
     }
-    setSendPhase('confirm');
+    void confirmBackgroundResend();
   }, [hydrated, id, isNew, searchParams, campaign.status, campaign.totalRecipients, campaign.listId]);
 
   useEffect(() => {
@@ -920,8 +993,8 @@ export function CampaignEditorPage() {
     if (campaign.status !== 'SENDING' && campaign.status !== 'PAUSED') return;
     sendProgressArmedRef.current = true;
     setSendAsResend(false);
-    setSendOpen(true);
     setSendPhase('background');
+    setMailerTab('logs');
     setSendCount(campaign.totalRecipients ?? 0);
     try {
       sessionStorage.removeItem('inboxflow:watchingCampaignId');
@@ -934,10 +1007,10 @@ export function CampaignEditorPage() {
   }, [hydrated, id, isNew, campaign.status, campaign.totalRecipients, location.state, location.pathname, navigate]);
 
   useEffect(() => {
-    if (!sendOpen || !sendAsResend) return;
+    if (!sendAsResend) return;
     const n = lists.find((l) => l.id === resendListId)?._count?.members;
     if (n != null) setSendCount(n);
-  }, [sendOpen, sendAsResend, resendListId, lists]);
+  }, [sendAsResend, resendListId, lists]);
 
   function rememberTemplateBody(
     templateId: string,
@@ -1467,6 +1540,8 @@ export function CampaignEditorPage() {
         flash('Saved');
       }
 
+      uiCacheInvalidateCampaigns();
+
       if (!silent) {
         const savedDraftKey = `campaign:${campaignId || 'new'}`;
         const store = useDraftStore.getState();
@@ -1734,8 +1809,8 @@ export function CampaignEditorPage() {
       setSendCancelled(false);
       setSendPaused(false);
       setSendError('');
-      setSendOpen(true);
       setMailerTab('logs');
+      await confirmBackgroundSend(false);
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Could not prepare send', 'error');
     }
@@ -1819,7 +1894,6 @@ export function CampaignEditorPage() {
       setBatchNumber(null);
       setCampaign((c) => ({ ...c, status: 'SENDING' }));
       sendProgressArmedRef.current = true;
-      setSendOpen(true);
       setMailerTab('logs');
       flash(
         `Campaign queued · ${result.totalRecipients || sendCount} recipients · this campaign only`,
@@ -1854,9 +1928,14 @@ export function CampaignEditorPage() {
               if (u.status === 'FAILED') {
                 setSendError(String(u.error || 'Send failed'));
                 setSendPhase('error');
+                setCampaign((c) => ({ ...c, status: 'FAILED' }));
               } else {
                 setSendCancelled(u.status === 'CANCELLED');
                 setSendPhase('success');
+                setCampaign((c) => ({
+                  ...c,
+                  status: u.status === 'CANCELLED' ? 'CANCELLED' : 'SENT',
+                }));
               }
             }
           },
@@ -1866,8 +1945,10 @@ export function CampaignEditorPage() {
         });
       }
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Send failed');
+      const msg = err instanceof Error ? err.message : 'Send failed';
+      setSendError(msg);
       setSendPhase('error');
+      flash(msg, 'error');
     }
   }
 
@@ -1896,6 +1977,7 @@ export function CampaignEditorPage() {
       if (!resendListId) {
         setSendError('Select an audience list');
         setSendPhase('error');
+        flash('Select an audience list', 'warning');
         return;
       }
       const result = await campaignSendService.resend(id, {
@@ -1915,7 +1997,6 @@ export function CampaignEditorPage() {
       if (result.merged || !nextId || nextId === id) {
         setCampaign((c) => ({ ...c, status: 'SENDING' }));
         sendProgressArmedRef.current = true;
-        setSendOpen(true);
         setSendPhase('background');
         setMailerTab('logs');
         return;
@@ -1927,8 +2008,82 @@ export function CampaignEditorPage() {
       }
       navigate(`/app/campaigns/${nextId}`, { state: { watchSend: true } });
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Resend failed');
+      const msg = err instanceof Error ? err.message : 'Resend failed';
+      setSendError(msg);
       setSendPhase('error');
+      flash(msg, 'error');
+    }
+  }
+
+  async function cloneAsResendDraft() {
+    if (!id || isNew) {
+      flash('Save this campaign first', 'warning');
+      return;
+    }
+    if (busyCreate) return;
+    setBusyCreate(true);
+    try {
+      const base = (campaign.name || 'Campaign').replace(RESEND_NAME_SUFFIX, '').trim() || 'Campaign';
+      let nextId: string | undefined;
+      let nextName = `${base} · resend`;
+      try {
+        const created = await api.post<{ campaign: { id: string; name?: string } }>(
+          `/api/campaigns/${id}/duplicate`,
+          { asResendDraft: true },
+        );
+        nextId = created.campaign?.id;
+        if (created.campaign?.name) nextName = created.campaign.name;
+      } catch (err) {
+        const status =
+          err && typeof err === 'object' && 'status' in err ? Number((err as { status?: number }).status) : 0;
+        if (status && ![404, 405, 501].includes(status)) throw err;
+        const htmlForSave =
+          letterLooksEmpty(blocksToHtml(blocks, false)) && campaign.htmlContent?.trim()
+            ? campaign.htmlContent
+            : blocksToHtml(blocks, false);
+        const created = await api.post<{ campaign: { id: string; name?: string } }>('/api/campaigns', {
+          name: nextName,
+          type: campaign.type || 'REGULAR',
+          subject: campaign.subject,
+          previewText: campaign.previewText,
+          senderName: campaign.senderName,
+          senderEmail: campaign.senderEmail,
+          listId: campaign.listId,
+          providerId: campaign.providerId ?? null,
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+          htmlContent: htmlForSave,
+          status: 'DRAFT',
+        });
+        nextId = created.campaign?.id;
+        if (nextId) {
+          await api.patch(`/api/campaigns/${nextId}`, {
+            name: nextName,
+            subject: campaign.subject,
+            previewText: campaign.previewText,
+            senderName: campaign.senderName,
+            senderEmail: campaign.senderEmail,
+            htmlContent: htmlForSave,
+            listId: campaign.listId || null,
+            providerId: campaign.providerId ?? null,
+            templateId: campaign.templateId || null,
+            templatePool: selectedTemplateIds(campaign),
+            subjectPool: parsePool(subjectPoolText),
+            fromNamePool: parsePool(fromNamePoolText),
+            queueSettings,
+            editorJson: packEditorJson(),
+          });
+        }
+      }
+      if (!nextId) throw new Error('Could not create resend draft');
+      uiCacheInvalidateCampaigns();
+      setFabChoice(null);
+      flash(`${nextName} opened as a new draft`);
+      navigate(`/app/campaigns/${nextId}?tab=setup`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Could not create resend draft', 'error');
+    } finally {
+      setBusyCreate(false);
     }
   }
 
@@ -1937,7 +2092,7 @@ export function CampaignEditorPage() {
     setSendCount(lists.find((l) => l.id === campaign.listId)?._count?.members ?? campaign.totalRecipients ?? 0);
     setResendListId(campaign.listId || '');
     setSendAsResend(true);
-    setSendPhase('confirm');
+    setSendPhase('background');
     setMailerTab('logs');
     setSentCount(0);
     setFailedCount(0);
@@ -1945,7 +2100,7 @@ export function CampaignEditorPage() {
     setSendCancelled(false);
     setSendPaused(false);
     setSendError('');
-    setSendOpen(true);
+    void confirmBackgroundResend();
   }
 
   function cancelBackgroundSend() {
@@ -1958,7 +2113,6 @@ export function CampaignEditorPage() {
         try {
           await campaignSendService.cancel(id);
           setCampaign((c) => ({ ...c, status: 'CANCELLED' }));
-          setSendOpen(false);
           setMailerTab('results');
           flash('Sending cancelled', 'warning');
         } catch (err) {
@@ -1980,8 +2134,9 @@ export function CampaignEditorPage() {
       // Unstick modal if campaign already failed/stopped on the server
       try {
         const status = await campaignSendService.getSendStatus(id);
-        setSentCount(status.sentCount);
-        setFailedCount(status.failedCount);
+        const n = campaignListCounts(status);
+        setSentCount(n.sent);
+        setFailedCount(n.failed);
         if (status.openedCount != null) setOpenedCount(status.openedCount);
         if (status.clickedCount != null) setClickedCount(status.clickedCount);
         if (['FAILED', 'CANCELLED', 'SENT'].includes(status.status)) {
@@ -2074,7 +2229,11 @@ export function CampaignEditorPage() {
     }
     try {
       setBusyPlacementTest(true);
-      const campaignId = await save(false, { silent: true });
+      let campaignId = id && !isNew ? id : null;
+      if (!campaignSendLive(campaign.status, sendPhase)) {
+        const saved = await save(false, { silent: true });
+        if (saved) campaignId = saved;
+      }
       if (!campaignId) {
         flash('Save the campaign first', 'warning');
         return;
@@ -2196,14 +2355,15 @@ export function CampaignEditorPage() {
   useEffect(() => {
     if (!id || isNew) return;
     const live = campaign.status === 'SENDING' || campaign.status === 'PAUSED';
-    if (!live && !(sendOpen && sendPhase === 'background') && mailerTab !== 'logs' && mailerTab !== 'results') {
+    if (!live && mailerTab !== 'logs' && mailerTab !== 'results') {
       return;
     }
 
     const sub = campaignSendService.streamSendStatus(id, {
       onUpdate: (status) => {
-        setSentCount(status.sentCount);
-        setFailedCount(status.failedCount);
+        const n = campaignListCounts(status);
+        setSentCount(n.sent);
+        setFailedCount(n.failed);
         setPendingCount(status.pendingCount);
         if (status.openedCount != null) setOpenedCount(status.openedCount);
         if (status.clickedCount != null) setClickedCount(status.clickedCount);
@@ -2211,11 +2371,12 @@ export function CampaignEditorPage() {
         if (status.recentSent) setRecentSent(status.recentSent);
         if (status.activity?.length) {
           setSendActivity((prev) => {
-            const byKey = new Map(prev.map((row) => [`${row.email}|${row.status}|${row.at}`, row]));
-            for (const row of status.activity!) {
-              byKey.set(`${row.email}|${row.status}|${row.at}`, row);
-            }
-            return [...byKey.values()].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+            const incoming = [...status.activity].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+            if (!prev.length || incoming.length >= prev.length) return incoming;
+            const key = (a: SendActivity) => `${a.email}|${a.at}|${a.status}`;
+            const map = new Map(prev.map((a) => [key(a), a]));
+            for (const a of incoming) map.set(key(a), a);
+            return [...map.values()].sort((a, b) => String(a.at).localeCompare(String(b.at)));
           });
         }
         if (status.lastEmail) setLastEmail(status.lastEmail);
@@ -2240,7 +2401,6 @@ export function CampaignEditorPage() {
           setSendError('Send failed on server — open Queue Console or check SMTP / content errors');
           setSendPhase('error');
           setCampaign((c) => ({ ...c, status: 'FAILED' }));
-          setSendOpen(false);
           setMailerTab('results');
           return;
         }
@@ -2259,7 +2419,10 @@ export function CampaignEditorPage() {
         if (finished) {
           setSendCancelled(status.status === 'CANCELLED');
           setSendPhase('success');
-          setCampaign((c) => ({ ...c, status: status.status as Campaign['status'] }));
+          setCampaign((c) => ({
+            ...c,
+            status: status.status === 'CANCELLED' ? 'CANCELLED' : 'SENT',
+          }));
           flash(
             status.status === 'CANCELLED'
               ? `Send cancelled — ${status.sentCount} sent, ${status.failedCount} failed`
@@ -2268,14 +2431,13 @@ export function CampaignEditorPage() {
                 : `Send complete — ${status.sentCount} sent`,
             status.failedCount > 0 || status.status === 'CANCELLED' ? 'warning' : 'success',
           );
-          setSendOpen(false);
           setMailerTab('results');
         }
       },
     });
 
     return () => sub.cancel();
-  }, [sendOpen, sendPhase, id, isNew, mailerTab, campaign.status]);
+  }, [id, isNew, mailerTab, campaign.status]);
 
   async function generateSubjects() {
     setAiLoading(true);
@@ -2334,7 +2496,7 @@ export function CampaignEditorPage() {
     if (!smtpAllowDirect) {
       const host = String(p.socksHost || '').trim();
       if (host) return `SOCKS5 ${host}${p.socksPort ? `:${p.socksPort}` : ''}`;
-      return boundPcIp ? `Bound ${boundPcIp}` : 'Bound PC';
+      return boundPcIp ? `Bind PC ${boundPcIp}` : 'Bind PC';
     }
     if (p.outboundPath === 'socks') {
       return p.socksHost
@@ -2342,7 +2504,7 @@ export function CampaignEditorPage() {
         : 'SOCKS5 · set host';
     }
     if (p.outboundPath === 'bind') return p.bindIp ? `Bind IP ${p.bindIp}` : 'Bind IP · set IP';
-    return 'Direct · this machine';
+    return 'Lightsail';
   }
   function smtpPathValue(p: ProviderOption) {
     if (!smtpAllowDirect) return String(p.socksHost || '').trim() ? 'socks' : 'bind';
@@ -2423,60 +2585,15 @@ export function CampaignEditorPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      <SendProgressModal
-        open={sendOpen}
-        phase={sendPhase}
-        sendCount={sendCount}
-        sentCount={sentCount}
-        openedCount={openedCount}
-        clickedCount={clickedCount}
-        failedCount={failedCount}
-        recentFailures={recentFailures}
-        recentSent={recentSent}
-        activity={sendActivity}
-        lastEmail={lastEmail}
-        errorMessage={sendError}
-        confirmTitle={sendAsResend ? 'Resend this campaign?' : 'Send campaign?'}
-        confirmMessage={
-          sendAsResend
-            ? 'Same audience keeps this campaign and merges unique opens/clicks. A different list creates a copy with a resend tag.'
-            : `This will email ${sendCount.toLocaleString()} contact${sendCount === 1 ? '' : 's'} on this campaign only. One mail each.\n\nFrom rotation: ${
-                allSmtps
-                  .filter((p) => pickedSmtpIds.includes(p.id))
-                  .map((p) => p.name)
-                  .join(' → ') || 'none picked'
-              }`
-        }
-        lists={sendAsResend ? lists : undefined}
-        selectedListId={resendListId}
-        onListChange={sendAsResend ? setResendListId : undefined}
-        fromLabel={fromLabel}
-        batchSize={liveBatchSize || normalizeBatchSize(queueSettings.batchSize)}
-        batchPauseSeconds={Math.max(1, Math.round(queueSettings.batchPauseMs / 1000))}
-        betweenEmailMs={queueSettings.betweenEmailMs}
-        queueStage={queueStage}
-        pauseUntil={pauseUntil}
-        batchNumber={batchNumber}
-        cancelled={sendCancelled}
-        paused={sendPaused}
-        onConfirmSend={() => void (sendAsResend ? confirmBackgroundResend() : confirmBackgroundSend(false))}
-        onForceSend={() => void (sendAsResend ? confirmBackgroundResend() : confirmBackgroundSend(true))}
-        onCancelSend={() => setFabChoice('stop')}
-        onPauseSend={() => void pauseBackgroundSend()}
-        onResumeSend={() => void resumeBackgroundSend()}
-        onRetryFailed={() => void retryFailedSend()}
-        onViewAnalytics={() => {
-          if (!id || isNew) return;
-          setSendOpen(false);
-          setMailerTab('results');
-        }}
-        onClose={() => setSendOpen(false)}
-      />
       {fabChoice
         ? createPortal(
-            <div className="mailer-root fixed inset-0 z-[90] flex items-center justify-center bg-black/70 px-4 font-mono">
-              <button type="button" className="absolute inset-0" onClick={() => setFabChoice(null)} aria-label="Close" />
-              <div className="relative z-10 w-full max-w-md border border-[var(--mailer-stroke)] bg-[var(--mailer-panel)] text-foreground shadow-2xl">
+            <div className="mailer-root fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 font-mono">
+              <button type="button" className="absolute inset-0 z-0" onClick={() => setFabChoice(null)} aria-label="Close" />
+              <div
+                className="relative z-10 w-full max-w-md border border-[var(--mailer-stroke)] bg-[var(--mailer-panel)] text-foreground shadow-2xl"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+              >
                 <div className="border-b border-[var(--mailer-stroke)] px-6 py-5">
                   <h2 className="text-lg font-semibold uppercase tracking-wide text-accent">
                     {fabChoice === 'stop'
@@ -2489,7 +2606,7 @@ export function CampaignEditorPage() {
                     {fabChoice === 'stop'
                       ? 'Addresses already accepted stay sent. The rest of the queue will not go out.'
                       : fabChoice === 'resend'
-                        ? 'This starts another send. Same recipients keep unique opens and clicks. A different list is a new row with a resend tag.'
+                        ? 'Resend sends this campaign again now. Edit copies it to a new draft named “original · resend” — it shows in the list immediately, even before you change anything.'
                         : 'This starts sending to the selected list. Logs open now; Results open when the queue finishes.'}
                   </p>
                 </div>
@@ -2501,13 +2618,20 @@ export function CampaignEditorPage() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => {
-                        setFabChoice(null);
-                        setMailerTab('setup');
+                      disabled={busyCreate}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (fabChoice !== 'resend') {
+                          setFabChoice(null);
+                          setMailerTab('setup');
+                          return;
+                        }
+                        void cloneAsResendDraft();
                       }}
                     >
                       <Pencil className="h-4 w-4" />
-                      Edit
+                      {busyCreate ? 'Copying…' : 'Edit'}
                     </Button>
                   ) : null}
                   <Button
@@ -2543,9 +2667,9 @@ export function CampaignEditorPage() {
         onName={(name) => setCampaign({ ...campaign, name })}
         onSave={() => void save(false)}
         saving={saving}
-        sending={campaign.status === 'SENDING' || campaign.status === 'PAUSED'}
+        sending={campaignSendLive(campaign.status, sendPhase)}
         liveProgress={
-          campaign.status === 'SENDING' || campaign.status === 'PAUSED'
+          campaignSendLive(campaign.status, sendPhase)
             ? {
                 sent: sentCount,
                 failed: failedCount,
@@ -2553,18 +2677,21 @@ export function CampaignEditorPage() {
                 total: sendCount || campaign.totalRecipients || 0,
                 lastEmail,
                 stage: queueStage,
+                paused: campaign.status === 'PAUSED' || sendPaused,
               }
             : null
         }
         onOpenLive={() => {
           setSendPhase('background');
-          setSendOpen(true);
+          setMailerTab('logs');
         }}
+        onPauseSend={() => void pauseBackgroundSend()}
+        onResumeSend={() => void resumeBackgroundSend()}
         alreadySent={campaignAlreadySent(campaign.status) || Boolean(campaign.sentAt)}
         placementBusy={busyPlacementTest}
         onPlacementTest={() => void runPlacementTest()}
         onSendOrStop={() => {
-          if (campaign.status === 'SENDING' || campaign.status === 'PAUSED') setFabChoice('stop');
+          if (campaignSendLive(campaign.status, sendPhase)) setFabChoice('stop');
           else setFabChoice(campaignAlreadySent(campaign.status) || campaign.sentAt ? 'resend' : 'send');
         }}
         panels={{
@@ -2730,8 +2857,8 @@ export function CampaignEditorPage() {
               <div className="mailer-pad">
                 <p className="mailer-hint" style={{ marginTop: 0 }}>
                   {smtpAllowDirect
-                    ? 'Right-hand list is the path. Pick Bind IP, SOCKS proxy, or Direct. Click the row to open fields.'
-                    : 'Sends from this bound PC. Optional SOCKS5 — fill host/port on the row if you want a proxy.'}
+                    ? 'Sends from Lightsail by default. Use the list for Bind IP or SOCKS5.'
+                    : 'Sends from this Bind PC. Optional SOCKS5 — fill host/port on the row if you want a proxy.'}
                 </p>
                 {allSmtps.map((p, index) => {
                   const on = pickedSmtpIds.includes(p.id);
@@ -2763,7 +2890,7 @@ export function CampaignEditorPage() {
                               void saveSmtpPath(p, { outboundPath: e.target.value });
                             }}
                           >
-                            <option value="direct">Direct</option>
+                            <option value="direct">Default</option>
                             <option value="bind">Bind IP</option>
                             <option value="socks">SOCKS5</option>
                           </Select>
@@ -3109,6 +3236,7 @@ export function CampaignEditorPage() {
           ),
           logs: (
             <div className="flex h-full min-h-0 flex-col">
+              {sendError ? <p className="mailer-err px-3 py-2">{sendError}</p> : null}
               <div className={cn('complete', (campaign.status === 'SENT' || sendPhase === 'success') && !sendCancelled && 'on')}>
                 <b>SEND COMPLETE</b>
                 <p className="mailer-hint" style={{ margin: '6px 0 10px' }}>
@@ -3139,7 +3267,21 @@ export function CampaignEditorPage() {
                 <Button type="button" size="sm" variant="outline" onClick={() => setLogOldestFirst((v) => !v)}>
                   {logOldestFirst ? 'Newest' : 'Oldest'}
                 </Button>
-                <span className="count">{filteredLogs.length} lines · this campaign · keep all</span>
+                <span className="count">
+                  {filteredLogs.length} lines
+                  {pendingCount ? ` · ${pendingCount} still queued` : ''}
+                  {' · this campaign · keep all'}
+                </span>
+                {campaign.status === 'SENDING' ? (
+                  <Button type="button" size="sm" variant="outline" onClick={() => void pauseBackgroundSend()}>
+                    Pause
+                  </Button>
+                ) : null}
+                {campaign.status === 'PAUSED' ? (
+                  <Button type="button" size="sm" variant="outline" onClick={() => void resumeBackgroundSend()}>
+                    Resume
+                  </Button>
+                ) : null}
               </div>
               <div className="mailer-toolbar">
                 <span className="count" style={{ marginLeft: 0 }}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { Loader2, Pause, Play, RefreshCw, RotateCcw, Eye, MousePointerClick, X } from 'lucide-react';
@@ -10,6 +10,8 @@ import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbe
 import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
 import { SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
 import { smtpService, type SmtpProfile } from '@/services/smtp.service';
+import { WorkspaceOnDeviceNotice } from '@/components/campaigns/WorkspaceOnDeviceNotice';
+import { isWorkspaceOnDeviceError, reportWorkspaceOnDevice } from '@/lib/workspace-on-device';
 
 type QueueRow = {
   id: string;
@@ -435,6 +437,8 @@ export function QueueConsolePage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [smtpProfiles, setSmtpProfiles] = useState<SmtpProfile[]>([]);
+  const [workspaceOnDevice, setWorkspaceOnDevice] = useState(false);
+  const workspaceOnDeviceRef = useRef(false);
 
   const loadSmtp = useCallback(async () => {
     try {
@@ -448,8 +452,17 @@ export function QueueConsolePage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get<{ campaigns: QueueRow[] }>('/api/campaigns/queue-console');
+      workspaceOnDeviceRef.current = false;
+      setWorkspaceOnDevice(false);
       setRows(sortQueueRows(Array.isArray(data.campaigns) ? data.campaigns : []));
     } catch (err) {
+      if (isWorkspaceOnDeviceError(err)) {
+        if (!workspaceOnDeviceRef.current) reportWorkspaceOnDevice(err);
+        workspaceOnDeviceRef.current = true;
+        setWorkspaceOnDevice(true);
+        setRows([]);
+        return;
+      }
       toast.error('Could not load queue', err instanceof Error ? err.message : undefined);
     } finally {
       setLoading(false);
@@ -617,6 +630,9 @@ export function QueueConsolePage() {
           ))}
         </div>
       ) : !loading ? (
+        workspaceOnDevice ? (
+          <WorkspaceOnDeviceNotice />
+        ) : (
         <div className="mailer-panel">
           <div className="mailer-pad">
             <p className="mailer-hint" style={{ marginTop: 0 }}>
@@ -624,6 +640,7 @@ export function QueueConsolePage() {
             </p>
           </div>
         </div>
+        )
       ) : null}
     </div>
   );
