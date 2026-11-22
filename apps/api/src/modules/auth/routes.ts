@@ -313,6 +313,49 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
+  /** EXE boot / admin tools: is this created user bound? Staff never bind for license. */
+  app.post(
+    '/bind-status',
+    {
+      config: {
+        rateLimit: { max: 30, timeWindow: '15 minutes' },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const body = z
+          .object({
+            username: z.string().min(1),
+            licenseKey: z.string().min(1),
+          })
+          .parse(request.body);
+        const { isPlatformOperator } = await import('../../services/email/workspace-residency.js');
+        const { readLicenseBind } = await import('../../services/admin/license-bind.js');
+        const user = await prisma.user.findFirst({
+          where: { email: { in: loginCandidates(body.username) } },
+          include: {
+            organization: { select: { sendSettings: true } },
+          },
+        });
+        if (!user) throw new AppError(401, 'Invalid username or license key');
+        const valid = await bcrypt.compare(body.licenseKey, user.passwordHash);
+        if (!valid) throw new AppError(401, 'Invalid username or license key');
+        if (isPlatformOperator({ role: user.role, email: user.email })) {
+          return reply.send({ staff: true, bound: true, boundIp: null, role: user.role });
+        }
+        const bind = readLicenseBind(user.organization?.sendSettings);
+        return reply.send({
+          staff: false,
+          bound: Boolean(bind?.boundIp),
+          boundIp: bind?.boundIp ?? null,
+          role: user.role,
+        });
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
   app.post(
     '/bind-ip',
     {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import type { User } from '@/stores/auth';
-import { mailerHomePath } from '@/lib/roles';
+import { isInboxflowDesktop } from '@/lib/bind-pc';
 import { Eye, EyeOff } from 'lucide-react';
 import { api } from '@/lib/api';
 import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
@@ -35,7 +35,6 @@ function formatValidUntil(iso: string) {
 
 export function ActivateBindPage() {
   const [params] = useSearchParams();
-  const navigate = useNavigate();
   const sessionUser = useAuthStore((s) => s.user);
   const acceptSession = useAuthStore((s) => s.acceptSession);
   const [username, setUsername] = useState(
@@ -54,6 +53,13 @@ export function ActivateBindPage() {
   const setUser = useAuthStore((s) => s.setUser);
 
   useEffect(() => {
+    if (isInboxflowDesktop()) {
+      window.inboxflowDesktop?.bindBlocked?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isInboxflowDesktop()) return;
     void loadDesktopLicenseConfig().then((cfg) => {
       if (!cfg) return;
       if (cfg.username) setUsername((prev) => prev || cfg.username || '');
@@ -89,6 +95,23 @@ export function ActivateBindPage() {
       : sessionUser?.organization?.name || `${displayName} workspace`;
   const activated = Boolean(boundIp);
   const pcIp = boundIp || '—';
+
+  useEffect(() => {
+    if (!unlocked) return;
+    void api
+      .get<{ ip?: string }>('/api/auth/bind-ip')
+      .then((d) => {
+        const ip = String(d.ip || '').trim();
+        if (ip) setRdpIp((prev) => prev || ip);
+      })
+      .catch(() => {
+        /* hint is optional */
+      });
+  }, [unlocked]);
+
+  if (isInboxflowDesktop()) {
+    return <div className="min-h-dvh bg-background" />;
+  }
 
   function onUnlock(e: React.FormEvent) {
     e.preventDefault();
@@ -245,8 +268,8 @@ export function ActivateBindPage() {
               <h1 className="if-admin-heading if-admin-title mt-1 font-semibold">Dashboard overview</h1>
               <p className="if-admin-lede mt-2 max-w-2xl text-sm leading-relaxed">
                 {activated
-                  ? `License valid until ${formatValidUntil(validUntil)}. You can open the mailer.`
-                  : 'License not activated. Bind PC to activate this license, then the mailer can work.'}
+                  ? `License valid until ${formatValidUntil(validUntil)}. Open the Inbox Flow Windows app on this PC.`
+                  : 'License not activated. Bind PC here first, then open the Inbox Flow Windows app.'}
               </p>
             </div>
             <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
@@ -288,12 +311,9 @@ export function ActivateBindPage() {
                   </p>
                 </div>
                 {activated ? (
-                  <Link
-                    to={mailerHomePath(sessionUser?.role)}
-                    className="if-admin-btn if-admin-btn-primary justify-center sm:min-w-[10rem]"
-                  >
-                    Open mailer
-                  </Link>
+                  <span className="if-admin-muted text-sm font-semibold">
+                    Close this tab and open the Inbox Flow Windows app.
+                  </span>
                 ) : (
                   <button
                     type="button"
@@ -371,7 +391,7 @@ export function ActivateBindPage() {
             <p className="text-xs font-bold uppercase tracking-wide text-teal-700">Activated</p>
             <h2 className="if-admin-heading mt-2 text-2xl font-semibold">This PC is bound</h2>
             <p className="if-admin-lede mt-3 text-sm font-semibold text-slate-800">
-              You can now use the mailer.
+              This PC is bound. Close this tab and open the Inbox Flow Windows app — that is the mailer.
             </p>
             <div className="mt-4 space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm">
               <p>
@@ -390,12 +410,9 @@ export function ActivateBindPage() {
             <button
               type="button"
               className="if-admin-btn if-admin-btn-primary mt-6 w-full justify-center"
-              onClick={() => {
-                setDoneOpen(false);
-                navigate(mailerHomePath(sessionUser?.role));
-              }}
+              onClick={() => setDoneOpen(false)}
             >
-              Continue
+              Done
             </button>
             <button type="button" className="if-admin-btn if-admin-btn-ghost mt-2 w-full justify-center" onClick={() => setDoneOpen(false)}>
               Close

@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayout';
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
+import { isInboxflowDesktop } from '@/lib/bind-pc';
 import { mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
@@ -20,6 +21,10 @@ export function LoginPage() {
   const sessionUser = useAuthStore((s) => s.user);
 
   useEffect(() => {
+    if (tenantNeedsBind(sessionUser) && isInboxflowDesktop()) {
+      window.inboxflowDesktop?.bindBlocked?.();
+      return;
+    }
     setBindWarn(tenantNeedsBind(sessionUser));
   }, [sessionUser]);
 
@@ -65,6 +70,10 @@ export function LoginPage() {
       }
       const signed = useAuthStore.getState().user;
       if (tenantNeedsBind(signed)) {
+        if (isInboxflowDesktop()) {
+          window.inboxflowDesktop?.bindBlocked?.();
+          return;
+        }
         navigate('/bind-pc');
         return;
       }
@@ -72,6 +81,10 @@ export function LoginPage() {
     } catch (err) {
       const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code || '') : '';
       if (code === 'BIND_REQUIRED') {
+        if (isInboxflowDesktop()) {
+          window.inboxflowDesktop?.bindBlocked?.();
+          return;
+        }
         setBindWarn(true);
         return;
       }
@@ -81,6 +94,9 @@ export function LoginPage() {
     }
   }
 
+  if (signedIn && tenantNeedsBind(signedIn) && isInboxflowDesktop()) {
+    return <div className="min-h-dvh bg-background" />;
+  }
   if (signedIn && tenantNeedsBind(signedIn)) {
     return <Navigate to="/bind-pc" replace />;
   }
@@ -144,11 +160,13 @@ export function LoginPage() {
           Sign in
         </AuthSubmit>
       </form>
-      <BindRequiredModal
-        open={bindWarn}
-        username={email || sessionUser?.firstName || sessionUser?.email || ''}
-        onDismiss={() => setBindWarn(false)}
-      />
+      {isInboxflowDesktop() ? null : (
+        <BindRequiredModal
+          open={bindWarn}
+          username={email || sessionUser?.firstName || sessionUser?.email || ''}
+          onDismiss={() => setBindWarn(false)}
+        />
+      )}
     </AuthLayout>
   );
 }

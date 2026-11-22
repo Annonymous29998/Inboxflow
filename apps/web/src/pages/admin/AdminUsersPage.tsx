@@ -13,6 +13,7 @@ import { ADMIN_UI_DEMO, bumpSubscription, DEMO_SESSIONS, hydrateDemoUsers, isDem
 import { describeUserAgent } from '@/lib/user-agent';
 import { subEndingSoon } from './admin-insights';
 import { licenseConfigJson } from '@/lib/desktop-license-config';
+import { publicBindPcUrl } from '@/lib/bind-pc';
 
 type SubscriptionInfo = {
   status: string;
@@ -64,6 +65,16 @@ function usernameOf(u: AdminUser) {
   return u.username || u.firstName || u.email.split('@')[0] || u.email;
 }
 
+function bindLinkFor(username: string) {
+  return publicBindPcUrl(username);
+}
+
+async function copyBindLink(username: string) {
+  const url = bindLinkFor(username);
+  await navigator.clipboard.writeText(url);
+  toast.success('Copied Bind PC link', url);
+}
+
 function subscriptionActive(sub?: SubscriptionInfo | null) {
   if (!sub) return false;
   if (sub.active === false) return false;
@@ -71,7 +82,7 @@ function subscriptionActive(sub?: SubscriptionInfo | null) {
   return Number.isFinite(end) && end > Date.now() && sub.status !== 'EXPIRED' && sub.status !== 'CANCELLED';
 }
 
-type UserAction = 'status' | 'renew' | 'add' | 'unbind';
+type UserAction = 'status' | 'renew' | 'add' | 'unbind' | 'bindlink';
 
 function UserActionMenu({
   status,
@@ -115,6 +126,7 @@ function UserActionMenu({
   }, [open]);
 
   const items: { id: UserAction; text: string }[] = [
+    { id: 'bindlink', text: 'Copy bind link' },
     { id: 'status', text: status === 'SUSPENDED' ? 'Activate' : 'Deactivate' },
     { id: 'renew', text: 'Renew' },
     { id: 'add', text: 'Add time' },
@@ -487,6 +499,10 @@ export function AdminUsersPage() {
   }
 
   function runRowAction(u: AdminUser, action: string) {
+    if (action === 'bindlink') {
+      void copyBindLink(usernameOf(u));
+      return;
+    }
     if (action === 'status') void toggleStatus(u);
     if (action === 'renew') void renewSubscription(u);
     if (action === 'unbind') void unbindLicense(u);
@@ -604,9 +620,21 @@ export function AdminUsersPage() {
                         <p className="if-admin-muted mt-1 text-xs">{u.boundIp}</p>
                       </div>
                     ) : (
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold uppercase text-slate-600">
-                        Not bound
-                      </span>
+                      <div>
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold uppercase text-slate-600">
+                          Not bound
+                        </span>
+                        <button
+                          type="button"
+                          className="mt-1 block text-left text-xs font-semibold text-teal-700 hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void copyBindLink(usernameOf(u));
+                          }}
+                        >
+                          Copy bind link
+                        </button>
+                      </div>
                     )}
                   </td>
                   <td className="px-3 py-2.5">
@@ -687,7 +715,7 @@ export function AdminUsersPage() {
 
                 {issued ? (
                   <div className="space-y-3 p-5">
-                    <p className="if-admin-muted text-sm">Give these to the user once. The license key is not shown again.</p>
+                    <p className="if-admin-muted text-sm">Give these to the user once. They bind in the browser on the Bind PC link, then open the EXE.</p>
                     <div className="if-admin-surface p-3 text-sm">
                       <p>
                         Username:{' '}
@@ -697,6 +725,10 @@ export function AdminUsersPage() {
                         License key:{' '}
                         <span className="font-semibold text-teal-800">{issued.licenseKey}</span>
                       </p>
+                      <p className="mt-1 break-all">
+                        Bind PC:{' '}
+                        <span className="font-semibold text-teal-800">{bindLinkFor(issued.username)}</span>
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -704,13 +736,21 @@ export function AdminUsersPage() {
                         className="if-admin-btn if-admin-btn-ghost"
                         onClick={() => {
                           void navigator.clipboard.writeText(
-                            `Username: ${issued.username}\nLicense key: ${issued.licenseKey}`,
+                            `Username: ${issued.username}\nLicense key: ${issued.licenseKey}\nBind PC: ${bindLinkFor(issued.username)}`,
                           );
-                          toast.success('Copied username and license key');
+                          toast.success('Copied username, license key, and bind link');
                         }}
                       >
                         <Copy className="h-4 w-4" />
                         Copy
+                      </button>
+                      <button
+                        type="button"
+                        className="if-admin-btn if-admin-btn-ghost"
+                        onClick={() => void copyBindLink(issued.username)}
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy bind link
                       </button>
                       <button
                         type="button"
@@ -883,8 +923,16 @@ export function AdminUsersPage() {
                           {detail.boundAt ? ` · ${new Date(detail.boundAt).toLocaleDateString()}` : ''}
                         </p>
                       ) : (
-                        <p className="if-admin-muted mt-1 text-xs">Waiting for Bind PC on their Windows VPS</p>
+                        <p className="if-admin-muted mt-1 text-xs">Waiting for Bind PC in the browser on their bind link</p>
                       )}
+                      <button
+                        type="button"
+                        className="if-admin-btn if-admin-btn-ghost mt-2"
+                        onClick={() => void copyBindLink(usernameOf(detail))}
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy bind link
+                      </button>
                     </div>
                     <div className="if-admin-surface p-3">
                       <p className="if-admin-muted text-xs font-bold uppercase tracking-wide">Data</p>
@@ -1044,6 +1092,9 @@ export function AdminUsersPage() {
                     <p className="mt-1">
                       License key: <span className="font-semibold text-teal-800">{resetIssued.licenseKey}</span>
                     </p>
+                    <p className="mt-1 break-all">
+                      Bind PC: <span className="font-semibold text-teal-800">{bindLinkFor(resetIssued.username)}</span>
+                    </p>
                   </div>
                   <div className="flex flex-wrap justify-end gap-2">
                     <button
@@ -1051,9 +1102,9 @@ export function AdminUsersPage() {
                       className="if-admin-btn if-admin-btn-ghost"
                       onClick={() => {
                         void navigator.clipboard.writeText(
-                          `Username: ${resetIssued.username}\nLicense key: ${resetIssued.licenseKey}`,
+                          `Username: ${resetIssued.username}\nLicense key: ${resetIssued.licenseKey}\nBind PC: ${bindLinkFor(resetIssued.username)}`,
                         );
-                        toast.success('Copied username and license key');
+                        toast.success('Copied username, license key, and bind link');
                       }}
                     >
                       <Copy className="h-4 w-4" />

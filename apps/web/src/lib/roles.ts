@@ -9,7 +9,7 @@ export function isMailerTenant(role?: string | null) {
   return Boolean(role) && !isStaffRole(role);
 }
 
-/** Created users must Bind PC on the EXE before the mailer. Staff never bind. */
+/** Created users must Bind PC in the browser (admin bind URL) before the EXE mailer. Staff never bind. */
 export function tenantNeedsBind(user?: { role?: string | null; boundIp?: string | null } | null) {
   return isMailerTenant(user?.role) && !user?.boundIp;
 }

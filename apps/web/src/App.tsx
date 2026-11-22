@@ -28,13 +28,13 @@ import { useAuthStore } from '@/stores/auth';
 import { Toaster } from '@/components/ui/Toaster';
 import { ConfirmViewport } from '@/components/ui/ConfirmViewport';
 import { isMailerTenant, isStaffRole, mailerHomePath, tenantNeedsBind } from '@/lib/roles';
+import { isInboxflowDesktop } from '@/lib/bind-pc';
 import { documentTitle, shellFromPath } from '@/lib/shell';
 import { useToastStore } from '@/stores/toast';
 import { useConfirmStore } from '@/stores/confirm';
 import { AppErrorBoundary } from '@/components/layout/AppErrorBoundary';
 import { ActivateBindPage } from '@/pages/ActivateBindPage';
 import { SentryTestErrorPage } from '@/pages/SentryTestErrorPage';
-import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 
 const queryClient = new QueryClient();
 
@@ -49,23 +49,29 @@ function Protected({ children }: { children: React.ReactNode }) {
     void fetchMe();
   }, [fetchMe]);
 
+  useEffect(() => {
+    if (user && tenantNeedsBind(user) && isInboxflowDesktop()) {
+      window.inboxflowDesktop?.bindBlocked?.();
+    }
+  }, [user]);
+
   if (!user && (loading || accessToken || refreshToken)) {
     return <div className="min-h-dvh bg-background" />;
   }
   if (!user) return <Navigate to="/login" replace />;
   if (tenantNeedsBind(user)) {
-    return (
-      <div className="min-h-dvh bg-background">
-        <BindRequiredModal open username={user.firstName || user.email || ''} />
-      </div>
-    );
+    if (isInboxflowDesktop()) {
+      return <div className="min-h-dvh bg-background" />;
+    }
+    return <Navigate to="/bind-pc" replace />;
   }
   return <>{children}</>;
 }
 
 function SignedInHome() {
   const user = useAuthStore((s) => s.user);
-  if (user && tenantNeedsBind(user)) return <Navigate to="/bind-pc" replace />;
+  if (user && tenantNeedsBind(user) && !isInboxflowDesktop()) return <Navigate to="/bind-pc" replace />;
+  if (user && tenantNeedsBind(user) && isInboxflowDesktop()) return <Navigate to="/login" replace />;
   if (user) return <Navigate to={mailerHomePath(user.role)} replace />;
   return <Navigate to="/login" replace />;
 }

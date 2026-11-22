@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Prepare API node_modules + Prisma engines for Electron extraResources.
+ * Prepare API node_modules + Prisma engines + web dist for Electron extraResources.
  * Run after building api + web, before electron-builder.
  */
 import { cpSync, existsSync, mkdirSync, rmSync } from 'fs';
@@ -13,6 +13,7 @@ const desktopRoot = join(__dirname, '..');
 const repoRoot = join(desktopRoot, '../..');
 const apiRoot = join(repoRoot, 'apps/api');
 const stage = join(desktopRoot, '.stage-api');
+const webDist = join(repoRoot, 'apps/web/dist');
 
 function mustExist(p, hint) {
   if (!existsSync(p)) {
@@ -22,7 +23,7 @@ function mustExist(p, hint) {
 }
 
 mustExist(join(apiRoot, 'dist/index.js'), 'Run: npm run build -w @inboxflow/api');
-mustExist(join(repoRoot, 'apps/web/dist/index.html'), 'Run: npm run build -w @inboxflow/web');
+mustExist(join(webDist, 'index.html'), 'Run: npm run build -w @inboxflow/web');
 
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
@@ -54,4 +55,4 @@ if (existsSync(sqliteGen)) {
 }
 
 console.log('Desktop API resources staged at', stage);
-console.log('Default Windows EXE is Lightsail-only and does not pack this tree.');
+console.log('Web dist ready at', webDist);

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
- * Checks the Windows installer is a thin Lightsail client (fast extract)
- * and that the packaged app contains the launcher + env template.
- * Works on macOS and GitHub windows-latest (no du/unzip required).
+ * Checks the Windows installer packs the hybrid mailer (local API + web + Node)
+ * plus launcher + env template.
  */
 import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
@@ -71,8 +70,8 @@ const zipMb = statSync(zipPath).size / (1024 * 1024);
 ok(`${setup}  ${setupMb.toFixed(1)} MB`);
 ok(`${zip}  ${zipMb.toFixed(1)} MB`);
 
-if (setupMb > 120) {
-  fail(`installer is ${setupMb.toFixed(1)} MB — still packing API/node (should be under ~100 MB)`);
+if (setupMb > 280) {
+  fail(`installer is ${setupMb.toFixed(1)} MB — larger than the hybrid package budget`);
 }
 if (setupMb < 40) {
   fail(`installer is ${setupMb.toFixed(1)} MB — suspiciously small`);
@@ -94,27 +93,39 @@ if (!existsSync(join(unpacked, 'config.json'))) {
 }
 ok('config.json packed next to InboxFlow.exe');
 
-if (existsSync(join(resources, 'api', 'node_modules'))) {
-  fail('api/node_modules is packed — install will be slow again');
+if (!existsSync(join(resources, 'api', 'dist', 'index.js'))) {
+  fail('resources/api/dist/index.js missing — hybrid mailer needs the bundled API');
 }
-if (existsSync(join(resources, 'node', 'node.exe'))) {
-  fail('portable node.exe is packed — install will be slow again');
+ok('bundled API packed');
+
+if (!existsSync(join(resources, 'api', 'node_modules'))) {
+  fail('resources/api/node_modules missing — local API cannot start');
 }
-ok('no API node_modules / portable Node in package');
+ok('API node_modules packed');
+
+if (!existsSync(join(resources, 'web', 'index.html'))) {
+  fail('resources/web/index.html missing — in-app window needs the local mailer UI');
+}
+ok('local web UI packed');
+
+if (!existsSync(join(resources, 'node', 'node.exe'))) {
+  fail('resources/node/node.exe missing — packaged API needs portable Node');
+}
+ok('portable Node packed');
 
 const unpackedMb = dirSizeBytes(unpacked) / (1024 * 1024);
 ok(`win-unpacked ${unpackedMb.toFixed(1)} MB`);
-if (unpackedMb > 400) {
+if (unpackedMb > 950) {
   fail(`unpacked tree is ${unpackedMb.toFixed(1)} MB — extract will stall on Windows`);
 }
 
 const listing = zipListing(zipPath);
 if (!listing.includes('InboxFlow.exe')) fail('zip does not contain InboxFlow.exe');
 if (!/\bconfig\.json\b/.test(listing)) fail('zip does not contain config.json');
-if (listing.includes('api/node_modules') || listing.includes('node/node.exe')) {
-  fail('zip still contains API/node payload');
+if (!listing.includes('api/dist/index.js') && !listing.includes('api\\dist\\index.js')) {
+  fail('zip does not contain the bundled API');
 }
-ok('zip listing contains InboxFlow.exe only (thin client)');
+ok('zip listing contains InboxFlow.exe + hybrid API');
 
-console.log('\nInstaller package looks complete and thin.');
+console.log('\nInstaller package looks complete (hybrid local mailer).');
 process.exit(0);

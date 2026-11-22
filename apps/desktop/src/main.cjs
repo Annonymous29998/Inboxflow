@@ -1,9 +1,9 @@
 /**
  * Inbox Flow desktop launcher (Kestrel-style).
  *
- * Starts a local proxy, then opens the mailer in an in-app window.
- * Tray can still open http://localhost:LOCAL_PORT in Chrome.
- * Default remote: proxy to Lightsail — no bundled API required.
+ * Starts a local hybrid host, then opens the mailer in an in-app window.
+ * Auth / license / bind-status go to Lightsail. Campaigns/contacts/SMTP stay in SQLite.
+ * The window loads localhost — never novasreach.xyz. Bind PC is a browser URL from admin.
  * rdp/local: spawn resources/api when present. Bind IP / SOCKS follow send.
  */
 const { app, BrowserWindow, dialog, shell, Tray, Menu, nativeImage, ipcMain, powerSaveBlocker } = require('electron');
@@ -300,24 +300,6 @@ function sqliteFileUrl() {
   return `file:${path.join(userDataDir(), 'workspace.db').replace(/\\/g, '/')}`;
 }
 
-function decodeJwtPayload(token) {
-  try {
-    const parts = String(token || '').split('.');
-    if (parts.length < 2) return null;
-    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function jwtFromRequest(req) {
-  const auth = String(req.headers.authorization || '');
-  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
-  const cookie = String(req.headers.cookie || '');
-  const match = cookie.match(/(?:^|;\s*)access_token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
-}
-
 function isCloudLoginPath(urlPath) {
   const p = String(urlPath || '').split('?')[0] || '';
   return (
@@ -329,17 +311,96 @@ function isCloudLoginPath(urlPath) {
   );
 }
 
+function isRemotePublicHost(url) {
+  try {
+    const host = new URL(String(url || '')).hostname;
+    return (
+      /novasreach\.xyz$/i.test(host) ||
+      /inboxingsend\.xyz$/i.test(host) ||
+      host === '13.38.60.67'
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function showBindBlockedDialog() {
+  try {
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'Inbox Flow',
+      message: 'PC not bound yet',
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true,
+    });
+  } catch {
+    /* ignore */
+  }
+  shuttingDown = true;
+  app.quit();
+}
+
+function postJson(url, body, timeoutMs = 15000) {
+  const target = new URL(url);
+  const lib = target.protocol === 'https:' ? https : http;
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: timeoutMs,
+        rejectUnauthorized: String(process.env.INBOXFLOW_TLS_INSECURE || '').toLowerCase() !== '1',
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          let data = null;
+          try {
+            data = raw ? JSON.parse(raw) : null;
+          } catch {
+            data = null;
+          }
+          resolve({ status: res.statusCode || 0, data });
+        });
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('Bind status timed out')));
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function fetchBindStatus(remoteBase, username, licenseKey) {
+  const { status, data } = await postJson(`${remoteBase.replace(/\/$/, '')}/api/auth/bind-status`, {
+    username,
+    licenseKey,
+  });
+  if (status === 401) return { ok: false, unauthorized: true };
+  if (status >= 500 || !data) throw new Error('Could not check Bind PC status');
+  return {
+    ok: true,
+    staff: Boolean(data.staff),
+    bound: Boolean(data.bound),
+    boundIp: data.boundIp ? String(data.boundIp) : '',
+  };
+}
+
 function shouldUseLocalWorkspace(req, hasLocal) {
   if (!hasLocal) return false;
   const p = String(req.url || '').split('?')[0] || '';
-  if (!p.startsWith('/api/')) return false;
-  // Gmail has no JWT — opens/clicks must still hit this VPS, not Lightsail.
-  if (p.startsWith('/api/t/') || p.startsWith('/api/unsubscribe')) return true;
   if (isCloudLoginPath(p)) return false;
-  const payload = decodeJwtPayload(jwtFromRequest(req));
-  const role = payload && payload.role;
-  if (payload && payload.workspaceLocal === true) return true;
-  if (!role || role === 'SUPER_ADMIN') return false;
   return true;
 }
 
@@ -574,7 +635,7 @@ function startLocalApi(fileEnv, opts = {}) {
   if (!fs.existsSync(paths.apiEntry)) {
     throw new Error(`Local API missing at ${paths.apiEntry}`);
   }
-  if (!hybrid && !fs.existsSync(paths.webRoot)) {
+  if (!fs.existsSync(paths.webRoot)) {
     throw new Error(`Local web missing at ${paths.webRoot}`);
   }
 
@@ -592,9 +653,9 @@ function startLocalApi(fileEnv, opts = {}) {
     ...process.env,
     ...fileEnv,
     NODE_ENV: 'production',
-    INBOXFLOW_DESKTOP: hybrid ? '' : '1',
+    INBOXFLOW_DESKTOP: '1',
     DESKTOP_HYBRID: hybrid ? '1' : '',
-    DESKTOP_WEB_ROOT: hybrid ? '' : paths.webRoot,
+    DESKTOP_WEB_ROOT: fs.existsSync(paths.webRoot) ? paths.webRoot : '',
     API_PORT: String(port),
     PORT: String(port),
     APP_URL: browserOrigin,
@@ -682,12 +743,16 @@ function showMailerWindow() {
     if (mailerWindow && !mailerWindow.isDestroyed()) mailerWindow.show();
   });
   mailerWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isRemotePublicHost(url)) return { action: 'deny' };
     try {
       shell.openExternal(url);
     } catch {
       /* ignore */
     }
     return { action: 'deny' };
+  });
+  mailerWindow.webContents.on('will-navigate', (event, url) => {
+    if (isRemotePublicHost(url)) event.preventDefault();
   });
   mailerWindow.loadURL(browserStartUrl());
   mailerWindow.on('closed', () => {
@@ -837,6 +902,9 @@ ipcMain.on('inboxflow:save-bound-ip', (_evt, ip) => {
     console.error('[desktop] save-bound-ip', err);
   }
 });
+ipcMain.on('inboxflow:bind-blocked', () => {
+  void showBindBlockedDialog();
+});
 ipcMain.on('inboxflow:quit', () => {
   shuttingDown = true;
   app.quit();
@@ -894,29 +962,40 @@ async function boot() {
     } else {
       persistMissingSecrets(fileEnv);
       const paths = resolvePaths();
-      const hasLocalApi = fs.existsSync(paths.apiEntry);
-      let workspaceOrigin = '';
-      if (hasLocalApi) {
-        const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);
-        setSplash({ line: 'Starting local host…', pct: 40 });
-        startLocalApi(
-          {
-            ...fileEnv,
-            LOCAL_PORT: String(workspacePort),
-            API_PORT: String(workspacePort),
-            DATABASE_URL: sqliteFileUrl(),
-          },
-          { hybrid: true, browserOrigin, publishedPort: localPort },
+      if (!fs.existsSync(paths.apiEntry)) {
+        throw new Error(
+          `Local API missing at ${paths.apiEntry}. Reinstall Inbox Flow 1.2.9 (this build includes the on-device mailer).`,
         );
-        setSplash({ line: 'Connecting workspace…', pct: 58 });
-        await waitForUrl(`http://127.0.0.1:${workspacePort}/health`);
-        workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
       }
-      setSplash({ line: 'Connecting Inbox Flow…', pct: 72 });
-      await waitForUrl(`${remoteBase}/health`);
-      setSplash({ line: `Binding http://localhost:${localPort}…`, pct: 84 });
-      appUrl = await startRemoteProxy(localPort, remoteBase, workspaceOrigin || null);
+      const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);
+      setSplash({ line: 'Starting local host…', pct: 40 });
+      startLocalApi(
+        {
+          ...fileEnv,
+          LOCAL_PORT: String(workspacePort),
+          API_PORT: String(workspacePort),
+          DATABASE_URL: sqliteFileUrl(),
+        },
+        { hybrid: true, browserOrigin, publishedPort: localPort },
+      );
+      setSplash({ line: 'Connecting workspace…', pct: 58 });
+      await waitForUrl(`http://127.0.0.1:${workspacePort}/health`);
+      const workspaceOrigin = `http://127.0.0.1:${workspacePort}`;
+      setSplash({ line: `Binding http://localhost:${localPort}…`, pct: 78 });
+      appUrl = await startRemoteProxy(localPort, remoteBase, workspaceOrigin);
       await waitForUrl(`${appUrl}/health`);
+
+      const license = readLicenseConfigFile();
+      if (license?.username && license?.license_key) {
+        setSplash({ line: 'Checking Bind PC…', pct: 90 });
+        const status = await fetchBindStatus(remoteBase, license.username, license.license_key);
+        if (status.ok && !status.staff && !status.bound) {
+          setSplash({ stage: 'PC not bound yet', line: 'PC not bound yet', pct: 100 });
+          await showBindBlockedDialog();
+          return;
+        }
+        if (status.ok && status.boundIp) persistBoundIp(status.boundIp);
+      }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -927,7 +1006,7 @@ async function boot() {
         `Expected browser URL: http://localhost:${localPort}\n` +
         (localSend
           ? 'Local/RDP send needs the bundled API + DATABASE_URL on this machine.'
-          : `Remote backend: ${remoteBase}`),
+          : 'Tenant mailer is local (SQLite). Auth/license checks use the Inbox Flow API.'),
     );
     app.quit();
     return;

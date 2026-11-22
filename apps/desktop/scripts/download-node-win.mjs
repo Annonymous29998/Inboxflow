@@ -5,7 +5,7 @@
  *
  * Usage: node apps/desktop/scripts/download-node-win.mjs
  */
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -33,9 +33,9 @@ rmSync(extractRoot, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 mkdirSync(extractRoot, { recursive: true });
 
-execSync(`unzip -qo "${zipPath}" -d "${extractRoot}"`, { stdio: 'inherit' });
+execSync(`tar -xf "${zipPath}" -C "${extractRoot}"`, { stdio: 'inherit' });
 const nested = join(extractRoot, `node-${VERSION}-win-x64`);
-execSync(`cp -R "${nested}/." "${outDir}/"`, { stdio: 'inherit' });
+copyFileSync(join(nested, 'node.exe'), join(outDir, 'node.exe'));
 
 if (!existsSync(join(outDir, 'node.exe'))) {
   console.error('node.exe missing after extract');

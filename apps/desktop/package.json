@@ -1,8 +1,8 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "private": true,
-  "description": "Inbox Flow Windows desktop — connects to Lightsail",
+  "description": "Inbox Flow Windows desktop — local hybrid mailer",
   "author": "Inbox Flow",
   "main": "src/main.cjs",
   "scripts": {
@@ -49,6 +49,18 @@
       {
         "from": "resources/config.json",
         "to": "config.json"
+      },
+      {
+        "from": ".stage-api",
+        "to": "api"
+      },
+      {
+        "from": "../web/dist",
+        "to": "web"
+      },
+      {
+        "from": "resources/node/node.exe",
+        "to": "node/node.exe"
       }
     ],
     "asar": true,

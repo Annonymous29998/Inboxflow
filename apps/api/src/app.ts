@@ -197,9 +197,9 @@ export async function buildApp() {
     },
   });
 
-  // Desktop EXE: serve the Vite SPA from the same origin as /api (no public domain).
+  // Desktop EXE: serve the Vite SPA from the same origin as /api (never novasreach.xyz).
   const webRoot = String(process.env.DESKTOP_WEB_ROOT || '').trim();
-  if (process.env.INBOXFLOW_DESKTOP === '1' && webRoot && existsSync(join(webRoot, 'index.html'))) {
+  if (webRoot && existsSync(join(webRoot, 'index.html'))) {
     const { default: fastifyStatic } = await import('@fastify/static');
     await app.register(fastifyStatic, {
       root: webRoot,

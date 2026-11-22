@@ -54,7 +54,7 @@ if ($info.ProductName -notmatch 'Inbox') {
 }
 
 $launched = Start-Process -FilePath $installed -PassThru
-Start-Sleep -Seconds 25
+Start-Sleep -Seconds 45
 $alive = Get-Process -Id $launched.Id -ErrorAction SilentlyContinue
 if (-not $alive) {
   throw "InboxFlow.exe exited during launch (code $($launched.ExitCode))"

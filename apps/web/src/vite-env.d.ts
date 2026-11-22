@@ -14,6 +14,7 @@ interface InboxflowDesktopBridge {
   isDesktop?: boolean;
   platform?: string;
   saveBoundIp?: (ip: string) => void;
+  bindBlocked?: () => void;
 }
 
 interface Window {
