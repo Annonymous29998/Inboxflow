@@ -33,6 +33,8 @@ let splashReady = false;
 const splashQueue = [];
 let tray = null;
 let apiChild = null;
+let apiFailure = null;
+const apiLog = [];
 let proxyServer = null;
 let shuttingDown = false;
 let appUrl = `http://localhost:${DEFAULT_LOCAL_PORT}`;
@@ -230,6 +232,8 @@ async function ensureApiModules() {
   const marker = path.join(dest, 'fastify', 'package.json');
   if (fs.existsSync(marker)) return;
   if (!fs.existsSync(archive)) return;
+  const countFile = path.join(res, 'api', 'node_modules.tar.entries');
+  const total = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0;
   setSplash({ stage: 'Preparing', line: 'Unpacking the mailer…', pct: 30 });
   await sleep(400);
   fs.mkdirSync(dest, { recursive: true });
@@ -239,7 +243,24 @@ async function ensureApiModules() {
       const tar = await import('tar');
       const extract = tar.x || (tar.default && tar.default.x);
       if (!extract) throw new Error('tar extract is unavailable');
-      await extract({ file: archive, cwd: dest, strict: false });
+      let done = 0;
+      let lastPaint = 0;
+      await extract({
+        file: archive,
+        cwd: dest,
+        strict: false,
+        onentry() {
+          done += 1;
+          const now = Date.now();
+          if (now - lastPaint < 250 && (!total || done < total)) return;
+          lastPaint = now;
+          const pct = total > 0 ? 30 + Math.min(24, Math.round((done / total) * 24)) : 32;
+          const line = total > 0
+            ? `Unpacking the mailer… ${done.toLocaleString()} / ${total.toLocaleString()}`
+            : `Unpacking the mailer… ${done.toLocaleString()} files`;
+          setSplash({ stage: 'Preparing', line, pct });
+        },
+      });
       if (fs.existsSync(marker)) return;
       last = 'fastify missing after unpack';
     } catch (err) {
@@ -286,6 +307,10 @@ function waitForUrl(url, timeoutMs = 60000) {
     const tick = () => {
       if (shuttingDown) {
         reject(new Error('App shutting down'));
+        return;
+      }
+      if (apiFailure) {
+        reject(new Error(apiFailure));
         return;
       }
       const req = lib.get(url, {
@@ -706,22 +731,43 @@ function startLocalApi(fileEnv, opts = {}) {
     NODE_PATH: [paths.nodeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
   };
 
+  apiFailure = null;
+  apiLog.length = 0;
+  const logPath = path.join(userDataDir(), 'api-startup.log');
+  try {
+    fs.writeFileSync(logPath, '');
+  } catch {
+    /* log file is optional */
+  }
   apiChild = spawn(findNodeBinary(), [paths.apiEntry], {
     cwd: paths.apiCwd,
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
-  apiChild.stdout?.on('data', (buf) => process.stdout.write(`[api] ${buf}`));
-  apiChild.stderr?.on('data', (buf) => process.stderr.write(`[api] ${buf}`));
+  const pushLog = (buf) => {
+    const text = String(buf);
+    process.stdout.write(`[api] ${text}`);
+    try {
+      fs.appendFileSync(logPath, text);
+    } catch {
+      /* ignore */
+    }
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      apiLog.push(line);
+      if (apiLog.length > 60) apiLog.shift();
+    }
+  };
+  apiChild.stdout?.on('data', pushLog);
+  apiChild.stderr?.on('data', pushLog);
   apiChild.on('exit', (code, signal) => {
     apiChild = null;
-    if (!shuttingDown) {
-      dialog.showErrorBox(
-        'Inbox Flow API stopped',
-        `Local server exited (code ${code ?? 'n/a'}, signal ${signal ?? 'n/a'}).`,
-      );
-    }
+    if (shuttingDown) return;
+    const tail = apiLog.slice(-12).join('\n');
+    apiFailure =
+      `Local server exited (code ${code ?? 'n/a'}, signal ${signal ?? 'n/a'}).` +
+      (tail ? `\n\n${tail}` : '');
   });
   return origin;
 }

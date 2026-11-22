@@ -1,29 +1,36 @@
-import { spawnSync } from 'child_process';
+import { readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { isSqliteDatabase } from './db-kind.js';
+import { repairSqliteDdl, splitSqliteScript } from './sqlite-ddl.js';
 
-export function ensureSqliteSchema() {
+export async function ensureSqliteSchema() {
   if (!isSqliteDatabase()) return;
   const here = dirname(fileURLToPath(import.meta.url));
   const apiRoot = join(here, '../..');
-  const schema = join(apiRoot, 'prisma/schema.sqlite.prisma');
-  const require = createRequire(import.meta.url);
-  let cli: string;
+  const file = join(apiRoot, 'prisma/sqlite-bootstrap.sql');
+  let raw: string;
   try {
-    cli = require.resolve('prisma/build/index.js');
+    raw = readFileSync(file, 'utf8');
   } catch {
-    console.warn('[sqlite] prisma CLI missing; skip db push');
-    return;
+    throw new Error(`Local database script missing at ${file}`);
   }
-  const result = spawnSync(process.execPath, [cli, 'db', 'push', '--schema', schema, '--skip-generate'], {
-    cwd: apiRoot,
-    env: process.env,
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || 'prisma db push failed for local workspace');
+  const require = createRequire(import.meta.url);
+  const { PrismaClient } = require('../generated/prisma-sqlite/index.js') as {
+    PrismaClient: new () => {
+      $executeRawUnsafe: (sql: string) => Promise<unknown>;
+      $disconnect: () => Promise<void>;
+    };
+  };
+  const client = new PrismaClient();
+  try {
+    const statements = splitSqliteScript(repairSqliteDdl(raw));
+    for (const statement of statements) {
+      await client.$executeRawUnsafe(statement);
+    }
+  } finally {
+    await client.$disconnect();
   }
   console.info('[sqlite] local workspace database ready');
 }

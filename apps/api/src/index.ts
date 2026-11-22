@@ -22,7 +22,7 @@ process.on('uncaughtException', (err) => {
 // Railway: trigger watched-filter redeploy so skipped railway.json + /health-first fixes actually apply.
 
 async function main() {
-  ensureSqliteSchema();
+  await ensureSqliteSchema();
   const app = await buildApp();
 
   // Background queue workers are optional. Nexlogs-style sending uses browser sequential

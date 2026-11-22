@@ -15,6 +15,14 @@ exports.default = async function afterPack(context) {
   const dest = path.join(context.appOutDir, 'resources', 'api', 'node_modules.tar');
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
+  let entries = 1;
+  const walk = (dir) => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      entries += 1;
+      if (ent.isDirectory()) walk(path.join(dir, ent.name));
+    }
+  };
+  walk(src);
   await tar.c(
     {
       file: dest,
@@ -24,6 +32,7 @@ exports.default = async function afterPack(context) {
     },
     ['.'],
   );
+  fs.writeFileSync(path.join(path.dirname(dest), 'node_modules.tar.entries'), String(entries));
   const loose = path.join(context.appOutDir, 'resources', 'api', 'node_modules');
   if (fs.existsSync(loose)) fs.rmSync(loose, { recursive: true, force: true });
   if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024 * 1024) {
