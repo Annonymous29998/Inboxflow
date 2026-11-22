@@ -7,6 +7,7 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import tar from 'tar';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = join(__dirname, '..');
@@ -102,10 +103,15 @@ const modulesArchive = join(resources, 'api', 'node_modules.tar');
 if (!existsSync(modulesArchive)) {
   fail('resources/api/node_modules.tar missing — local API cannot start');
 }
-const modulesList = zipListing(modulesArchive);
-if (!modulesList.includes('fastify/package.json') && !modulesList.includes('fastify\\package.json')) {
-  fail('API node_modules.tar incomplete — fastify missing');
-}
+let fastifyPacked = false;
+await tar.t({
+  file: modulesArchive,
+  onentry(entry) {
+    const name = String(entry.path || '').replace(/\\/g, '/');
+    if (name === 'fastify/package.json' || name.endsWith('/fastify/package.json')) fastifyPacked = true;
+  },
+});
+if (!fastifyPacked) fail('API node_modules.tar incomplete — fastify missing');
 ok('API node_modules.tar packed (one file so NSIS does not stall)');
 
 if (!existsSync(join(resources, 'web', 'index.html'))) {
