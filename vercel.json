@@ -1,5 +1,5 @@
 {
-  "installCommand": "npm install --include=dev",
+  "installCommand": "node scripts/vercel-install.mjs",
   "buildCommand": "npm run build -w @inboxflow/web",
   "outputDirectory": "apps/web/dist",
   "framework": null,
