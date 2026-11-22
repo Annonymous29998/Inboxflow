@@ -7,7 +7,10 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import tar from 'tar';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const tar = require('tar');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = join(__dirname, '..');
