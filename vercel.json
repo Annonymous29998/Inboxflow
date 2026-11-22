@@ -1,5 +1,5 @@
 {
-  "installCommand": "node scripts/vercel-install.mjs",
+  "installCommand": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --include=dev --ignore-scripts",
   "buildCommand": "npm run build -w @inboxflow/web",
   "outputDirectory": "apps/web/dist",
   "framework": null,
