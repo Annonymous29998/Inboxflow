@@ -217,21 +217,34 @@ REMOTE_APP_URL=${DEFAULT_REMOTE_URL}
   return dest;
 }
 
-/** NSIS ships one zip so install does not freeze on thousands of files. Expand once. */
-function ensureApiModules() {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Installer ships one archive so setup does not freeze. Expand next to the API, with retries. */
+async function ensureApiModules() {
   if (isDev) return;
   const res = process.resourcesPath;
   const dest = path.join(res, 'api', 'node_modules');
-  const zip = path.join(res, 'api', 'node_modules.zip');
+  const archive = path.join(res, 'api', 'node_modules.tar');
   const marker = path.join(dest, 'fastify', 'package.json');
   if (fs.existsSync(marker)) return;
-  if (!fs.existsSync(zip)) return;
+  if (!fs.existsSync(archive)) return;
   setSplash({ stage: 'Preparing', line: 'Unpacking the mailer…', pct: 30 });
+  await sleep(400);
   fs.mkdirSync(dest, { recursive: true });
-  execFileSync('tar', ['-xf', zip, '-C', dest], { windowsHide: true, timeout: 600000 });
-  if (!fs.existsSync(marker)) {
-    throw new Error('Could not unpack the mailer (node_modules.zip). Reinstall Inbox Flow.');
+  let last = 'unpack failed';
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    try {
+      execFileSync('tar', ['-xf', archive, '-C', dest], { windowsHide: true, timeout: 600000 });
+      if (fs.existsSync(marker)) return;
+      last = 'fastify missing after unpack';
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+    }
+    await sleep(800 * attempt);
   }
+  throw new Error(`Could not unpack the mailer. ${last}`);
 }
 
 function resolvePaths() {
@@ -971,7 +984,7 @@ async function boot() {
       line: firstRun ? 'Writing local config…' : 'Reading local config…',
       pct: 22,
     });
-    ensureApiModules();
+    await ensureApiModules();
     if (localSend) {
       setSplash({ line: 'Starting local host…', pct: 45 });
       appUrl = startLocalApi(fileEnv);
@@ -982,7 +995,7 @@ async function boot() {
       const paths = resolvePaths();
       if (!fs.existsSync(paths.apiEntry)) {
         throw new Error(
-          `Local API missing at ${paths.apiEntry}. Reinstall Inbox Flow 1.2.9 (this build includes the on-device mailer).`,
+          `Local API missing at ${paths.apiEntry}. Reinstall Inbox Flow.`,
         );
       }
       const workspacePort = Number(fileEnv.WORKSPACE_API_PORT || 3041);

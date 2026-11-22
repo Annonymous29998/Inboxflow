@@ -12,16 +12,17 @@ exports.default = async function afterPack(context) {
   if (!fs.existsSync(src)) {
     throw new Error(`afterPack: missing ${src} — run desktop:prepare first`);
   }
-  const dest = path.join(context.appOutDir, 'resources', 'api', 'node_modules.zip');
+  const dest = path.join(context.appOutDir, 'resources', 'api', 'node_modules.tar');
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
-  execFileSync('tar', ['-a', '-c', '-f', dest, '-C', src, '.'], {
+  // One uncompressed archive. NSIS then copies a single file instead of tens of thousands.
+  execFileSync('tar', ['-cf', dest, '-C', src, '.'], {
     stdio: 'inherit',
     windowsHide: true,
   });
   const loose = path.join(context.appOutDir, 'resources', 'api', 'node_modules');
   if (fs.existsSync(loose)) fs.rmSync(loose, { recursive: true, force: true });
   if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024 * 1024) {
-    throw new Error(`afterPack: node_modules.zip missing or too small at ${dest}`);
+    throw new Error(`afterPack: node_modules.tar missing or too small at ${dest}`);
   }
 };
