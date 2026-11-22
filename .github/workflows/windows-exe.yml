@@ -43,6 +43,7 @@ jobs:
         working-directory: apps/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          WIN_CSC_LINK: ''
         run: npm run dist:win
 
       - name: Verify hybrid package

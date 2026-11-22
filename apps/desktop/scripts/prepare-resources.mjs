@@ -3,7 +3,7 @@
  * Prepare API node_modules + Prisma engines + web dist for Electron extraResources.
  * Run after building api + web, before electron-builder.
  */
-import { cpSync, existsSync, mkdirSync, rmSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -19,6 +19,17 @@ function mustExist(p, hint) {
   if (!existsSync(p)) {
     console.error(`Missing ${p}. ${hint || ''}`);
     process.exit(1);
+  }
+}
+
+function pruneTypeFiles(dir) {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      pruneTypeFiles(p);
+      continue;
+    }
+    if (/\.(d\.ts|d\.cts|d\.mts|map)$/i.test(ent.name)) rmSync(p);
   }
 }
 
@@ -64,6 +75,7 @@ const stagedMods = join(stage, 'node_modules');
 mustExist(stagedMods, 'npm install in .stage-api did not create node_modules');
 rmSync(vendor, { recursive: true, force: true });
 cpSync(stagedMods, vendor, { recursive: true });
+pruneTypeFiles(vendor);
 
 console.log('Desktop API resources staged at', stage);
 console.log('API node_modules staged at', vendor);

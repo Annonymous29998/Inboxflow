@@ -55,10 +55,6 @@
         "to": "api"
       },
       {
-        "from": ".stage-api-modules",
-        "to": "api/node_modules"
-      },
-      {
         "from": "../web/dist",
         "to": "web"
       },
@@ -68,9 +64,12 @@
       }
     ],
     "asar": true,
+    "afterPack": "./scripts/after-pack.cjs",
     "win": {
       "icon": "resources/icon.ico",
       "executableName": "InboxFlow",
+      "signAndEditExecutable": false,
+      "signDlls": false,
       "requestedExecutionLevel": "asInvoker",
       "target": [
         {

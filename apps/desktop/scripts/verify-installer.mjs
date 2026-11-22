@@ -101,6 +101,9 @@ ok('bundled API packed');
 if (!existsSync(join(resources, 'api', 'node_modules'))) {
   fail('resources/api/node_modules missing — local API cannot start');
 }
+if (!existsSync(join(resources, 'api', 'node_modules', 'fastify'))) {
+  fail('API node_modules incomplete — fastify missing (thin zip)');
+}
 ok('API node_modules packed');
 
 if (!existsSync(join(resources, 'web', 'index.html'))) {
