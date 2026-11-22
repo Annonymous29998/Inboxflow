@@ -52,7 +52,12 @@
       },
       {
         "from": ".stage-api",
-        "to": "api"
+        "to": "api",
+        "filter": [
+          "**/*",
+          "!node_modules",
+          "!node_modules/**/*"
+        ]
       },
       {
         "from": "../web/dist",

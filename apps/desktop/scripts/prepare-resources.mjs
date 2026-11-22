@@ -76,6 +76,7 @@ mustExist(stagedMods, 'npm install in .stage-api did not create node_modules');
 rmSync(vendor, { recursive: true, force: true });
 cpSync(stagedMods, vendor, { recursive: true });
 pruneTypeFiles(vendor);
+rmSync(stagedMods, { recursive: true, force: true });
 
 console.log('Desktop API resources staged at', stage);
 console.log('API node_modules staged at', vendor);
