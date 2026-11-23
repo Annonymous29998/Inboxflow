@@ -238,6 +238,11 @@ export function smtpOptionsFromProfile(config: SmtpTestInput | ProviderConfig) {
   };
 }
 
+function bindAddressMissing(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /EADDRNOTAVAIL/i.test(message);
+}
+
 export function createSmtpTransport(
   config: SmtpTestInput | ProviderConfig,
   timeouts?: {
@@ -245,6 +250,8 @@ export function createSmtpTransport(
     greetingTimeout?: number;
     socketTimeout?: number;
     allowDirect?: boolean;
+    /** Public Bind PC address is often NAT, not an address on the network card. */
+    skipLocalBind?: boolean;
   },
 ) {
   const host = String(config.host || '').trim();
@@ -264,7 +271,7 @@ export function createSmtpTransport(
     assertOutboundPathAllowed(flat, false);
   }
   const loopback = opts.host === '127.0.0.1' || opts.host === 'localhost';
-  const localAddress = loopback ? undefined : smtpBindLocalAddress(flat);
+  const localAddress = loopback || timeouts?.skipLocalBind ? undefined : smtpBindLocalAddress(flat);
   const proxy = loopback ? undefined : smtpSocksProxyUrl(flat);
 
   const transport = nodemailer.createTransport({
@@ -306,12 +313,13 @@ export async function testSmtpConnection(
   const port = Number(config.port || 587);
   const secure = toBool(config.secure, port === 465);
 
-  async function verifyOnce(cfg: SmtpTestInput): Promise<ConnectionTestResult> {
+  async function verifyOnce(cfg: SmtpTestInput, skipLocalBind = false): Promise<ConnectionTestResult> {
     const p = Number(cfg.port || 587);
     const s = toBool(cfg.secure, p === 465);
     try {
-      const transport = createSmtpTransport(cfg, { allowDirect: opts?.allowDirect });
+      const transport = createSmtpTransport(cfg, { allowDirect: opts?.allowDirect, skipLocalBind });
       await transport.verify();
+      transport.close?.();
       return {
         success: true,
         message: `Connected to ${host}:${p} successfully`,
@@ -325,6 +333,9 @@ export async function testSmtpConnection(
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'SMTP connection failed';
+      if (!skipLocalBind && bindAddressMissing(error)) {
+        return verifyOnce(cfg, true);
+      }
       return {
         success: false,
         message: 'SMTP connection failed',
@@ -426,7 +437,8 @@ export async function sendSmtpTestEmail(
   const sentFrom: string[] = [];
   const errors: string[] = [];
   let lastMessageId: string | undefined;
-  const transport = createSmtpTransport(config, { allowDirect: options?.allowDirect });
+  let skipLocalBind = false;
+  let transport = createSmtpTransport(config, { allowDirect: options?.allowDirect });
 
   for (let i = 0; i < froms.length; i++) {
     const ident = froms[i]!;
@@ -435,17 +447,39 @@ export async function sendSmtpTestEmail(
     if (i > 0) await new Promise((r) => setTimeout(r, 400));
     try {
       const messageId = buildMessageId(fromEmail);
-      const info = await transport.sendMail({
-        from: formatFromHeader(fromEmail, fromName),
-        to,
-        replyTo: config.replyTo || undefined,
-        subject: froms.length > 1 ? `SMTP connection test (${i + 1}/${froms.length})` : 'SMTP connection test',
-        text: bodyText,
-        html: bodyHtml,
-        messageId,
-        date: new Date(),
-        envelope: { from: fromEmail, to },
-      });
+      let info;
+      try {
+        info = await transport.sendMail({
+          from: formatFromHeader(fromEmail, fromName),
+          to,
+          replyTo: config.replyTo || undefined,
+          subject: froms.length > 1 ? `SMTP connection test (${i + 1}/${froms.length})` : 'SMTP connection test',
+          text: bodyText,
+          html: bodyHtml,
+          messageId,
+          date: new Date(),
+          envelope: { from: fromEmail, to },
+        });
+      } catch (sendError) {
+        if (!skipLocalBind && bindAddressMissing(sendError)) {
+          transport.close?.();
+          skipLocalBind = true;
+          transport = createSmtpTransport(config, { allowDirect: options?.allowDirect, skipLocalBind: true });
+          info = await transport.sendMail({
+            from: formatFromHeader(fromEmail, fromName),
+            to,
+            replyTo: config.replyTo || undefined,
+            subject: froms.length > 1 ? `SMTP connection test (${i + 1}/${froms.length})` : 'SMTP connection test',
+            text: bodyText,
+            html: bodyHtml,
+            messageId,
+            date: new Date(),
+            envelope: { from: fromEmail, to },
+          });
+        } else {
+          throw sendError;
+        }
+      }
       const accept = smtpAcceptedRecipient(info as SmtpInfoLike, to);
       if (!accept.ok && !isMockSmtpHost(host)) {
         errors.push(`${fromEmail}: ${accept.error || 'not accepted'}`);
@@ -644,10 +678,12 @@ async function sendSmtp(
   let lastError = 'SMTP send failed';
   for (let i = 0; i < attempts.length; i += 1) {
     const attemptCfg = attempts[i]!;
-    for (let tryN = 0; tryN < 2; tryN += 1) {
+    let skipLocalBind = false;
+    for (let tryN = 0; tryN < 3; tryN += 1) {
       const transport = createSmtpTransport(attemptCfg, {
         socketTimeout: 120000,
         allowDirect: options.allowDirect,
+        skipLocalBind,
       });
       try {
         const info = await transport.sendMail(mail);
@@ -672,6 +708,10 @@ async function sendSmtp(
         transport.close?.();
         const raw = error instanceof Error ? error.message : 'SMTP send failed';
         lastError = explainSmtpSendFailure(raw);
+        if (!skipLocalBind && bindAddressMissing(error)) {
+          skipLocalBind = true;
+          continue;
+        }
         if (tryN === 0 && isTransient(raw)) {
           await new Promise((r) => setTimeout(r, 800));
           continue;
