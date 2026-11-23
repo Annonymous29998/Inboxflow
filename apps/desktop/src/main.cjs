@@ -17,7 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
 const { URL } = require('url');
 
@@ -380,6 +380,40 @@ function sqliteFileUrl() {
   return `file:${path.join(userDataDir(), 'workspace.db').replace(/\\/g, '/')}`;
 }
 
+function isLoopbackPeer(req) {
+  const raw = String(req.socket?.remoteAddress || '');
+  return raw === '127.0.0.1' || raw === '::1' || raw === '::ffff:127.0.0.1';
+}
+
+function isPublicTrackingPath(urlPath) {
+  const p = String(urlPath || '').split('?')[0] || '';
+  return p.startsWith('/api/t/') || p === '/api/unsubscribe' || p.startsWith('/api/unsubscribe/');
+}
+
+function allowInboundTracking(port) {
+  if (process.platform !== 'win32') return;
+  const name = 'Inbox Flow tracking';
+  execFile('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${name}`], { windowsHide: true }, () => {
+    execFile(
+      'netsh',
+      [
+        'advfirewall',
+        'firewall',
+        'add',
+        'rule',
+        `name=${name}`,
+        'dir=in',
+        'action=allow',
+        'protocol=TCP',
+        `localport=${port}`,
+        'profile=any',
+      ],
+      { windowsHide: true },
+      () => {},
+    );
+  });
+}
+
 function isCloudLoginPath(urlPath) {
   const p = String(urlPath || '').split('?')[0] || '';
   // Rotation and the physical address are read by the mailer on this PC.
@@ -563,6 +597,12 @@ function startRemoteProxy(localPort, remoteBase, localWorkspaceOrigin) {
   });
 
   proxyServer = http.createServer((req, res) => {
+    // The window uses localhost. The public address only receives opens, clicks, and unsubscribe.
+    if (!isLoopbackPeer(req) && !isPublicTrackingPath(req.url || '')) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
     if (serveLocalConfigJson(req, res)) return;
     const urlPath = req.url || '/';
     const sse = isSsePath(urlPath);
@@ -702,8 +742,9 @@ function startRemoteProxy(localPort, remoteBase, localWorkspaceOrigin) {
         reject(err);
       };
       proxyServer.once('error', onError);
-      proxyServer.listen(port, '127.0.0.1', () => {
+      proxyServer.listen(port, '0.0.0.0', () => {
         proxyServer.removeListener('error', onError);
+        allowInboundTracking(port);
         resolve(`http://localhost:${port}`);
       });
     };
