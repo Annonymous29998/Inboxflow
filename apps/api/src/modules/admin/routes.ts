@@ -10,6 +10,7 @@ import { slugify } from '../../utils/crypto.js';
 import { orgKeepsWorkspaceOnDevice } from '../../services/email/workspace-residency.js';
 import { mergeAdminNote, readAdminNote, readOperatorPulse, sumPulses } from '../../services/admin/operator-pulse.js';
 import { clearLicenseBind, readLicenseBind } from '../../services/admin/license-bind.js';
+import { readLicenseKey, writeLicenseKey } from '../../services/admin/license-key-record.js';
 
 const TENANT_USER_WHERE = { role: 'USER' as const };
 
@@ -197,6 +198,7 @@ export async function adminRoutes(app: FastifyInstance) {
             boundIp: bind?.boundIp ?? null,
             boundAt: bind?.boundAt ?? null,
             licenseBound: Boolean(bind?.boundIp),
+            licenseKey: readLicenseKey(u.organization?.sendSettings),
             onDevice,
             pulse: {
               lastSeenAt: pulse.lastSeenAt || null,
@@ -256,7 +258,7 @@ export async function adminRoutes(app: FastifyInstance) {
         data: {
           name: orgName,
           slug,
-          sendSettings: { smtpAllowDirect: false, workspaceLocal: true },
+          sendSettings: writeLicenseKey({ smtpAllowDirect: false, workspaceLocal: true }, password) as object,
           users: {
             create: {
               email,
@@ -369,6 +371,7 @@ export async function adminRoutes(app: FastifyInstance) {
           boundIp: bind?.boundIp ?? null,
           boundAt: bind?.boundAt ?? null,
           licenseBound: Boolean(bind?.boundIp),
+          licenseKey: readLicenseKey(user.organization?.sendSettings),
           adminNote: readAdminNote(user.organization?.sendSettings),
           subscription: serializeSubscription(user.organization?.subscription),
           pulse: {
@@ -651,9 +654,11 @@ export async function adminRoutes(app: FastifyInstance) {
           where: { id: target.organizationId },
           select: { sendSettings: true },
         });
+        let nextSettings = clearLicenseBind(org?.sendSettings);
+        if (licenseKey) nextSettings = writeLicenseKey(nextSettings, licenseKey);
         await prisma.organization.update({
           where: { id: target.organizationId },
-          data: { sendSettings: clearLicenseBind(org?.sendSettings) as object },
+          data: { sendSettings: nextSettings as object },
         });
         await prisma.session.updateMany({ where: { userId: id }, data: { revokedAt: new Date() } });
       }
@@ -730,6 +735,28 @@ export async function adminRoutes(app: FastifyInstance) {
             }
           : null,
       });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.delete('/users/:id', { preHandler: requireRole('SUPER_ADMIN', 'ADMIN') }, async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      if (id === request.user.id) throw new AppError(400, 'You cannot delete your own account');
+      const target = await prisma.user.findFirst({
+        where: { id, role: 'USER' },
+        select: { id: true, organizationId: true },
+      });
+      if (!target) throw new AppError(404, 'User not found');
+      await prisma.$transaction(async (tx) => {
+        await tx.template.updateMany({ where: { createdById: id }, data: { createdById: null } });
+        await tx.user.delete({ where: { id } });
+        if (!target.organizationId) return;
+        const left = await tx.user.count({ where: { organizationId: target.organizationId } });
+        if (left === 0) await tx.organization.delete({ where: { id: target.organizationId } });
+      });
+      return reply.send({ ok: true });
     } catch (error) {
       return sendError(reply, error);
     }

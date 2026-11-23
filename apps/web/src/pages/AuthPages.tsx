@@ -4,6 +4,7 @@ import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayou
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
 import { isInboxflowDesktop } from '@/lib/bind-pc';
+import { desktopStillUnbound } from '@/lib/desktop-bind-gate';
 import { mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
@@ -21,12 +22,19 @@ export function LoginPage() {
   const sessionUser = useAuthStore((s) => s.user);
 
   useEffect(() => {
-    if (tenantNeedsBind(sessionUser) && isInboxflowDesktop()) {
-      window.inboxflowDesktop?.bindBlocked?.();
+    if (!isInboxflowDesktop()) {
+      setBindWarn(tenantNeedsBind(sessionUser));
       return;
     }
-    setBindWarn(tenantNeedsBind(sessionUser));
-  }, [sessionUser]);
+    if (!sessionUser || !tenantNeedsBind(sessionUser)) return;
+    let cancel = false;
+    void desktopStillUnbound().then((blocked) => {
+      if (!cancel && blocked) window.inboxflowDesktop?.bindBlocked?.();
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [sessionUser?.id, sessionUser?.boundIp]);
 
   useEffect(() => {
     void loadDesktopLicenseConfig().then((cfg) => {
@@ -71,7 +79,7 @@ export function LoginPage() {
       const signed = useAuthStore.getState().user;
       if (tenantNeedsBind(signed)) {
         if (isInboxflowDesktop()) {
-          window.inboxflowDesktop?.bindBlocked?.();
+          if (await desktopStillUnbound()) window.inboxflowDesktop?.bindBlocked?.();
           return;
         }
         navigate('/bind-pc');

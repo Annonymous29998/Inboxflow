@@ -37,6 +37,7 @@ type AdminUser = {
   boundIp?: string | null;
   boundAt?: string | null;
   licenseBound?: boolean;
+  licenseKey?: string;
   adminNote?: string;
   subscription?: SubscriptionInfo | null;
   pulse?: {
@@ -75,6 +76,11 @@ async function copyBindLink(username: string) {
   toast.success('Copied Bind PC link', url);
 }
 
+async function copyLicenseKey(key: string) {
+  await navigator.clipboard.writeText(key);
+  toast.success('Copied license key');
+}
+
 function subscriptionActive(sub?: SubscriptionInfo | null) {
   if (!sub) return false;
   if (sub.active === false) return false;
@@ -82,7 +88,7 @@ function subscriptionActive(sub?: SubscriptionInfo | null) {
   return Number.isFinite(end) && end > Date.now() && sub.status !== 'EXPIRED' && sub.status !== 'CANCELLED';
 }
 
-type UserAction = 'status' | 'renew' | 'add' | 'unbind' | 'bindlink';
+type UserAction = 'status' | 'renew' | 'add' | 'unbind' | 'bindlink' | 'delete';
 
 function UserActionMenu({
   status,
@@ -131,6 +137,7 @@ function UserActionMenu({
     { id: 'renew', text: 'Renew' },
     { id: 'add', text: 'Add time' },
     ...(bound ? [{ id: 'unbind' as const, text: 'Unbind PC' }] : []),
+    { id: 'delete', text: 'Delete user' },
   ];
 
   return (
@@ -164,7 +171,7 @@ function UserActionMenu({
                   <button
                     key={item.id}
                     type="button"
-                    className="if-admin-menu-item"
+                    className={`if-admin-menu-item${item.id === 'delete' ? ' text-rose-700' : ''}`}
                     role="menuitem"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -332,7 +339,7 @@ export function AdminUsersPage() {
       const issuedKey = data.licenseKey || data.password || key;
       const issuedUser = data.username || login;
       setIssued({ username: issuedUser, licenseKey: issuedKey });
-      toast.success('User created with a 1-month subscription — copy the license key now');
+      toast.success('User created. The license key stays on this user.');
       await load();
     } catch (err) {
       toast.error('Could not create user', err instanceof Error ? err.message : undefined);
@@ -448,7 +455,7 @@ export function AdminUsersPage() {
     if (
       !(await confirmDialog({
         title: `Reset license for ${usernameOf(u)}?`,
-        description: 'They must sign in with the new key. The old key stops working. Copy the new key now — it is shown once.',
+        description: 'They must sign in with the new key. The old key stops working. The new key stays on this user.',
       }))
     ) {
       return;
@@ -466,9 +473,10 @@ export function AdminUsersPage() {
         toast.error('License was reset but the key was not returned');
         return;
       }
+      patchLocal(u.id, { licenseKey: data.licenseKey, licenseBound: false, boundIp: null, boundAt: null });
       setDetail(null);
       setResetIssued({ username: usernameOf(u), licenseKey: data.licenseKey });
-      toast.success('New license key — copy it now');
+      toast.success('New license key saved on this user');
     } catch (err) {
       toast.error('Could not reset license', err instanceof Error ? err.message : undefined);
     }
@@ -498,6 +506,32 @@ export function AdminUsersPage() {
     }
   }
 
+  async function deleteUser(u: AdminUser) {
+    if (u.id === me?.id) return;
+    const name = usernameOf(u);
+    if (
+      !(await confirmDialog({
+        title: `Delete ${name}?`,
+        description: 'This removes the user and their license. They cannot sign in. This cannot be undone.',
+        confirmText: 'Yes',
+        cancelText: 'No',
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
+    try {
+      if (!isDemoId(u.id)) {
+        await api.delete(`/api/admin/users/${u.id}`);
+      }
+      setUsers((cur) => cur.filter((row) => row.id !== u.id));
+      setDetail((d) => (d?.id === u.id ? null : d));
+      toast.success('User deleted', name);
+    } catch (err) {
+      toast.error('Could not delete user', err instanceof Error ? err.message : undefined);
+    }
+  }
+
   function runRowAction(u: AdminUser, action: string) {
     if (action === 'bindlink') {
       void copyBindLink(usernameOf(u));
@@ -506,6 +540,7 @@ export function AdminUsersPage() {
     if (action === 'status') void toggleStatus(u);
     if (action === 'renew') void renewSubscription(u);
     if (action === 'unbind') void unbindLicense(u);
+    if (action === 'delete') void deleteUser(u);
     if (action === 'add') {
       setAddFor(u);
       setAddMonths(1);
@@ -636,6 +671,19 @@ export function AdminUsersPage() {
                         </button>
                       </div>
                     )}
+                    {u.licenseKey ? (
+                      <button
+                        type="button"
+                        className="mt-1 block max-w-[11rem] truncate text-left font-mono text-xs font-semibold text-slate-900 hover:underline"
+                        title={u.licenseKey}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void copyLicenseKey(u.licenseKey || '');
+                        }}
+                      >
+                        {u.licenseKey}
+                      </button>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2.5">
                     {(() => {
@@ -912,9 +960,26 @@ export function AdminUsersPage() {
                         {subscriptionActive(detail.subscription) ? 'Paid' : 'Ended'} · {formatSubEnd(detail.subscription?.currentPeriodEnd)}
                       </p>
                     </div>
-                    <div className="if-admin-surface p-3">
-                      <p className="if-admin-muted text-xs font-bold uppercase tracking-wide">License</p>
-                      <p className="mt-1 font-semibold text-slate-900">
+                    <div className="if-admin-surface p-3 sm:col-span-2">
+                      <p className="if-admin-muted text-xs font-bold uppercase tracking-wide">License key</p>
+                      {detail.licenseKey ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <p className="select-text break-all font-mono text-base font-semibold text-slate-900">{detail.licenseKey}</p>
+                          <button
+                            type="button"
+                            className="if-admin-btn if-admin-btn-ghost"
+                            onClick={() => void copyLicenseKey(detail.licenseKey || '')}
+                          >
+                            <Copy className="h-4 w-4" />
+                            Copy key
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="mt-1 text-sm text-slate-700">
+                          This key was created before keys were kept. Reset license to issue one you can open again.
+                        </p>
+                      )}
+                      <p className="mt-2 font-semibold text-slate-900">
                         {detail.licenseBound || detail.boundIp ? 'Activated' : 'Not bound'}
                       </p>
                       {detail.boundIp ? (
