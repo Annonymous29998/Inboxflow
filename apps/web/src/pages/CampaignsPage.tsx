@@ -2369,9 +2369,10 @@ export function CampaignEditorPage() {
         if (status.clickedCount != null) setClickedCount(status.clickedCount);
         if (status.recentFailures) setRecentFailures(status.recentFailures);
         if (status.recentSent) setRecentSent(status.recentSent);
-        if (status.activity?.length) {
+        const activity = status.activity;
+        if (activity?.length) {
           setSendActivity((prev) => {
-            const incoming = [...status.activity].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+            const incoming = [...activity].sort((a, b) => String(a.at).localeCompare(String(b.at)));
             if (!prev.length || incoming.length >= prev.length) return incoming;
             const key = (a: SendActivity) => `${a.email}|${a.at}|${a.status}`;
             const map = new Map(prev.map((a) => [key(a), a]));

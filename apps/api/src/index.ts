@@ -48,6 +48,8 @@ async function main() {
   });
   console.log(`Tracking / opens / clicks: ${publicUrl}`);
   console.log(`API docs: http://localhost:${port}/docs`);
+  const { startDomainPropagationWatch } = await import('./modules/domains/domain-dns.js');
+  startDomainPropagationWatch();
   try {
     await startInboxFlowSmtpServer();
   } catch (err) {

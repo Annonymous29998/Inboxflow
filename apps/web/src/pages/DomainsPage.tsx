@@ -95,6 +95,31 @@ export function DomainsPage() {
     load().catch(console.error);
   }, []);
 
+  const waitingOnDns = domains.some((domain) => domain.status !== 'VERIFIED');
+  const selectedId = selected?.id || '';
+  useEffect(() => {
+    if (!waitingOnDns) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const data = await api.get<{ domains: Domain[]; smtpHosts?: string[] }>('/api/domains');
+          setDomains(data.domains);
+          setSmtpHosts(data.smtpHosts || []);
+          uiCacheSet('domains', data.domains);
+          uiCacheSet('smtpHosts', data.smtpHosts || []);
+          if (!selectedId) return;
+          const updated = data.domains.find((domain) => domain.id === selectedId);
+          if (updated) setSelected(updated);
+          const next = await api.get<{ instructions: Instructions }>(`/api/domains/${selectedId}/instructions`);
+          setInstructions(next.instructions);
+        } catch {
+          /* the next pass retries after DNS answers */
+        }
+      })();
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [waitingOnDns, selectedId, setSelected, setInstructions]);
+
   async function addDomain(e: React.FormEvent) {
     e.preventDefault();
     try {

@@ -1,7 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import { decrypt } from '../../utils/crypto.js';
 import { parseProviderConfig, sendViaProvider, type SendEmailPayload } from './providers.js';
-import { emailDomain, listUnsubscribeHeaders, parseSmtpFromIdentities, resolveSmtpFromEmail } from './mail-headers.js';
+import { emailDomain, ensureOwnUnsubscribe, listUnsubscribeHeaders, parseSmtpFromIdentities, resolveSmtpFromEmail } from './mail-headers.js';
 import {
   incrementHourlySent,
   incrementMinuteSent,
@@ -388,13 +388,13 @@ export async function sendPlacementMessage(input: {
   const unsubHost = emailDomain(campaign.senderEmail || '') || 'inboxflow.io';
   const origin = await trackingOrigin(campaign);
   const unsubscribeUrl = `${origin}/api/t/unsubscribe?cid=${encodeURIComponent(campaign.id)}`;
-  let html = hardened.html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
-  let text = hardened.text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
-  if (!/unsubscribe|opt[\s-]?out|list-unsubscribe/i.test(`${html}\n${text}`)) {
-    const footer = `<p style="font-size:12px;color:#666;margin-top:24px"><a href="${unsubscribeUrl}">Unsubscribe from these emails</a></p>`;
-    html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${footer}</body>`) : html + footer;
-    text = `${text}\n\nUnsubscribe: ${unsubscribeUrl}`.trim();
-  }
+  const placed = ensureOwnUnsubscribe(
+    hardened.html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl),
+    hardened.text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl),
+    unsubscribeUrl,
+  );
+  let html = placed.html;
+  let text = placed.text;
 
   const headers: Record<string, string> = {
     ...listUnsubscribeHeaders(unsubscribeUrl),
@@ -565,33 +565,21 @@ export async function sendCampaignEmailToRecipient(input: {
   const unsubscribeUrl = onDevice
     ? `${origin}/api/t/unsubscribe?o=${encodeURIComponent(campaign.organizationId)}&c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`
     : `${origin}/api/t/unsubscribe?c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`;
-  html = html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
-  text = text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
+  const withOwnUnsubscribe = ensureOwnUnsubscribe(
+    html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl),
+    text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl),
+    unsubscribeUrl,
+  );
+  html = withOwnUnsubscribe.html;
+  text = withOwnUnsubscribe.text;
 
-  const hasUnsub =
-    /unsubscribe|opt[\s-]?out|list-unsubscribe/i.test(`${html}\n${text}`);
   const physical = String(campaign.organization.physicalAddress || '').trim();
-  if (!hasUnsub || physical) {
-    const footerBits: string[] = [];
-    if (!hasUnsub) {
-      footerBits.push(
-        `<p style="font-size:12px;color:#666;margin-top:24px"><a href="${unsubscribeUrl}">Unsubscribe from these emails</a></p>`,
-      );
-    }
-    if (physical && !html.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
-      footerBits.push(`<p style="font-size:12px;color:#666">${physical.replace(/</g, '&lt;')}</p>`);
-    }
-    if (footerBits.length) {
-      const footer = `<div data-inboxflow-footer>${footerBits.join('')}</div>`;
-      if (/<\/body>/i.test(html)) html = html.replace(/<\/body>/i, `${footer}</body>`);
-      else html += footer;
-    }
-    if (!hasUnsub) {
-      text = `${text}\n\nUnsubscribe: ${unsubscribeUrl}`.trim();
-    }
-    if (physical && !text.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
-      text = `${text}\n${physical}`.trim();
-    }
+  if (physical && !html.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
+    const address = `<p style="font-size:12px;color:#666">${physical.replace(/</g, '&lt;')}</p>`;
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${address}</body>`) : `${html}${address}`;
+  }
+  if (physical && !text.toLowerCase().includes(physical.toLowerCase().slice(0, 24))) {
+    text = `${text}\n${physical}`.trim();
   }
 
   if (processed === 0) {

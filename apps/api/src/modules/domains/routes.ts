@@ -1,9 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createPublicKey, generateKeyPairSync } from 'crypto';
-import { resolveTxt, resolveCname } from 'dns/promises';
 import { prisma } from '../../config/prisma.js';
-import { env } from '../../config/env.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { authenticate } from '../../middleware/auth.js';
 import bcrypt from 'bcryptjs';
@@ -14,32 +12,8 @@ import {
   INBOXFLOW_SMTP_LISTEN_PORT,
 } from '../../services/email/inboxflow-smtp.js';
 import { requireOrg } from '../../utils/org.js';
-import { parseProviderConfig } from '../../services/email/providers.js';
-import {
-  missingSpfMechanisms,
-  recommendedSpfForHosts,
-} from '../deliverability/smtp-auth-hints.js';
-
-async function orgSmtpHosts(organizationId: string): Promise<string[]> {
-  const providers = await prisma.emailProvider.findMany({
-    where: { organizationId, isActive: true },
-    select: { config: true, type: true },
-  });
-  const hosts: string[] = [];
-  for (const p of providers) {
-    try {
-      const cfg = parseProviderConfig(p.config);
-      if (cfg.host) hosts.push(cfg.host);
-    } catch {
-      /* skip bad config */
-    }
-  }
-  // Inbox Flow SMTP relays through the server mail account — SPF must list that host.
-  if (env.SMTP_HOST && !['json', 'dev', 'console'].includes(env.SMTP_HOST.toLowerCase())) {
-    hosts.push(env.SMTP_HOST);
-  }
-  return hosts;
-}
+import { recommendedSpfForHosts } from '../deliverability/smtp-auth-hints.js';
+import { orgSmtpHosts, verifyOrganizationDomain } from './domain-dns.js';
 
 function pemToDkimPublicKey(privateKeyPem: string): string {
   const pub = createPublicKey(privateKeyPem);
@@ -277,94 +251,13 @@ export async function domainRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      const domain = await prisma.domain.findFirst({
-        where: { id, organizationId: orgId },
-        include: { dnsRecords: true },
-      });
-      if (!domain) throw new AppError(404, 'Domain not found');
-
-      const smtpHosts = await orgSmtpHosts(orgId);
-      const authHints = recommendedSpfForHosts(smtpHosts);
-      const requiredMechs = authHints.hints.flatMap((h) => h.spfMechanisms);
-      const results: Array<{ type: string; status: string; detail?: string }> = [];
-
-      for (const record of domain.dnsRecords) {
-        let valid = false;
-        let detail = '';
-        try {
-          if (record.type === 'SPF' || record.type === 'DMARC' || record.type === 'DKIM' || record.type === 'CUSTOM') {
-            const host =
-              record.host === '@'
-                ? domain.domain
-                : `${record.host}.${domain.domain}`;
-            const txts = await resolveTxt(host).catch(() => [] as string[][]);
-            const flat = txts.map((t) => t.join(''));
-            valid = flat.some((t) => t.includes(record.value.slice(0, 20)) || t.includes('v=spf1') || t.includes('v=DMARC1') || t.includes('v=DKIM1') || t.includes(record.value));
-            if (record.type === 'SPF') {
-              const live = flat.find((t) => t.includes('v=spf1')) || '';
-              const merged = recommendedSpfForHosts(smtpHosts, live || record.value);
-              const missing = live ? missingSpfMechanisms(live, requiredMechs) : requiredMechs;
-              valid = Boolean(live) && missing.length === 0;
-              detail = live
-                ? missing.length
-                  ? `Live SPF is missing ${missing.join(', ')} for your active SMTP. Recommended: ${merged.record}`
-                  : live
-                : `No SPF TXT found. Add: ${merged.record}`;
-              if (merged.record !== record.value) {
-                await prisma.dnsRecord.update({
-                  where: { id: record.id },
-                  data: { value: merged.record },
-                });
-              }
-            }
-            if (record.type === 'DMARC') valid = flat.some((t) => t.includes('v=DMARC1'));
-            if (record.type !== 'SPF') detail = detail || flat.join(' | ') || 'No TXT records found';
-          } else if (record.type === 'TRACKING' || record.type === 'RETURN_PATH') {
-            const host = `${record.host}.${domain.domain}`;
-            const cnames = await resolveCname(host).catch(() => [] as string[]);
-            valid = cnames.some((c) => c.includes(record.value) || c.length > 0);
-            detail = cnames.join(', ') || 'No CNAME found';
-          }
-        } catch (e) {
-          detail = e instanceof Error ? e.message : 'Lookup failed';
-        }
-
-        await prisma.dnsRecord.update({
-          where: { id: record.id },
-          data: { status: valid ? 'VALID' : 'INVALID', lastChecked: new Date() },
-        });
-        results.push({ type: record.type, status: valid ? 'VALID' : 'INVALID', detail });
-      }
-
-      const spfValid = results.find((r) => r.type === 'SPF')?.status === 'VALID';
-      const dkimValid = results.find((r) => r.type === 'DKIM')?.status === 'VALID';
-      const dmarcValid = results.find((r) => r.type === 'DMARC')?.status === 'VALID';
-      const trackingValid = results.find((r) => r.type === 'TRACKING')?.status === 'VALID';
-      const returnPathValid = results.find((r) => r.type === 'RETURN_PATH')?.status === 'VALID';
-
-      const allCore = spfValid && dkimValid && dmarcValid;
-      const reputationScore =
-        (spfValid ? 30 : 0) + (dkimValid ? 35 : 0) + (dmarcValid ? 25 : 0) + (trackingValid ? 5 : 0) + (returnPathValid ? 5 : 0);
-
-      const updated = await prisma.domain.update({
-        where: { id },
-        data: {
-          spfValid,
-          dkimValid,
-          dmarcValid,
-          trackingValid,
-          returnPathValid,
-          reputationScore,
-          status: allCore ? 'VERIFIED' : 'VERIFYING',
-          lastVerifiedAt: new Date(),
-        },
-        include: { dnsRecords: true },
-      });
+      const checked = await verifyOrganizationDomain(orgId, id);
+      if (!checked) throw new AppError(404, 'Domain not found');
 
       return reply.send({
-        domain: updated,
-        results,
-        instructions: getSetupInstructions(domain.domain, updated.dnsRecords, smtpHosts),
+        domain: checked.domain,
+        results: checked.results,
+        instructions: getSetupInstructions(checked.domain.domain, checked.domain.dnsRecords, checked.smtpHosts),
       });
     } catch (error) {
       return sendError(reply, error);
@@ -534,7 +427,7 @@ function getSetupInstructions(
     title: `Authenticate ${domain}`,
     smtpHosts,
     sending:
-      `Add the 3 TXT records (SPF, DKIM, DMARC) Inbox Flow generated, wait 10–30 minutes, then Verify DNS. Then Generate SMTP and paste host smtp.inboxflow.io into SMTP Manager. Tracking / bounce CNAMEs are optional.`,
+      `Add the 3 TXT records (SPF, DKIM, DMARC) Inbox Flow generated. Inbox Flow checks DNS on its own and marks them verified when they propagate. Verify DNS checks immediately. Then Generate SMTP and paste host smtp.inboxflow.io into SMTP Manager. Tracking / bounce CNAMEs are optional.`,
     dnsRecords: tableSource.map((r) => withDnsMeta(domain, r)),
     steps: [
       {

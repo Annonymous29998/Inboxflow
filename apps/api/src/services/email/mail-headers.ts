@@ -252,6 +252,29 @@ export function explainSmtpSendFailure(raw: string): string {
   return msg;
 }
 
+/**
+ * Every sent letter carries Inbox Flow's own signed unsubscribe URL.
+ * A letter that already has a different unsubscribe link keeps that link.
+ * A letter that already contains this exact URL is left as it is.
+ */
+export function ensureOwnUnsubscribe(
+  html: string,
+  text: string,
+  unsubscribeUrl: string,
+): { html: string; text: string } {
+  const url = String(unsubscribeUrl || '').trim();
+  let nextHtml = html;
+  let nextText = text;
+  if (url && !nextHtml.includes(url)) {
+    const footer = `<p style="font-size:12px;color:#666;margin-top:24px"><a href="${url}">Unsubscribe from these emails</a></p>`;
+    nextHtml = /<\/body>/i.test(nextHtml) ? nextHtml.replace(/<\/body>/i, `${footer}</body>`) : `${nextHtml}${footer}`;
+  }
+  if (url && !nextText.includes(url)) {
+    nextText = `${nextText}\n\nUnsubscribe: ${url}`.trim();
+  }
+  return { html: nextHtml, text: nextText };
+}
+
 /** RFC 8058 one-click is valid only when the unsubscribe URL itself is https. */
 export function listUnsubscribeHeaders(unsubscribeUrl: string): Record<string, string> {
   const headers: Record<string, string> = {
