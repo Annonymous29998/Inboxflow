@@ -2,6 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../config/prisma.js';
 import { resolveClickDest, verifyOpen, verifyUnsubscribe, decodeRelayClickTicket, verifyRelayOpen, verifyRelayUnsubscribe } from '../../utils/signed-urls.js';
 import { recordRelayEvent } from '../../services/email/tracking-relay.js';
+import {
+  unsubscribeConfirmHref,
+  unsubscribeDonePage,
+  unsubscribeInvalidPage,
+  unsubscribeLandingPage,
+} from './unsubscribe-page.js';
 import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 export { webhookRoutes } from './webhook-routes.js';
@@ -277,10 +283,17 @@ export async function trackingRoutes(app: FastifyInstance) {
         cid?: string;
         s?: string;
         o?: string;
+        confirm?: string;
+      };
+      const confirmed = request.method === 'POST' || q.confirm === '1';
+      const landing = () => {
+        const path = String(request.url || '/api/t/unsubscribe').split('?')[0] || '/api/t/unsubscribe';
+        return reply.type('text/html').send(unsubscribeLandingPage(unsubscribeConfirmHref(path, q)));
       };
 
       const orgId = String(q.o || '').trim();
       if (orgId && q.c && verifyRelayUnsubscribe(orgId, q.c, q.cid, q.s)) {
+        if (!confirmed) return landing();
         try {
           await recordRelayEvent({
             organizationId: orgId,
@@ -291,18 +304,14 @@ export async function trackingRoutes(app: FastifyInstance) {
         } catch (error) {
           console.error('Relay unsubscribe error', error);
         }
-        return reply.type('text/html').send(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">
-        <h1>You have been unsubscribed</h1>
-        <p>You will no longer receive marketing emails from this sender.</p>
-      </body></html>`);
+        return reply.type('text/html').send(unsubscribeDonePage());
       }
 
       if (!q.c || !verifyUnsubscribe(q.c, q.cid, q.s)) {
-        return reply.status(400).type('text/html').send(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">
-          <h1>Invalid unsubscribe link</h1>
-          <p>This link is missing a valid signature and cannot be used.</p>
-        </body></html>`);
+        return reply.status(400).type('text/html').send(unsubscribeInvalidPage());
       }
+
+      if (!confirmed) return landing();
 
       try {
         const contact = await prisma.contact.findUnique({ where: { id: q.c } });
@@ -367,10 +376,7 @@ export async function trackingRoutes(app: FastifyInstance) {
         console.error('Unsubscribe error', e);
       }
 
-      return reply.type('text/html').send(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">
-        <h1>You have been unsubscribed</h1>
-        <p>You will no longer receive marketing emails from this sender.</p>
-      </body></html>`);
+      return reply.type('text/html').send(unsubscribeDonePage());
     },
   });
 }

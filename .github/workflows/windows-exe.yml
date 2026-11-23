@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: InboxFlow-Setup-1.2.22
+          name: InboxFlow-Setup-1.2.23
           path: |
             apps/desktop/release/InboxFlow-Setup-*.exe
             apps/desktop/release/InboxFlow-Setup-*.zip
@@ -67,20 +67,21 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-1.2.22
-          name: Inbox Flow desktop 1.2.22
+          tag_name: desktop-1.2.23
+          name: Inbox Flow desktop 1.2.23
           body: |
             Windows installer built and smoke-tested on GitHub `windows-latest`.
             Local hybrid mailer (SQLite + bundled API). Auth/license against Lightsail.
             Open, click, and unsubscribe links use https://novasreach.xyz. No port 5000.
+            A person lands on a confirm page first. Unsubscribe happens only after they use the underlined link. Mailbox one-click still unsubscribes immediately.
             The PC pulls those events back into the local campaign.
             Installing over an older EXE keeps `%APPDATA%\Inbox Flow`.
             Created users must Bind PC in the browser on the admin bind URL first.
             Unbound EXE shows only: PC not bound yet. Never opens novasreach.xyz.
             Zip includes `config.json` next to InboxFlow.exe (`username` + `license_key`).
           files: |
-            apps/desktop/release/InboxFlow-Setup-1.2.22.exe
-            apps/desktop/release/InboxFlow-Setup-1.2.22.zip
+            apps/desktop/release/InboxFlow-Setup-1.2.23.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.23.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
