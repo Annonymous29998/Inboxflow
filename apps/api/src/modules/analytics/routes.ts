@@ -10,6 +10,7 @@ import {
 import { getCampaignLiveStats } from '../../services/campaigns/live-stats.js';
 import { filterCountableClicks, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 import { buildDashboardPayload, dashboardFingerprint } from './dashboard-builder.js';
+import { textContains } from '../../utils/text-filter.js';
 
 // Very small in-memory TTL cache for dashboard & per-campaign analytics summary payloads.
 // Eliminates repeated identical DB calls on fast page refreshes (10-second TTL).
@@ -309,7 +310,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       await recountCampaignEngagementOnce(id);
 
       const searchFilter = q.search
-        ? { contact: { email: { contains: q.search, mode: 'insensitive' as const } } }
+        ? { contact: { email: textContains(q.search) } }
         : {};
       const where = { campaignId: id, ...searchFilter };
       const filter = (q.filter || 'ALL').toUpperCase();

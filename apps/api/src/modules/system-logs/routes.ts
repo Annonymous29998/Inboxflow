@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js';
 import { AppError, sendError } from '../../utils/errors.js';
 import { requireOrg } from '../../utils/org.js';
 import { authenticate } from '../../middleware/auth.js';
+import { textContains } from '../../utils/text-filter.js';
 
 export async function systemLogRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -22,7 +23,7 @@ export async function systemLogRoutes(app: FastifyInstance) {
       const where: Record<string, unknown> = { organizationId: orgId };
       if (q.level) where.level = q.level.toUpperCase();
       if (q.category) where.category = q.category.toLowerCase();
-      if (q.search) where.message = { contains: q.search, mode: 'insensitive' };
+      if (q.search) where.message = textContains(q.search);
       if (q.before) where.createdAt = { lt: new Date(q.before) };
 
       const logs = await prisma.systemLog.findMany({

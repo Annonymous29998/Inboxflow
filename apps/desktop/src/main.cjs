@@ -382,6 +382,8 @@ function sqliteFileUrl() {
 
 function isCloudLoginPath(urlPath) {
   const p = String(urlPath || '').split('?')[0] || '';
+  // Rotation and the physical address are read by the mailer on this PC.
+  if (p === '/api/admin/organization') return false;
   return (
     p.startsWith('/api/auth') ||
     p.startsWith('/api/admin') ||

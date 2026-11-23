@@ -10,6 +10,7 @@ import { upsertJobProgress } from '../jobs/progress.js';
 import { audienceContactWhere, removeContactsFromAudience } from './audience-cleanup.js';
 import { emailDomain } from '../../services/email/mail-headers.js';
 import { guardRecipientAddress, prefetchMxForDomains } from '../../services/email/recipient-guard.js';
+import { textContains, textEquals } from '../../utils/text-filter.js';
 
 export async function contactRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -33,9 +34,9 @@ export async function contactRoutes(app: FastifyInstance) {
       }
       if (q.search) {
         where.OR = [
-          { email: { contains: q.search, mode: 'insensitive' } },
-          { firstName: { contains: q.search, mode: 'insensitive' } },
-          { lastName: { contains: q.search, mode: 'insensitive' } },
+          { email: textContains(q.search) },
+          { firstName: textContains(q.search) },
+          { lastName: textContains(q.search) },
         ];
       }
       if (q.tag) {
@@ -400,7 +401,7 @@ export async function contactRoutes(app: FastifyInstance) {
           } catch (err) {
             if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
               const raced = await prisma.contact.findFirst({
-                where: { organizationId: orgId, email: { equals: email, mode: 'insensitive' } },
+                where: { organizationId: orgId, email: textEquals(email) },
                 select: { id: true, email: true, status: true },
               });
               if (raced) {
