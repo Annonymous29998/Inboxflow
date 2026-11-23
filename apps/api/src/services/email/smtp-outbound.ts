@@ -1,3 +1,5 @@
+import { networkInterfaces } from 'node:os';
+
 export type SmtpOutboundPath = 'direct' | 'bind' | 'socks';
 
 const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
@@ -57,6 +59,24 @@ export function isBindableIp(value: string): boolean {
     });
   }
   if (ip.includes(':') && IPV6.test(ip) && ip.length >= 3) return true;
+  return false;
+}
+
+/** True when this PC's network card already has the address. A public NAT address returns false. */
+export function localMachineHasAddress(ip: string): boolean {
+  const want = String(ip || '').trim().toLowerCase();
+  if (!want) return false;
+  try {
+    const nets = networkInterfaces();
+    for (const list of Object.values(nets)) {
+      for (const net of list || []) {
+        const addr = String(net.address || '').trim().toLowerCase();
+        if (addr === want) return true;
+      }
+    }
+  } catch {
+    return false;
+  }
   return false;
 }
 

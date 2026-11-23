@@ -4,6 +4,7 @@ import {
   isBindableIp,
   normalizeSmtpOutboundPath,
   orgAllowsDirectSmtp,
+  localMachineHasAddress,
   smtpBindLocalAddress,
   smtpSocksProxyUrl,
 } from './smtp-outbound.js';
@@ -24,6 +25,11 @@ describe('smtp outbound path', () => {
     expect(() => smtpBindLocalAddress({ outboundPath: 'bind' })).toThrow(/Bind IP is required/);
     expect(smtpBindLocalAddress({ outboundPath: 'direct', bindIp: '203.0.113.10' })).toBeUndefined();
     expect(smtpBindLocalAddress({ outboundPath: 'bind', bindIp: '203.0.113.10' })).toBe('203.0.113.10');
+  });
+
+  it('does not treat a public NAT address as a card on this PC', () => {
+    expect(localMachineHasAddress('203.0.113.10')).toBe(false);
+    expect(localMachineHasAddress('')).toBe(false);
   });
 
   it('rejects junk bind IPs', () => {

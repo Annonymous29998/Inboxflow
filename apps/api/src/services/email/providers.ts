@@ -14,7 +14,8 @@ import {
   isInboxFlowSmtpHost,
 } from './inboxflow-smtp.js';
 import { guardRecipientAddress } from './recipient-guard.js';
-import { assertOutboundPathAllowed, smtpBindLocalAddress, smtpSocksProxyUrl } from './smtp-outbound.js';
+import { assertOutboundPathAllowed, localMachineHasAddress, smtpBindLocalAddress, smtpSocksProxyUrl } from './smtp-outbound.js';
+import { usesInProcessSend } from '../../config/db-kind.js';
 import * as socks from 'socks';
 
 function htmlToPlainText(html: string) {
@@ -271,7 +272,17 @@ export function createSmtpTransport(
     assertOutboundPathAllowed(flat, false);
   }
   const loopback = opts.host === '127.0.0.1' || opts.host === 'localhost';
-  const localAddress = loopback || timeouts?.skipLocalBind ? undefined : smtpBindLocalAddress(flat);
+  let localAddress: string | undefined;
+  if (!loopback && !timeouts?.skipLocalBind) {
+    try {
+      localAddress = smtpBindLocalAddress(flat);
+    } catch (error) {
+      // A bound Windows PC sends from its own card. A missing NIC address must not stop the test.
+      if (!usesInProcessSend()) throw error;
+      localAddress = undefined;
+    }
+    if (localAddress && !localMachineHasAddress(localAddress)) localAddress = undefined;
+  }
   const proxy = loopback ? undefined : smtpSocksProxyUrl(flat);
 
   const transport = nodemailer.createTransport({

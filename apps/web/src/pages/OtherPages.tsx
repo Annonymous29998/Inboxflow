@@ -501,14 +501,17 @@ export function SettingsPage() {
 
   async function load() {
     try {
-      const [k, s, me] = await Promise.all([
+      const [k, s, me, org] = await Promise.all([
         api.get<{ keys: typeof keys }>('/api/api-keys'),
         api.get<{ sessions: typeof sessions }>('/api/auth/sessions'),
         api.get<{ user: { organization?: { physicalAddress?: string } } }>('/api/auth/me'),
+        api
+          .get<{ organization?: { physicalAddress?: string | null } }>('/api/admin/organization')
+          .catch(() => null),
       ]);
       setKeys(Array.isArray(k.keys) ? k.keys : []);
       setSessions(Array.isArray(s.sessions) ? s.sessions : []);
-      setAddress(me.user?.organization?.physicalAddress || '');
+      setAddress(org?.organization?.physicalAddress || me.user?.organization?.physicalAddress || '');
     } catch (err) {
       toast.error('Could not load settings', err instanceof Error ? err.message : undefined);
     }
