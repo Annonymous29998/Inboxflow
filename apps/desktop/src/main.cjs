@@ -232,7 +232,8 @@ async function ensureApiModules() {
   const dest = path.join(res, 'api', 'node_modules');
   const archive = path.join(res, 'api', 'node_modules.tar');
   const marker = path.join(dest, 'fastify', 'package.json');
-  if (fs.existsSync(marker)) return;
+  const prismaMarker = path.join(dest, '@prisma', 'client', 'package.json');
+  if (fs.existsSync(marker) && fs.existsSync(prismaMarker)) return;
   if (!fs.existsSync(archive)) return;
   const countFile = path.join(res, 'api', 'node_modules.tar.entries');
   const total = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0;
@@ -1097,13 +1098,17 @@ async function boot() {
       const license = readLicenseConfigFile();
       if (license?.username && license?.license_key) {
         setSplash({ line: 'Checking this PC…', pct: 99 });
-        const status = await fetchBindStatus(remoteBase, license.username, license.license_key);
-        if (status.ok && !status.staff && !status.bound) {
-          setSplash({ stage: 'PC not bound yet', line: 'PC not bound yet', pct: 100 });
-          await showBindBlockedDialog();
-          return;
+        try {
+          const status = await fetchBindStatus(remoteBase, license.username, license.license_key);
+          if (status.ok && !status.staff && !status.bound) {
+            setSplash({ stage: 'PC not bound yet', line: 'PC not bound yet', pct: 100 });
+            await showBindBlockedDialog();
+            return;
+          }
+          if (status.ok && status.boundIp) persistBoundIp(status.boundIp);
+        } catch {
+          /* A failed check must not close a PC that is already bound. The window asks again. */
         }
-        if (status.ok && status.boundIp) persistBoundIp(status.boundIp);
       }
     }
   } catch (err) {

@@ -4,7 +4,7 @@ import { AuthField, AuthLayout, AuthSubmit } from '@/components/layout/AuthLayou
 import { BindRequiredModal } from '@/components/auth/BindRequiredModal';
 import { loadDesktopLicenseConfig } from '@/lib/desktop-license-config';
 import { isInboxflowDesktop } from '@/lib/bind-pc';
-import { desktopStillUnbound } from '@/lib/desktop-bind-gate';
+import { useDesktopBindGate } from '@/lib/desktop-bind-gate';
 import { mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { useAuthStore } from '@/stores/auth';
 
@@ -20,21 +20,11 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [bindWarn, setBindWarn] = useState(false);
   const sessionUser = useAuthStore((s) => s.user);
+  const bindGate = useDesktopBindGate(sessionUser);
 
   useEffect(() => {
-    if (!isInboxflowDesktop()) {
-      setBindWarn(tenantNeedsBind(sessionUser));
-      return;
-    }
-    if (!sessionUser || !tenantNeedsBind(sessionUser)) return;
-    let cancel = false;
-    void desktopStillUnbound().then((blocked) => {
-      if (!cancel && blocked) window.inboxflowDesktop?.bindBlocked?.();
-    });
-    return () => {
-      cancel = true;
-    };
-  }, [sessionUser?.id, sessionUser?.boundIp]);
+    if (!isInboxflowDesktop()) setBindWarn(tenantNeedsBind(sessionUser));
+  }, [sessionUser]);
 
   useEffect(() => {
     void loadDesktopLicenseConfig().then((cfg) => {
@@ -79,11 +69,14 @@ export function LoginPage() {
       const signed = useAuthStore.getState().user;
       if (tenantNeedsBind(signed)) {
         if (isInboxflowDesktop()) {
-          if (await desktopStillUnbound()) window.inboxflowDesktop?.bindBlocked?.();
+          const { refreshDesktopBind } = await import('@/lib/desktop-bind-gate');
+          const verdict = await refreshDesktopBind();
+          if (verdict === 'unknown') return;
+          if (tenantNeedsBind(useAuthStore.getState().user)) return;
+        } else {
+          navigate('/bind-pc');
           return;
         }
-        navigate('/bind-pc');
-        return;
       }
       navigate(mailerHomePath(signed?.role));
     } catch (err) {
@@ -102,13 +95,13 @@ export function LoginPage() {
     }
   }
 
-  if (signedIn && tenantNeedsBind(signedIn) && isInboxflowDesktop()) {
+  if (signedIn && tenantNeedsBind(signedIn) && isInboxflowDesktop() && bindGate !== 'unknown') {
     return <div className="min-h-dvh bg-background" />;
   }
-  if (signedIn && tenantNeedsBind(signedIn)) {
+  if (signedIn && tenantNeedsBind(signedIn) && !isInboxflowDesktop()) {
     return <Navigate to="/bind-pc" replace />;
   }
-  if (signedIn && !bindWarn) {
+  if (signedIn && !bindWarn && !(isInboxflowDesktop() && tenantNeedsBind(signedIn))) {
     return <Navigate to={mailerHomePath(signedIn.role)} replace />;
   }
 

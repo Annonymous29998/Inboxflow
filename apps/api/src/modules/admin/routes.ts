@@ -752,10 +752,17 @@ export async function adminRoutes(app: FastifyInstance) {
       await prisma.$transaction(async (tx) => {
         await tx.template.updateMany({ where: { createdById: id }, data: { createdById: null } });
         await tx.user.delete({ where: { id } });
-        if (!target.organizationId) return;
-        const left = await tx.user.count({ where: { organizationId: target.organizationId } });
-        if (left === 0) await tx.organization.delete({ where: { id: target.organizationId } });
       });
+      if (target.organizationId) {
+        const left = await prisma.user.count({ where: { organizationId: target.organizationId } });
+        if (left === 0) {
+          try {
+            await prisma.organization.delete({ where: { id: target.organizationId } });
+          } catch {
+            /* The login is already gone. Leftover workspace rows must not undo the delete. */
+          }
+        }
+      }
       return reply.send({ ok: true });
     } catch (error) {
       return sendError(reply, error);

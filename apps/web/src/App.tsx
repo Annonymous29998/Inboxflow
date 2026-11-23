@@ -29,7 +29,7 @@ import { Toaster } from '@/components/ui/Toaster';
 import { ConfirmViewport } from '@/components/ui/ConfirmViewport';
 import { isMailerTenant, isStaffRole, mailerHomePath, tenantNeedsBind } from '@/lib/roles';
 import { isInboxflowDesktop } from '@/lib/bind-pc';
-import { desktopStillUnbound } from '@/lib/desktop-bind-gate';
+import { useDesktopBindGate } from '@/lib/desktop-bind-gate';
 import { documentTitle, shellFromPath } from '@/lib/shell';
 import { useToastStore } from '@/stores/toast';
 import { useConfirmStore } from '@/stores/confirm';
@@ -45,21 +45,11 @@ function Protected({ children }: { children: React.ReactNode }) {
   const accessToken = useAuthStore((s) => s.accessToken);
   const refreshToken = useAuthStore((s) => s.refreshToken);
   const fetchMe = useAuthStore((s) => s.fetchMe);
+  const bindGate = useDesktopBindGate(user);
 
   useEffect(() => {
     void fetchMe();
   }, [fetchMe]);
-
-  useEffect(() => {
-    if (!user || !tenantNeedsBind(user) || !isInboxflowDesktop()) return;
-    let cancel = false;
-    void desktopStillUnbound().then((blocked) => {
-      if (!cancel && blocked) window.inboxflowDesktop?.bindBlocked?.();
-    });
-    return () => {
-      cancel = true;
-    };
-  }, [user?.id, user?.boundIp]);
 
   if (!user && (loading || accessToken || refreshToken)) {
     return <div className="min-h-dvh bg-background" />;
@@ -67,6 +57,7 @@ function Protected({ children }: { children: React.ReactNode }) {
   if (!user) return <Navigate to="/login" replace />;
   if (tenantNeedsBind(user)) {
     if (isInboxflowDesktop()) {
+      if (bindGate === 'unknown') return <Navigate to="/login" replace />;
       return <div className="min-h-dvh bg-background" />;
     }
     return <Navigate to="/bind-pc" replace />;
