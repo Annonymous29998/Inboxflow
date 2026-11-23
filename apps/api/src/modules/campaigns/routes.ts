@@ -13,7 +13,7 @@ import {
 } from '../../services/email/queue.js';
 import { sendCampaignEmailToRecipient, sendPlacementMessage } from '../../services/email/campaign-send.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
-import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime } from '../deliverability/spam-scrubber.js';
+import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime, stripHtmlTags } from '../deliverability/spam-scrubber.js';
 import { ensureCampaignSendJob, upsertJobProgress } from '../jobs/progress.js';
 import { writeSystemLog } from '../../services/system-log.js';
 import { deliveredRecipientFilter, normalizeSentFailed } from './recipient-stats.js';
@@ -1863,24 +1863,30 @@ export async function campaignRoutes(app: FastifyInstance) {
           })
         : [];
       const templateById = new Map(templates.map((t) => [t.id, t]));
+      const letterText = (html: string, plain?: string | null) => {
+        const saved = String(plain || '').trim();
+        if (saved && !/^test matrix message$/i.test(saved)) return saved;
+        return stripHtmlTags(html);
+      };
       const variants: Array<{ id: string | null; name: string | null; html: string; text: string }> =
         templateIds.length
           ? templateIds.map((tid) => {
               const override = body.htmlByTemplateId?.[tid]?.trim();
               const tpl = templateById.get(tid);
+              const html = override || tpl?.htmlContent?.trim() || campaign.htmlContent || '';
               return {
                 id: tid,
                 name: tpl?.name || null,
-                html: override || tpl?.htmlContent?.trim() || campaign.htmlContent || '<p>Test matrix message</p>',
-                text: tpl?.plainText || campaign.plainTextContent || 'Test matrix message',
+                html,
+                text: letterText(html, tpl?.plainText || campaign.plainTextContent),
               };
             })
           : [
               {
                 id: campaign.templateId || null,
                 name: null,
-                html: campaign.htmlContent || '<p>Test matrix message</p>',
-                text: campaign.plainTextContent || 'Test matrix message',
+                html: campaign.htmlContent || '',
+                text: letterText(campaign.htmlContent || '', campaign.plainTextContent),
               },
             ];
 
