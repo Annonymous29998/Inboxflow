@@ -81,3 +81,32 @@ export async function reportWorkspacePulse(role?: string | null) {
     inFlight = false;
   }
 }
+
+/** Pull opens, clicks, and unsubscribes recorded on the public site into this PC. */
+export async function pullTrackingRelay(role?: string | null) {
+  if (!isMailerTenant(role)) return;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  if (host !== 'localhost' && host !== '127.0.0.1') return;
+  try {
+    const data = await api.get<{
+      events: Array<{
+        id: string;
+        campaignId: string;
+        contactId: string;
+        email?: string | null;
+        type: 'OPENED' | 'CLICKED' | 'UNSUBSCRIBED';
+      }>;
+    }>('/api/workspace/tracking-events');
+    const events = data.events || [];
+    if (!events.length) return;
+    await api.post('/api/campaigns/tracking-apply', { events }, { timeoutMs: 12_000 });
+    await api.post(
+      '/api/workspace/tracking-events/ack',
+      { ids: events.map((event) => event.id) },
+      { timeoutMs: 8_000 },
+    );
+  } catch {
+    /* Public site unreachable. Local send still works. The next poll retries. */
+  }
+}

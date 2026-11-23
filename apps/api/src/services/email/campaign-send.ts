@@ -1,7 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import { decrypt } from '../../utils/crypto.js';
 import { parseProviderConfig, sendViaProvider, type SendEmailPayload } from './providers.js';
-import { emailDomain, parseSmtpFromIdentities, resolveSmtpFromEmail } from './mail-headers.js';
+import { emailDomain, listUnsubscribeHeaders, parseSmtpFromIdentities, resolveSmtpFromEmail } from './mail-headers.js';
 import {
   incrementHourlySent,
   incrementMinuteSent,
@@ -15,7 +15,10 @@ import { writeSystemLog } from '../system-log.js';
 import { signOpen, signUnsubscribe } from '../../utils/signed-urls.js';
 import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
 import { applySenderName, personalize } from './personalize.js';
-import { isLoopbackPublicUrl, resolveDeviceTrackingOrigin } from './public-url.js';
+import { applyRelayClickTickets, listTrackableLinks } from './wrap-campaign-links.js';
+import { mintRelayTracking } from './tracking-relay.js';
+import { cloudTrackingOrigin, isLoopbackPublicUrl, isMailboxProviderTrackingOrigin, resolveTrackingOrigin } from './public-url.js';
+import { orgKeepsWorkspaceOnDevice } from './workspace-residency.js';
 import {
   classifySmtpRecipientResult,
   smtpRecipientStatus,
@@ -32,8 +35,44 @@ function pickFromPool(pool: unknown, fallback: string): string {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
-function trackingOrigin(sendSettings?: unknown) {
-  return resolveDeviceTrackingOrigin(sendSettings);
+async function trackingOrigin(campaign: {
+  organizationId: string;
+  senderEmail?: string | null;
+  organization?: { sendSettings?: unknown } | null;
+  domain?: { domain?: string; trackingDomain?: string | null; trackingValid?: boolean } | null;
+}) {
+  const settings = campaign.organization?.sendSettings;
+  const onDevice = orgKeepsWorkspaceOnDevice({ sendSettings: settings });
+  const linked = httpsHost(campaign.domain);
+  if (linked) {
+    return resolveTrackingOrigin({ ...linked, sendSettings: settings, workspaceOnDevice: onDevice });
+  }
+  const fromDom = emailDomain(campaign.senderEmail || '');
+  if (fromDom) {
+    const rows = await prisma.domain.findMany({
+      where: { organizationId: campaign.organizationId, trackingValid: true },
+      select: { domain: true, trackingDomain: true, trackingValid: true },
+    });
+    const match = rows.find((row) => fromDom === row.domain || fromDom.endsWith(`.${row.domain}`));
+    if (match) {
+      return resolveTrackingOrigin({ ...match, sendSettings: settings, workspaceOnDevice: onDevice });
+    }
+  }
+  return resolveTrackingOrigin({ sendSettings: settings, workspaceOnDevice: onDevice });
+}
+
+function httpsHost(domain?: { trackingDomain?: string | null; trackingValid?: boolean } | null) {
+  if (!domain?.trackingValid || !domain.trackingDomain) return null;
+  return { trackingDomain: domain.trackingDomain, trackingValid: true };
+}
+
+/** Reply-To is set on the message itself. Brevo's custom header stays off raw SMTP. */
+function headersForProvider(headers: Record<string, string> | undefined, providerType: string) {
+  const next = { ...(headers || {}) };
+  delete next['Reply-To'];
+  delete next['X-Preview-Text'];
+  if (providerType === 'SMTP') delete next['X-Mailin-custom'];
+  return next;
 }
 
 async function maybePauseOnFailRate(campaignId: string, organizationId: string) {
@@ -241,7 +280,7 @@ export async function deliverLiveMessage(input: {
         subject: applySenderName(input.subject, fromName),
         html: applySenderName(input.html, fromName),
         text: applySenderName(input.text, fromName) || undefined,
-        headers: input.headers,
+        headers: headersForProvider(input.headers, p.type),
         dkim: dkimFor(fromEmail),
         authorizedFromDomains,
         attachments: input.attachments,
@@ -347,7 +386,7 @@ export async function sendPlacementMessage(input: {
   });
 
   const unsubHost = emailDomain(campaign.senderEmail || '') || 'inboxflow.io';
-  const origin = trackingOrigin(campaign.organization?.sendSettings);
+  const origin = await trackingOrigin(campaign);
   const unsubscribeUrl = `${origin}/api/t/unsubscribe?cid=${encodeURIComponent(campaign.id)}`;
   let html = hardened.html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
   let text = hardened.text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
@@ -358,10 +397,9 @@ export async function sendPlacementMessage(input: {
   }
 
   const headers: Record<string, string> = {
+    ...listUnsubscribeHeaders(unsubscribeUrl),
     'List-Unsubscribe': `<${unsubscribeUrl}>, <mailto:unsubscribe@${unsubHost}>`,
-    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
     'X-IF-Campaign-Id': campaign.id,
-    ...(hardened.previewText ? { 'X-Preview-Text': hardened.previewText.slice(0, 150) } : {}),
     ...(input.extraHeaders || {}),
   };
 
@@ -387,6 +425,7 @@ export async function sendCampaignEmailToRecipient(input: {
   contactId: string;
   to: string;
   providerId?: string | null;
+  cloudAuthorization?: string | null;
 }): Promise<{
   success: boolean;
   messageId?: string;
@@ -499,9 +538,33 @@ export async function sendCampaignEmailToRecipient(input: {
   html = hardened.html;
   text = hardened.text;
 
-  const unsubSig = signUnsubscribe(contactId, campaignId);
-  const origin = trackingOrigin(campaign.organization?.sendSettings);
-  const unsubscribeUrl = `${origin}/api/t/unsubscribe?c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`;
+  const onDevice = orgKeepsWorkspaceOnDevice({ sendSettings: campaign.organization?.sendSettings });
+  let origin = await trackingOrigin(campaign);
+  let unsubSig = signUnsubscribe(contactId, campaignId);
+  let openSig = signOpen(contactId, campaignId);
+  if (onDevice) {
+    const minted = await mintRelayTracking({
+      authorization: input.cloudAuthorization,
+      organizationId: campaign.organizationId,
+      campaignId,
+      contactId,
+      email: contact.email,
+      urls: listTrackableLinks(html, text),
+    });
+    origin = minted.origin || cloudTrackingOrigin();
+    unsubSig = minted.unsubSig;
+    openSig = minted.openSig;
+    const wrapped = applyRelayClickTickets(html, text, minted.tickets, {
+      origin,
+      campaignId,
+      contactId,
+    });
+    html = wrapped.html;
+    text = wrapped.text;
+  }
+  const unsubscribeUrl = onDevice
+    ? `${origin}/api/t/unsubscribe?o=${encodeURIComponent(campaign.organizationId)}&c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`
+    : `${origin}/api/t/unsubscribe?c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`;
   html = html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
   text = text.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubscribeUrl);
 
@@ -531,38 +594,40 @@ export async function sendCampaignEmailToRecipient(input: {
     }
   }
 
-  if (campaign.trackOpens) {
-    if (isLoopbackPublicUrl(origin) && processed === 0) {
+  if (processed === 0) {
+    const linkWarning = isLoopbackPublicUrl(origin)
+      ? 'Open, click, and unsubscribe links point at this PC only. Bind the public address first so mailbox providers can reach them.'
+      : !isMailboxProviderTrackingOrigin(origin)
+        ? 'Open, click, and unsubscribe links are not on https port 443 with a domain name. Office 365, Gmail, and other providers check that link before they accept mail. Point PUBLIC_URL at https://your-domain.'
+        : '';
+    if (linkWarning) {
       await writeSystemLog({
         organizationId: campaign.organizationId,
         level: 'WARNING',
         category: 'campaign',
-        message:
-          'Open/click URLs point at localhost. Bind this PC first (/bind-pc) so Gmail can hit this machine.',
+        message: linkWarning,
         meta: { campaignId, origin },
       });
     }
-    const openSig = signOpen(contactId, campaignId);
-    const pixel = `<img src="${origin}/api/t/o/${campaignId}/${contactId}.gif?s=${encodeURIComponent(openSig)}" width="1" height="1" alt="" border="0" style="height:1px;width:1px;border:0;margin:0;padding:0" />`;
+  }
+
+  if (campaign.trackOpens) {
+    const openQuery = onDevice
+      ? `o=${encodeURIComponent(campaign.organizationId)}&s=${encodeURIComponent(openSig)}`
+      : `s=${encodeURIComponent(openSig)}`;
+    const pixel = `<img src="${origin}/api/t/o/${campaignId}/${contactId}.gif?${openQuery}" width="1" height="1" alt="" border="0" style="height:1px;width:1px;border:0;margin:0;padding:0" />`;
     html = html.replace(/<\/body>/i, `${pixel}</body>`);
     if (!html.includes(pixel)) html += pixel;
   }
 
   const headers: Record<string, string> = {
-    'List-Unsubscribe': `<${unsubscribeUrl}>`,
-    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    ...listUnsubscribeHeaders(unsubscribeUrl),
     // Correlate ESP webhooks (Brevo/SendGrid/etc.) back to this recipient
     'X-IF-Campaign-Id': campaignId,
     'X-IF-Recipient-Id': recipientId,
     'X-IF-Contact-Id': contactId,
     'X-Mailin-custom': JSON.stringify({ campaignId, recipientId, contactId }),
   };
-  if (hardened.previewText) {
-    headers['X-Preview-Text'] = hardened.previewText.slice(0, 150);
-  }
-  const replyTo = campaign.replyTo || undefined;
-  if (replyTo) headers['Reply-To'] = replyTo;
-
   const attachments = (editor.attachments || [])
     .filter((a) => a?.filename && a.contentBase64)
     .slice(0, 3)

@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import { env } from './config/env.js';
 import { isDesktopHybrid } from './config/db-kind.js';
 import { ensureSqliteSchema } from './config/sqlite-schema.js';
+import { ensureRelayTables } from './services/email/tracking-relay.js';
 import { startWorkers } from './services/email/queue.js';
 import { startInboxFlowSmtpServer } from './services/email/inboxflow-smtp.js';
 
@@ -23,6 +24,9 @@ process.on('uncaughtException', (err) => {
 
 async function main() {
   await ensureSqliteSchema();
+  await ensureRelayTables().catch((error) => {
+    console.error('Tracking relay tables were not ready:', error);
+  });
   const app = await buildApp();
 
   // Background queue workers are optional. Nexlogs-style sending uses browser sequential

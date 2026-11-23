@@ -7,6 +7,7 @@ import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { existsSync } from 'fs';
+import { parseUrlEncodedBody } from './utils/form-body.js';
 import { join } from 'path';
 import { env } from './config/env.js';
 import { sendError } from './utils/errors.js';
@@ -59,6 +60,19 @@ export async function buildApp() {
       done(err as Error, undefined);
     }
   });
+
+  // Gmail and Microsoft POST one-click unsubscribe as form data, not JSON.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_req, body, done) => {
+      try {
+        done(null, parseUrlEncodedBody(typeof body === 'string' ? body : ''));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
 
   await app.register(helmet, {
     contentSecurityPolicy: false,

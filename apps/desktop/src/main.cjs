@@ -422,6 +422,8 @@ function isCloudLoginPath(urlPath) {
     p.startsWith('/api/auth') ||
     p.startsWith('/api/admin') ||
     p.startsWith('/api/workspace/pulse') ||
+    p.startsWith('/api/workspace/tracking-mint') ||
+    p.startsWith('/api/workspace/tracking-events') ||
     p === '/api/admin/health' ||
     p.startsWith('/api/admin/audit')
   );

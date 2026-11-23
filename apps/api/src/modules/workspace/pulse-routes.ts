@@ -14,6 +14,13 @@ import {
   bindIpMustMatchRequest,
   publicClientIp,
 } from '../../services/admin/license-bind.js';
+import {
+  ackRelayEvents,
+  listRelayEvents,
+  mintedRelay,
+  rememberRelayLink,
+} from '../../services/email/tracking-relay.js';
+import { cloudTrackingOrigin } from '../../services/email/public-url.js';
 
 const campaignSchema = z.object({
   id: z.string().min(1).max(80),
@@ -183,6 +190,56 @@ export async function workspacePulseRoutes(app: FastifyInstance) {
         { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
       );
       return reply.send({ ok: true, enabled: true, boundIp, accessToken });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/tracking-mint', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z
+        .object({
+          campaignId: z.string().min(1).max(80),
+          contactId: z.string().min(1).max(80),
+          email: z.string().email().optional(),
+          urls: z.array(z.string().max(2000)).max(30).optional(),
+        })
+        .parse(request.body || {});
+      await rememberRelayLink({
+        organizationId: orgId,
+        campaignId: body.campaignId,
+        contactId: body.contactId,
+        email: body.email,
+      });
+      const minted = mintedRelay({
+        organizationId: orgId,
+        campaignId: body.campaignId,
+        contactId: body.contactId,
+        urls: body.urls || [],
+      });
+      return reply.send({ ...minted, origin: cloudTrackingOrigin() });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/tracking-events', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const events = await listRelayEvents(orgId);
+      return reply.send({ events });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/tracking-events/ack', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z.object({ ids: z.array(z.string().min(1).max(80)).max(200) }).parse(request.body || {});
+      await ackRelayEvents(orgId, body.ids);
+      return reply.send({ ok: true });
     } catch (error) {
       return sendError(reply, error);
     }

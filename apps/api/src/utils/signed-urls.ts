@@ -103,6 +103,75 @@ export function verifyUnsubscribe(
   return safeEqual(signUnsubscribe(contactId, campaignId), signature);
 }
 
+/** Signed on the public site. The PC asks for these; Gmail hits port 443, not the PC. */
+export function signRelayOpen(orgId: string, contactId: string, campaignId: string): string {
+  return hmac(`relay-open|${orgId}|${contactId}|${campaignId}`);
+}
+
+export function verifyRelayOpen(
+  orgId: string,
+  contactId: string,
+  campaignId: string,
+  signature: string | undefined,
+): boolean {
+  if (!signature || !orgId || !contactId || !campaignId) return false;
+  return safeEqual(signRelayOpen(orgId, contactId, campaignId), signature);
+}
+
+export function signRelayUnsubscribe(orgId: string, contactId: string, campaignId: string): string {
+  return hmac(`relay-unsub|${orgId}|${contactId}|${campaignId}`);
+}
+
+export function verifyRelayUnsubscribe(
+  orgId: string,
+  contactId: string,
+  campaignId: string | undefined,
+  signature: string | undefined,
+): boolean {
+  if (!signature || !orgId || !contactId || !campaignId) return false;
+  return safeEqual(signRelayUnsubscribe(orgId, contactId, campaignId), signature);
+}
+
+export function encodeRelayClickTicket(
+  orgId: string,
+  campaignId: string,
+  contactId: string,
+  url: string,
+): string {
+  const body = Buffer.from(JSON.stringify({ u: url, c: campaignId, k: contactId, o: orgId }), 'utf8').toString(
+    'base64url',
+  );
+  return `${body}.${hmac(`relay-click|${body}`)}`;
+}
+
+export function decodeRelayClickTicket(
+  campaignId: string,
+  contactId: string,
+  ticket: string | undefined,
+): { url: string; orgId: string } | null {
+  const raw = String(ticket || '');
+  const dot = raw.lastIndexOf('.');
+  if (dot < 1) return null;
+  const body = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  if (!sig || !safeEqual(hmac(`relay-click|${body}`), sig)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
+      u?: string;
+      c?: string;
+      k?: string;
+      o?: string;
+    };
+    if (parsed.c !== campaignId || parsed.k !== contactId) return null;
+    const dest = String(parsed.u || '');
+    const orgId = String(parsed.o || '');
+    if (!orgId || !dest || !isSafeRedirectUrl(dest)) return null;
+    return { url: dest, orgId };
+  } catch {
+    return null;
+  }
+}
+
 /** Only allow http(s) redirects to non-dangerous schemes; block javascript: data: etc. */
 export function isSafeRedirectUrl(raw: string): boolean {
   try {

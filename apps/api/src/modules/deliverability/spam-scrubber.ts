@@ -1,3 +1,5 @@
+import { shapeOutboundLetter } from '../../services/email/outbound-shape.js';
+
 /**
  * Auto-scrub spam / promo trigger phrases + risky HTML patterns from marketing email.
  * Improves inbox / Promotions odds; cannot force Primary or guarantee inbox.
@@ -517,11 +519,17 @@ export function hardenOutboundMime(input: {
     }
   }
 
-  return {
+  const shaped = shapeOutboundLetter({
     subject: scrubbed.subject || 'Update',
-    previewText: preview,
     html,
     text,
+  });
+
+  return {
+    subject: shaped.subject,
+    previewText: preview,
+    html: shaped.html,
+    text: shaped.text,
     removed: scrubbed.removed,
   };
 }

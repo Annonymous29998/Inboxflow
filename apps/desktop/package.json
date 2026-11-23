@@ -1,6 +1,6 @@
 {
   "name": "@inboxflow/desktop",
-  "version": "1.2.21",
+  "version": "1.2.22",
   "private": true,
   "description": "Inbox Flow Windows desktop — local hybrid mailer",
   "author": "Inbox Flow",

@@ -252,6 +252,17 @@ export function explainSmtpSendFailure(raw: string): string {
   return msg;
 }
 
+/** RFC 8058 one-click is valid only when the unsubscribe URL itself is https. */
+export function listUnsubscribeHeaders(unsubscribeUrl: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'List-Unsubscribe': `<${unsubscribeUrl}>`,
+  };
+  if (/^https:\/\//i.test(unsubscribeUrl)) {
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+  }
+  return headers;
+}
+
 export function formatFromHeader(fromEmail: string, fromName?: string | null): string {
   const email = fromEmail.trim();
   const name = String(fromName || '').trim().replaceAll('"', '');

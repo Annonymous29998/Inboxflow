@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { classifySmtpRecipientResult, smtpRecipientStatus } from './smtp-recipient-result.js';
 import {
+  httpsTrackingOrigin,
   isLoopbackPublicUrl,
   isSharedCloudTrackingUrl,
   resolveDeviceTrackingOrigin,
   resolvePublicBaseUrl,
+  resolveTrackingOrigin,
 } from './public-url.js';
 
 describe('smtp recipient result', () => {
@@ -41,6 +43,34 @@ describe('public tracking URL', () => {
   it('treats Lightsail as shared cloud tracking', () => {
     expect(isSharedCloudTrackingUrl('http://13.38.60.67')).toBe(true);
     expect(isSharedCloudTrackingUrl('http://203.0.113.40:5000')).toBe(false);
+  });
+
+  it('uses the verified tracking domain on https without a port', () => {
+    expect(httpsTrackingOrigin({ trackingDomain: 'track.example.com', trackingValid: true })).toBe(
+      'https://track.example.com',
+    );
+    expect(httpsTrackingOrigin({ trackingDomain: 'track.example.com', trackingValid: false })).toBeNull();
+    expect(
+      resolveTrackingOrigin({
+        trackingDomain: 'track.example.com',
+        trackingValid: true,
+        workspaceOnDevice: false,
+        sendSettings: { boundIp: '203.0.113.40' },
+      }),
+    ).toBe('https://track.example.com');
+  });
+
+  it('keeps PC mail on the public https site, with no port 5000', () => {
+    const prev = process.env.REMOTE_APP_URL;
+    process.env.REMOTE_APP_URL = 'https://novasreach.xyz';
+    expect(
+      resolveTrackingOrigin({
+        trackingDomain: 'track.example.com',
+        trackingValid: true,
+        workspaceOnDevice: true,
+      }),
+    ).toBe('https://novasreach.xyz');
+    process.env.REMOTE_APP_URL = prev;
   });
 
   it('builds open/click origin from the VPS bound IP', () => {

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { deviceBoundIp } from '../admin/license-bind.js';
 import { usesInProcessSend } from '../../config/db-kind.js';
 
@@ -11,6 +12,23 @@ export function resolvePublicBaseUrl(input: {
     .map((v) => String(v || '').trim().replace(/\/$/, ''))
     .find((v) => /^https?:\/\//i.test(v));
   return pick || 'http://localhost:3001';
+}
+
+/**
+ * Office 365, Gmail, and Yahoo fetch the unsubscribe link before they accept bulk mail.
+ * They expect https on port 443 and a hostname, not a raw IP or an extra port.
+ */
+export function isMailboxProviderTrackingOrigin(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    if (u.port && u.port !== '443') return false;
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    if (!host || isIP(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isLoopbackPublicUrl(url: string): boolean {
@@ -42,7 +60,48 @@ function publishedPort(): number {
   return Number.isFinite(n) && n > 0 ? n : 5000;
 }
 
-/** Created-user EXE: Gmail hits this VPS, never Lightsail. */
+/** Public site on port 443. Mailbox providers fetch this. No :5000. */
+export function cloudTrackingOrigin(): string {
+  const candidates = [process.env.REMOTE_APP_URL, process.env.PUBLIC_URL, 'https://novasreach.xyz'];
+  for (const raw of candidates) {
+    const url = String(raw || '').trim().replace(/\/$/, '');
+    if (isMailboxProviderTrackingOrigin(url)) return url;
+  }
+  return 'https://novasreach.xyz';
+}
+
+/** https://track.example.com when the tracking CNAME is verified. No port. */
+export function httpsTrackingOrigin(input?: {
+  trackingDomain?: string | null;
+  trackingValid?: boolean;
+} | null): string | null {
+  if (!input?.trackingValid) return null;
+  const host = String(input.trackingDomain || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, '');
+  if (!host || host.includes('/') || host.includes(':') || !host.includes('.')) return null;
+  if (isIP(host)) return null;
+  return `https://${host}`;
+}
+
+/**
+ * PC-hosted mail puts open, click, and unsubscribe links on the public site.
+ * Server-hosted mail uses a verified tracking domain when it has one.
+ */
+export function resolveTrackingOrigin(input: {
+  sendSettings?: unknown;
+  trackingDomain?: string | null;
+  trackingValid?: boolean;
+  workspaceOnDevice?: boolean;
+}): string {
+  if (input.workspaceOnDevice) return cloudTrackingOrigin();
+  const https = httpsTrackingOrigin(input);
+  if (https) return https;
+  return resolveDeviceTrackingOrigin(input.sendSettings);
+}
+
+/** Bound PC address. Used only when the workspace is not on the public tracking site. */
 export function resolveDeviceTrackingOrigin(sendSettings?: unknown): string {
   const bound = deviceBoundIp(sendSettings);
   if (bound && bound !== '127.0.0.1') {

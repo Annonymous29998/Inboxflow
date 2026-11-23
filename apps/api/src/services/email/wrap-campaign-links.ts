@@ -80,3 +80,46 @@ export function wrapCampaignLinks(
     text: wrapCampaignTextLinks(text, opts),
   };
 }
+
+export function listTrackableLinks(html: string, text: string): string[] {
+  const found = new Set<string>();
+  String(html || '').replace(QUOTED_HREF_RE, (_full, _attr: string, _quote: string, raw: string) => {
+    const dest = normalizeClickDest(raw);
+    if (dest) found.add(dest);
+    return _full;
+  });
+  String(text || '').replace(TEXT_URL_RE, (raw) => {
+    const dest = normalizeClickDest(raw.replace(/[),.;]+$/g, ''));
+    if (dest) found.add(dest);
+    return raw;
+  });
+  return [...found];
+}
+
+export function applyRelayClickTickets(
+  html: string,
+  text: string,
+  tickets: Record<string, string>,
+  opts: { origin: string; campaignId: string; contactId: string },
+) {
+  const swap = (raw: string) => {
+    const dest = normalizeClickDest(raw);
+    if (!dest) return null;
+    const ticket = tickets[dest];
+    if (!ticket) return null;
+    const base = opts.origin.replace(/\/$/, '');
+    return `${base}/api/t/c/${opts.campaignId}/${opts.contactId}?t=${encodeURIComponent(ticket)}`;
+  };
+  const nextHtml = String(html || '').replace(QUOTED_HREF_RE, (full, attr: string, quote: string, raw: string) => {
+    const next = swap(raw);
+    if (!next) return full;
+    return `${attr}=${quote}${next}${quote}`;
+  });
+  const nextText = String(text || '').replace(TEXT_URL_RE, (raw) => {
+    const trimmed = raw.replace(/[),.;]+$/g, '');
+    const next = swap(trimmed);
+    if (!next) return raw;
+    return raw.replace(trimmed, next);
+  });
+  return { html: nextHtml, text: nextText };
+}

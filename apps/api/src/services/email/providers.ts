@@ -20,11 +20,14 @@ import * as socks from 'socks';
 
 function htmlToPlainText(html: string) {
   return html
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/<\/(p|div|h[1-6]|li|tr|table)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 

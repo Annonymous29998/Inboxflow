@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../config/prisma.js';
-import { resolveClickDest, verifyOpen, verifyUnsubscribe } from '../../utils/signed-urls.js';
+import { resolveClickDest, verifyOpen, verifyUnsubscribe, decodeRelayClickTicket, verifyRelayOpen, verifyRelayUnsubscribe } from '../../utils/signed-urls.js';
+import { recordRelayEvent } from '../../services/email/tracking-relay.js';
 import { classifyAutomatedTracking, isCountableClick, isCountableOpen } from '../../utils/tracking-bot-filter.js';
 
 export { webhookRoutes } from './webhook-routes.js';
@@ -48,10 +49,27 @@ export async function trackingRoutes(app: FastifyInstance) {
     const auto = classifyAutomatedTracking(rawUa);
 
     const contactIdClean = contactId.replace(/\.gif$/, '');
-    const q = request.query as { s?: string };
+    const q = request.query as { s?: string; o?: string };
+    const orgId = String(q.o || '').trim();
 
     reply.header('Content-Type', 'image/gif');
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+
+    if (orgId && verifyRelayOpen(orgId, contactIdClean, campaignId, q.s)) {
+      if (isCountableOpen(rawUa, undefined)) {
+        try {
+          await recordRelayEvent({
+            organizationId: orgId,
+            campaignId,
+            contactId: contactIdClean,
+            type: 'OPENED',
+          });
+        } catch (error) {
+          console.error('Relay open error', error);
+        }
+      }
+      return reply.send(TRANSPARENT_GIF);
+    }
 
     if (!verifyOpen(contactIdClean, campaignId, q.s)) {
       return reply.send(TRANSPARENT_GIF);
@@ -120,6 +138,26 @@ export async function trackingRoutes(app: FastifyInstance) {
   app.get('/c/:campaignId/:contactId', async (request, reply) => {
     const { campaignId, contactId } = request.params as { campaignId: string; contactId: string };
     const q = request.query as { t?: string; u?: string; s?: string; go?: string };
+    const relay = decodeRelayClickTicket(campaignId, contactId, q.t);
+    if (relay) {
+      const rawUa = String(request.headers['user-agent'] || '');
+      if (isCountableClick(rawUa, undefined)) {
+        try {
+          await recordRelayEvent({
+            organizationId: relay.orgId,
+            campaignId,
+            contactId,
+            type: 'CLICKED',
+            url: relay.url,
+          });
+        } catch (error) {
+          console.error('Relay click error', error);
+        }
+      }
+      reply.header('Referrer-Policy', 'no-referrer');
+      reply.header('Cache-Control', 'no-store');
+      return reply.redirect(relay.url, 302);
+    }
     const url = resolveClickDest(campaignId, contactId, q);
 
     if (!url) {
@@ -238,7 +276,26 @@ export async function trackingRoutes(app: FastifyInstance) {
         e?: string;
         cid?: string;
         s?: string;
+        o?: string;
       };
+
+      const orgId = String(q.o || '').trim();
+      if (orgId && q.c && verifyRelayUnsubscribe(orgId, q.c, q.cid, q.s)) {
+        try {
+          await recordRelayEvent({
+            organizationId: orgId,
+            campaignId: String(q.cid || ''),
+            contactId: q.c,
+            type: 'UNSUBSCRIBED',
+          });
+        } catch (error) {
+          console.error('Relay unsubscribe error', error);
+        }
+        return reply.type('text/html').send(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">
+        <h1>You have been unsubscribed</h1>
+        <p>You will no longer receive marketing emails from this sender.</p>
+      </body></html>`);
+      }
 
       if (!q.c || !verifyUnsubscribe(q.c, q.cid, q.s)) {
         return reply.status(400).type('text/html').send(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">

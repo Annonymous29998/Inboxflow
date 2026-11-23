@@ -25,7 +25,7 @@ import { useAuthStore } from '@/stores/auth';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { isMailerTenant } from '@/lib/roles';
-import { reportWorkspacePulse } from '@/lib/operator-pulse';
+import { pullTrackingRelay, reportWorkspacePulse } from '@/lib/operator-pulse';
 import { TerminalPanel } from '@/components/layout/TerminalPanel';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 
@@ -159,11 +159,18 @@ export function AppLayout() {
   useEffect(() => {
     if (!isMailerTenant(user?.role)) return;
     void reportWorkspacePulse(user?.role);
+    void pullTrackingRelay(user?.role);
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void reportWorkspacePulse(user?.role);
+      if (document.visibilityState === 'visible') {
+        void reportWorkspacePulse(user?.role);
+        void pullTrackingRelay(user?.role);
+      }
     }, 25_000);
     const onVis = () => {
-      if (document.visibilityState === 'visible') void reportWorkspacePulse(user?.role);
+      if (document.visibilityState === 'visible') {
+        void reportWorkspacePulse(user?.role);
+        void pullTrackingRelay(user?.role);
+      }
     };
     document.addEventListener('visibilitychange', onVis);
     return () => {

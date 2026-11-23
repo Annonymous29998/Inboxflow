@@ -1121,6 +1121,44 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post('/tracking-apply', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const body = z
+        .object({
+          events: z
+            .array(
+              z.object({
+                id: z.string().min(1).max(80),
+                organizationId: z.string().optional(),
+                campaignId: z.string().min(1).max(80),
+                contactId: z.string().min(1).max(80),
+                email: z.string().nullable().optional(),
+                type: z.enum(['OPENED', 'CLICKED', 'UNSUBSCRIBED']),
+                url: z.string().nullable().optional(),
+                createdAt: z.string().optional(),
+              }),
+            )
+            .max(200),
+        })
+        .parse(request.body || {});
+      const { applyRelayEventsLocal } = await import('../../services/email/tracking-relay.js');
+      const applied = await applyRelayEventsLocal(
+        orgId,
+        body.events.map((event) => ({
+          ...event,
+          organizationId: orgId,
+          email: event.email ?? null,
+          url: event.url ?? null,
+          createdAt: event.createdAt || new Date().toISOString(),
+        })),
+      );
+      return reply.send({ applied });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.post('/:id/send-one', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);
@@ -1153,6 +1191,7 @@ export async function campaignRoutes(app: FastifyInstance) {
         contactId: recipient.contactId,
         to: recipient.contact.email,
         providerId: body.providerId ?? campaign.providerId,
+        cloudAuthorization: request.headers.authorization,
       });
 
       let jobId: string | null = body.jobId?.trim() || null;
