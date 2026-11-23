@@ -9,6 +9,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { recipientLogDetail } from '@/lib/smtp-log-label';
 import { campaignSendService, type SendActivity } from '@/services/campaign-send.service';
 import { parseFromIdentities, smtpService } from '@/services/smtp.service';
 import { templateHtmlToBlocks, templateService, type EmailTemplateSummary } from '@/services/template.service';
@@ -2274,10 +2275,9 @@ export function CampaignEditorPage() {
         const ok = result.results.filter((r) => r.success);
         const names = [...new Set(ok.map((r) => r.templateName).filter(Boolean))];
         const froms = [...new Set(ok.map((r) => r.fromEmail).filter(Boolean))];
-        const smtpLine = ok.map((r) => r.smtpResponse).find(Boolean);
         toast.success(
           `Placement: ${result.sent}/${result.total} via ${result.providerHost || result.providerName || 'SMTP'}`,
-          `From ${froms.join(', ') || result.fromEmail || 'unknown'} → ${to}${names.length ? ` · ${names.join(', ')}` : ''}${smtpLine ? ` · ${smtpLine}` : ''}. Check Inbox, Promotions, and Spam.`,
+          `From ${froms.join(', ') || result.fromEmail || 'unknown'} → ${to}${names.length ? ` · ${names.join(', ')}` : ''}. Check Inbox, Promotions, and Spam.`,
         );
         const failed = result.results.filter((r) => !r.success);
         if (failed.length) {
@@ -2577,7 +2577,8 @@ export function CampaignEditorPage() {
     const q = logFilter.trim().toLowerCase();
     const rows = sendActivity.filter((row) => {
       if (!q) return true;
-      return `${row.email} ${row.status} ${row.error || ''}`.toLowerCase().includes(q);
+      const detail = recipientLogDetail(row.status, row.error);
+      return `${row.email} ${row.status} ${detail || ''}`.toLowerCase().includes(q);
     });
     return logOldestFirst ? [...rows].reverse() : rows;
   })();
@@ -2607,7 +2608,11 @@ export function CampaignEditorPage() {
                       ? 'Addresses already accepted stay sent. The rest of the queue will not go out.'
                       : fabChoice === 'resend'
                         ? 'Resend sends this campaign again now. Edit copies it to a new draft named “original · resend” — it shows in the list immediately, even before you change anything.'
-                        : 'This starts sending to the selected list. Logs open now; Results open when the queue finishes.'}
+                        : `This starts sending to ${
+                            listMemberCount === 1
+                              ? '1 contact'
+                              : `${listMemberCount.toLocaleString()} contacts`
+                          }. Logs open now; Results open when the queue finishes.`}
                   </p>
                 </div>
                 <div className="flex flex-col-reverse gap-3 px-6 py-5 sm:flex-row sm:justify-end">
@@ -3253,10 +3258,10 @@ export function CampaignEditorPage() {
                   onChange={(e) => setLogFilter(e.target.value)}
                 />
                 <Button type="button" size="sm" variant="outline" onClick={() => {
-                  void navigator.clipboard.writeText(filteredLogs.map((r) => `${r.at} ${r.status} ${r.email} ${r.error || ''}`).join('\n'));
+                  void navigator.clipboard.writeText(filteredLogs.map((r) => `${r.at} ${r.status} ${r.email} ${recipientLogDetail(r.status, r.error) || ''}`).join('\n'));
                 }}>Copy</Button>
                 <Button type="button" size="sm" variant="outline" onClick={() => {
-                  const blob = new Blob([filteredLogs.map((r) => `${r.at} ${r.status} ${r.email} ${r.error || ''}`).join('\n')], { type: 'text/plain' });
+                  const blob = new Blob([filteredLogs.map((r) => `${r.at} ${r.status} ${r.email} ${recipientLogDetail(r.status, r.error) || ''}`).join('\n')], { type: 'text/plain' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = url;
@@ -3289,7 +3294,9 @@ export function CampaignEditorPage() {
                 </span>
               </div>
               <div className="mailer-logs">
-                {filteredLogs.length ? filteredLogs.map((row, i) => (
+                {filteredLogs.length ? filteredLogs.map((row, i) => {
+                  const detail = recipientLogDetail(row.status, row.error);
+                  return (
                   <div
                     key={`${row.email}-${row.at}-${i}`}
                     className={cn(
@@ -3297,9 +3304,10 @@ export function CampaignEditorPage() {
                     )}
                   >
                     [{row.at ? new Date(row.at).toLocaleTimeString() : '--'}] {row.status} {row.email}
-                    {row.error ? ` — ${row.error}` : ''}
+                    {detail ? ` — ${detail}` : ''}
                   </div>
-                )) : (
+                  );
+                }) : (
                   <p className="mailer-hint">No lines yet. Placement test and SEND write this campaign’s log here.</p>
                 )}
               </div>

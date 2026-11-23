@@ -7,6 +7,7 @@ import { Button } from '@/components/ui';
 import { toast } from '@/stores/toast';
 import { cn } from '@/lib/utils';
 import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
+import { recipientLogDetail } from '@/lib/smtp-log-label';
 import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
 import { SmtpHealthStrip } from '@/components/smtp/SmtpHealthStrip';
 import { smtpService, type SmtpProfile } from '@/services/smtp.service';
@@ -244,12 +245,15 @@ function QueueCampaignColumn({
             {sectionOpen(sectionKey(row.id, 'problems'), problemsDefaultOpen) ? (
               <div className="mailer-logs max-h-40 border border-[var(--mailer-stroke)] sm:max-h-56">
                 {problemLines.length ? (
-                  problemLines.map((item, i) => (
+                  problemLines.map((item, i) => {
+                    const detail = recipientLogDetail(item.status, item.error);
+                    return (
                     <div key={`prob-${item.status}-${item.email}-${i}`} className="mailer-err break-all">
                       {item.at ? `[${formatTime(item.at)}] ` : ''}[{item.status}] {item.email}
-                      {item.error ? ` — ${item.error}` : ''}
+                      {detail ? ` — ${detail}` : ''}
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="mailer-hint" style={{ marginTop: 0 }}>
                     No SMTP rejects or ESP bounces yet.
@@ -270,7 +274,9 @@ function QueueCampaignColumn({
             {sectionOpen(sectionKey(row.id, 'sendLog'), sendLogDefaultOpen) ? (
               <div className="mailer-logs max-h-[min(50vh,360px)] border border-[var(--mailer-stroke)] sm:max-h-[min(70vh,520px)]">
                 {activitySorted.length ? (
-                  activitySorted.map((item, i) => (
+                  activitySorted.map((item, i) => {
+                    const detail = recipientLogDetail(item.status, item.error);
+                    return (
                     <div
                       key={`${item.status}-${item.email}-${item.at}-${i}`}
                       className={cn(
@@ -281,9 +287,10 @@ function QueueCampaignColumn({
                       )}
                     >
                       [{formatTime(item.at)}] [{item.status}] {item.email}
-                      {item.error ? ` — ${item.error}` : ''}
+                      {detail ? ` — ${detail}` : ''}
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="mailer-hint" style={{ marginTop: 0 }}>
                     {pending > 0 && finished === 0

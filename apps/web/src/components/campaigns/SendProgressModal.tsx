@@ -4,6 +4,7 @@ import { Button, Label, Select } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import type { SendActivity } from '@/services/campaign-send.service';
 import { formatQueueHeartbeat, pauseSecondsRemaining } from '@/lib/queue-heartbeat';
+import { recipientLogDetail } from '@/lib/smtp-log-label';
 
 export type SendFlowPhase = 'confirm' | 'background' | 'success' | 'error';
 
@@ -459,7 +460,10 @@ function CampaignSendLog({
 
   function copyLog() {
     const text = rows
-      .map((r) => `[${r.at || ''}] ${r.status}  ${r.email}${r.error ? ` — ${r.error}` : ''}`)
+      .map((r) => {
+        const detail = recipientLogDetail(r.status, r.error);
+        return `[${r.at || ''}] ${r.status}  ${r.email}${detail ? ` — ${detail}` : ''}`;
+      })
       .join('\n');
     void navigator.clipboard.writeText(text);
   }
@@ -485,6 +489,7 @@ function CampaignSendLog({
         <ul className="space-y-1 font-mono text-[11px]">
           {rows.map((r, i) => {
             const fail = r.status === 'FAILED' || r.status === 'BOUNCED';
+            const detail = recipientLogDetail(r.status, r.error);
             return (
               <li
                 key={`${r.status}-${r.email}-${r.at}-${i}`}
@@ -492,7 +497,7 @@ function CampaignSendLog({
               >
                 {r.at ? <span className="text-muted-foreground">[{r.at.slice(11, 19)}] </span> : null}
                 [{r.status}] {r.email}
-                {r.error ? ` — ${r.error}` : ''}
+                {detail ? ` — ${detail}` : ''}
               </li>
             );
           })}

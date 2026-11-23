@@ -109,6 +109,38 @@ export function ActivateBindPage() {
       });
   }, [unlocked]);
 
+  useEffect(() => {
+    if (!unlocked || !boundIp || isInboxflowDesktop()) return;
+    if (MAILER_UI_DEMO && username.trim().toLowerCase() === DEMO_MAILER_USER) return;
+    let cancel = false;
+    const dropBind = () => {
+      setBoundIp('');
+      setValidUntil('');
+      setDoneOpen(false);
+      const current = useAuthStore.getState().user;
+      if (current?.boundIp) setUser({ ...current, boundIp: null });
+    };
+    const look = async () => {
+      try {
+        const data = await api.get<{ user?: { boundIp?: string | null } }>('/api/auth/me');
+        if (cancel) return;
+        if (!data.user?.boundIp) dropBind();
+      } catch (err) {
+        const status = err && typeof err === 'object' && 'status' in err ? Number((err as { status?: number }).status) : 0;
+        if (!cancel && (status === 401 || status === 403)) dropBind();
+      }
+    };
+    void look();
+    const timer = window.setInterval(() => void look(), 8000);
+    const onFocus = () => void look();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancel = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [unlocked, boundIp, username, setUser]);
+
   if (isInboxflowDesktop()) {
     return <div className="min-h-dvh bg-background" />;
   }

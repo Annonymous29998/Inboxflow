@@ -4,6 +4,8 @@ import { Button } from '@/components/ui';
 
 type Row = { email: string; status: string };
 
+const PAGE_SIZE = 200;
+
 export function CampaignAudiencePane({
   campaignId,
   listId,
@@ -14,47 +16,66 @@ export function CampaignAudiencePane({
   const [rows, setRows] = useState<Row[]>([]);
   const [picked, setPicked] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [total, setTotal] = useState(0);
+
+  useEffect(() => {
+    setPage(1);
+    setPicked(null);
+  }, [listId, campaignId]);
 
   const load = useCallback(async () => {
     if (!listId && !campaignId) {
       setRows([]);
+      setTotal(0);
+      setPages(1);
       return;
     }
     setLoading(true);
     try {
       const people: Row[] = [];
+      let nextTotal = 0;
+      let nextPages = 1;
       if (listId) {
-        const contacts = await api.get<{ contacts: Array<{ email: string }> }>(
-          `/api/contacts?listId=${encodeURIComponent(listId)}&limit=200`,
+        const contacts = await api.get<{
+          contacts: Array<{ email: string }>;
+          total: number;
+          pages: number;
+        }>(
+          `/api/contacts?listId=${encodeURIComponent(listId)}&limit=${PAGE_SIZE}&page=${page}`,
         );
+        nextTotal = Number(contacts.total) || 0;
+        nextPages = Math.max(1, Number(contacts.pages) || 1);
         for (const c of contacts.contacts || []) {
           people.push({ email: c.email, status: 'QUEUED' });
         }
       }
-      if (campaignId) {
+      if (campaignId && !listId) {
         const sent = await api.get<{
           recipients: Array<{ email: string; status: string }>;
-        }>(`/api/analytics/campaigns/${campaignId}/recipients?page=1&limit=200&filter=ALL`);
-        const byEmail = new Map((sent.recipients || []).map((r) => [r.email, r.status]));
-        if (people.length) {
-          for (const row of people) {
-            const status = byEmail.get(row.email);
-            if (status) row.status = status;
-          }
-        } else {
-          for (const r of sent.recipients || []) {
-            people.push({ email: r.email, status: r.status });
-          }
+          total: number;
+          pages: number;
+        }>(
+          `/api/analytics/campaigns/${campaignId}/recipients?page=${page}&limit=${PAGE_SIZE}&filter=ALL`,
+        );
+        nextTotal = Number(sent.total) || 0;
+        nextPages = Math.max(1, Number(sent.pages) || 1);
+        for (const r of sent.recipients || []) {
+          people.push({ email: r.email, status: r.status });
         }
       }
+      setTotal(nextTotal || people.length);
+      setPages(nextPages);
       setRows(people);
-      setPicked((prev) => (prev == null ? people.map((p) => p.email) : prev));
     } catch {
       setRows([]);
+      setTotal(0);
+      setPages(1);
     } finally {
       setLoading(false);
     }
-  }, [campaignId, listId]);
+  }, [campaignId, listId, page]);
 
   useEffect(() => {
     void load();
@@ -82,8 +103,28 @@ export function CampaignAudiencePane({
           None
         </Button>
         <span className="count">
-          {selected.length} of {rows.length} selected
+          {selected.length} of {rows.length} on this page
+          {total > rows.length ? ` · ${total.toLocaleString()} contacts` : ''}
         </span>
+        {pages > 1 ? (
+          <>
+            <Button type="button" size="sm" variant="outline" disabled={page <= 1 || loading} onClick={() => { setPicked(null); setPage((p) => Math.max(1, p - 1)); }}>
+              Back
+            </Button>
+            <span className="count" style={{ marginLeft: 0 }}>
+              {page} / {pages}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={page >= pages || loading}
+              onClick={() => { setPicked(null); setPage((p) => Math.min(pages, p + 1)); }}
+            >
+              Next
+            </Button>
+          </>
+        ) : null}
       </div>
       <div className="mailer-pad">
         {loading && !rows.length ? (
