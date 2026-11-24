@@ -354,8 +354,14 @@ export function DomainsPage() {
             <div>
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-2xl">{instructions.title}</h2>
-                  <p className="mt-1 text-sm text-ink-muted">{instructions.tip}</p>
+                  <h2 className="font-display text-2xl">
+                    {selected.status === 'VERIFIED' ? 'Tracking is ready' : instructions.title}
+                  </h2>
+                  <p className="mt-1 text-sm text-ink-muted">
+                    {selected.status === 'VERIFIED'
+                      ? `Opens, clicks, and unsubscribe now use https://${selected.trackingDomain || `track.${selected.domain}`}. Every SMTP profile shares it. Leave the CNAME where it is.`
+                      : instructions.tip}
+                  </p>
                 </div>
                 <div className="flex shrink-0 flex-col gap-2">
                   <Button onClick={() => verify(selected.id)}>
@@ -418,13 +424,13 @@ export function DomainsPage() {
                 </div>
               ) : null}
 
-              {instructions.sending ? (
+              {selected.status === 'VERIFIED' ? null : instructions.sending ? (
                 <div className="mb-4 border border-border bg-muted px-3 py-2 text-[12px] leading-relaxed text-ink-muted">
                   {instructions.sending}
                 </div>
               ) : null}
 
-              {dnsRows.length ? (
+              {selected.status !== 'VERIFIED' && dnsRows.length ? (
                 <div className="mb-4 overflow-x-auto border border-border">
                   <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2">
                     <span className="text-[11px] uppercase tracking-wider text-accent">
@@ -490,6 +496,7 @@ export function DomainsPage() {
                 </div>
               ) : null}
 
+              {selected.status === 'VERIFIED' ? null : (
               <div className="space-y-4">
                 {instructions.steps.map((step) => (
                   <div key={step.step} className="border border-border p-4">
@@ -522,6 +529,7 @@ export function DomainsPage() {
                   </div>
                 ))}
               </div>
+              )}
             </div>
           ) : (
             <div className="flex h-full items-center justify-center px-6 text-center text-sm text-ink-muted">
