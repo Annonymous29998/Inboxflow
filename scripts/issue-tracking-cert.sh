@@ -9,7 +9,8 @@ if [[ ! "$host" =~ ^track\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9
   exit 2
 fi
 
-webroot=/var/www/acme
+# The existing port 80 default server already uses this root, so the challenge is reachable.
+webroot=/var/www/inboxflow
 mkdir -p "$webroot/.well-known/acme-challenge"
 certbot certonly --webroot -w "$webroot" -d "$host" \
   --non-interactive --agree-tos --keep-until-expiring --register-unsafely-without-email

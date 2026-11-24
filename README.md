@@ -212,8 +212,7 @@ The first health check right after `pm2 restart` often fails because the process
 
 Tracking-domain certificates also need, on the server:
 
-- `scripts/nginx-tracking-acme.conf` installed so port 80 answers `/.well-known/acme-challenge/` for names other than novasreach.xyz
-- `scripts/issue-tracking-cert.sh` installed as root at `/usr/local/sbin/inboxflow-issue-tracking-cert`
+- `scripts/issue-tracking-cert.sh` installed as root at `/usr/local/sbin/inboxflow-issue-tracking-cert`. It writes the HTTP challenge into `/var/www/inboxflow`, which the existing port 80 default server already serves. Do not add a second `default_server`.
 - sudoers allowing `ubuntu` to run only that script with `sudo -n`
 - `TRACKING_CERT_ISSUE=1` in the API environment before `pm2 restart inboxflow-api --update-env`
 
