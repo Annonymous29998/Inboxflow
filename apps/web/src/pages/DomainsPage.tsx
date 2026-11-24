@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Badge, Button, Card, Input, Label } from '@/components/ui';
 import { toast } from '@/stores/toast';
+import { useAuthStore } from '@/stores/auth';
+import { isMailerTenant } from '@/lib/roles';
 import { confirmDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
 import { uiCacheGet, uiCacheSet } from '@/lib/ui-cache';
@@ -37,6 +39,7 @@ type Domain = {
   spfValid: boolean;
   dkimValid: boolean;
   dmarcValid: boolean;
+  trackingDomain?: string | null;
   trackingValid: boolean;
   returnPathValid: boolean;
   reputationScore: number;
@@ -61,6 +64,7 @@ type Instructions = {
 };
 
 export function DomainsPage() {
+  const mailer = isMailerTenant(useAuthStore((s) => s.user?.role));
   const [domains, setDomains] = useState<Domain[]>(() => uiCacheGet<Domain[]>('domains') ?? []);
   const [smtpHosts, setSmtpHosts] = useState<string[]>(() => uiCacheGet<string[]>('smtpHosts') ?? []);
   const [domainInput, setDomainInput] = useDraft<string>('domains:domainInput', '');
@@ -319,8 +323,7 @@ export function DomainsPage() {
               <div className="camp-row-main">
                 <strong>{d.domain}</strong>
                 <div className="meta">
-                  {d.status} · Reputation {d.reputationScore}/100 · SPF {d.spfValid ? 'ok' : '—'} · DKIM{' '}
-                  {d.dkimValid ? 'ok' : '—'} · DMARC {d.dmarcValid ? 'ok' : '—'}
+                  {d.status} · {d.trackingDomain || `track.${d.domain}`}
                 </div>
               </div>
               <div className="camp-row-actions">
@@ -358,10 +361,12 @@ export function DomainsPage() {
                   <Button onClick={() => verify(selected.id)}>
                     <RefreshCw className="h-4 w-4" /> Verify DNS
                   </Button>
-                  <Button variant="outline" onClick={() => void generateDkim(selected.id)}>
-                    {selected.hasDkimPrivateKey ? 'Rotate DKIM' : 'Enable app DKIM'}
-                  </Button>
-                  {selected.status === 'VERIFIED' ? (
+                  {mailer ? null : (
+                    <Button variant="outline" onClick={() => void generateDkim(selected.id)}>
+                      {selected.hasDkimPrivateKey ? 'Rotate DKIM' : 'Enable app DKIM'}
+                    </Button>
+                  )}
+                  {!mailer && selected.status === 'VERIFIED' ? (
                     <Button variant="outline" onClick={() => void generateSmtp(selected.id)}>
                       Generate SMTP
                     </Button>
@@ -369,7 +374,7 @@ export function DomainsPage() {
                 </div>
               </div>
 
-              {selected.status === 'VERIFIED' ? (
+              {!mailer && selected.status === 'VERIFIED' ? (
                 <div className="mb-4 border border-primary/30 bg-primary/5 px-3 py-3 text-[12px]">
                   <div className="font-medium text-primary">Inbox Flow SMTP</div>
                   <p className="mt-1 text-ink-muted">

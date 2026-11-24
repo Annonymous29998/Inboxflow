@@ -34,6 +34,7 @@ export function CommandPalette({
           { id: 'queue', label: 'Open Queue Console', hint: 'Q', run: () => navigate('/app/queue') },
           { id: 'templates', label: 'Go to Templates', hint: '2', run: () => navigate('/app/templates') },
           { id: 'contacts', label: 'Go to Contacts', hint: '3', run: () => navigate('/app/contacts') },
+          { id: 'domains', label: 'Go to Domains', hint: '6', run: () => navigate('/app/domains') },
           { id: 'smtp', label: 'Open SMTP Manager', hint: 'S', run: () => navigate('/app/smtp') },
           { id: 'settings', label: 'Open Settings', hint: '4', run: () => navigate('/app/settings') },
           { id: 'new-camp', label: 'New campaign', run: () => navigate('/app/campaigns/new') },

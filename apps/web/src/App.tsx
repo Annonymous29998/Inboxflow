@@ -165,14 +165,7 @@ export default function App() {
             <Route path="campaigns" element={<CampaignsPage />} />
             <Route path="campaigns/:id" element={<CampaignEditorPage />} />
             <Route path="templates" element={<TemplatesPage />} />
-            <Route
-              path="domains"
-              element={
-                <StaffOnly>
-                  <DomainsPage />
-                </StaffOnly>
-              }
-            />
+            <Route path="domains" element={<DomainsPage />} />
             <Route
               path="analytics"
               element={

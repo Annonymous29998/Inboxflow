@@ -86,6 +86,10 @@ function navForRole(role?: string | null) {
         items: [{ to: '/app/contacts', label: 'Contacts', icon: Users, key: '3' }],
       },
       {
+        label: 'DELIVERABILITY',
+        items: [{ to: '/app/domains', label: 'Domains', icon: Globe, key: '6' }],
+      },
+      {
         label: 'SYSTEM',
         items: [
           { to: '/app/smtp', label: 'SMTP Manager', icon: Server, key: 'S' },
