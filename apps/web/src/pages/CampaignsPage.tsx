@@ -36,6 +36,7 @@ import { CampaignAddSmtpModal } from '@/components/campaigns/CampaignAddSmtpModa
 import { CampaignImportRecipientsModal } from '@/components/campaigns/CampaignImportRecipientsModal';
 import { CampaignLetterImportModal } from '@/components/campaigns/CampaignLetterImportModal';
 import { isMailerTenant } from '@/lib/roles';
+import { isUnauthorizedError } from '@/lib/startup-auth';
 import type { CampaignAttachment } from '@/lib/letter-placeholders';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
@@ -315,23 +316,39 @@ export function CampaignsPage() {
   const showWelcome = isMailerTenant(role) && !loading && total === 0 && campaigns.length === 0;
 
   async function load(isPoll = false) {
+    const attempts = isPoll ? 1 : 3;
     try {
-      const d = await api.get<{ campaigns: Campaign[]; total: number; page: number; limit: number }>(
-        `/api/campaigns?page=${page}&limit=${CAMPAIGN_PAGE_SIZE}`,
-      );
-      setWorkspaceOnDevice(false);
-      setCampaigns(d.campaigns);
-      setTotal(d.total);
-      uiCacheSet(`campaigns:${page}`, { campaigns: d.campaigns, total: d.total });
-      const lastPage = Math.max(1, Math.ceil(d.total / (d.limit || CAMPAIGN_PAGE_SIZE)));
-      if (page > lastPage) setPage(lastPage);
-    } catch (err) {
-      if (isWorkspaceOnDeviceError(err)) {
-        setWorkspaceOnDevice(true);
-        if (!isPoll) reportWorkspaceOnDevice(err);
-        return;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+          const d = await api.get<{ campaigns: Campaign[]; total: number; page: number; limit: number }>(
+            `/api/campaigns?page=${page}&limit=${CAMPAIGN_PAGE_SIZE}`,
+          );
+          setWorkspaceOnDevice(false);
+          setCampaigns(d.campaigns);
+          setTotal(d.total);
+          uiCacheSet(`campaigns:${page}`, { campaigns: d.campaigns, total: d.total });
+          const lastPage = Math.max(1, Math.ceil(d.total / (d.limit || CAMPAIGN_PAGE_SIZE)));
+          if (page > lastPage) setPage(lastPage);
+          return;
+        } catch (err) {
+          if (isWorkspaceOnDeviceError(err)) {
+            setWorkspaceOnDevice(true);
+            if (!isPoll) reportWorkspaceOnDevice(err);
+            return;
+          }
+          // Opening the app can refuse the saved login once. The next try succeeds.
+          // Do not flash "Unauthorized" while the user stays on Campaigns.
+          if (isUnauthorizedError(err)) {
+            if (attempt < attempts - 1) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              continue;
+            }
+            return;
+          }
+          if (!isPoll) flash(err instanceof Error ? err.message : 'Could not load campaigns', 'error');
+          return;
+        }
       }
-      if (!isPoll) flash(err instanceof Error ? err.message : 'Could not load campaigns', 'error');
     } finally {
       setLoading(false);
     }
