@@ -21,6 +21,7 @@ import {
   rememberRelayLink,
 } from '../../services/email/tracking-relay.js';
 import { cloudTrackingOrigin } from '../../services/email/public-url.js';
+import { isTrackingHost, publishTrackingHost } from '../../services/email/tracking-cert.js';
 
 const campaignSchema = z.object({
   id: z.string().min(1).max(80),
@@ -219,6 +220,20 @@ export async function workspacePulseRoutes(app: FastifyInstance) {
         urls: body.urls || [],
       });
       return reply.send({ ...minted, origin: cloudTrackingOrigin() });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/tracking-host', async (request, reply) => {
+    try {
+      requireOrg(request.user.organizationId);
+      const body = z.object({ host: z.string().min(4).max(253) }).parse(request.body || {});
+      const host = body.host.trim().toLowerCase();
+      if (!isTrackingHost(host)) throw new AppError(400, 'Tracking host must look like track.example.com');
+      const ready = await publishTrackingHost(host);
+      if (!ready) throw new AppError(409, 'The CNAME is not pointing here yet, or HTTPS is not ready.');
+      return reply.send({ ready: true, host });
     } catch (error) {
       return sendError(reply, error);
     }

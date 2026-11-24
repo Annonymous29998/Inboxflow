@@ -17,7 +17,7 @@ import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.j
 import { applySenderName, personalize } from './personalize.js';
 import { applyRelayClickTickets, listTrackableLinks } from './wrap-campaign-links.js';
 import { mintRelayTracking } from './tracking-relay.js';
-import { cloudTrackingOrigin, isLoopbackPublicUrl, isMailboxProviderTrackingOrigin, resolveTrackingOrigin } from './public-url.js';
+import { cloudTrackingOrigin, isLoopbackPublicUrl, isMailboxProviderTrackingOrigin, preferVerifiedTrackingOrigin, resolveTrackingOrigin } from './public-url.js';
 import { orgKeepsWorkspaceOnDevice } from './workspace-residency.js';
 import {
   classifySmtpRecipientResult,
@@ -43,20 +43,20 @@ async function trackingOrigin(campaign: {
 }) {
   const settings = campaign.organization?.sendSettings;
   const onDevice = orgKeepsWorkspaceOnDevice({ sendSettings: settings });
-  const linked = httpsHost(campaign.domain);
-  if (linked) {
-    return resolveTrackingOrigin({ ...linked, sendSettings: settings, workspaceOnDevice: onDevice });
-  }
-  const fromDom = emailDomain(campaign.senderEmail || '');
-  if (fromDom) {
-    const rows = await prisma.domain.findMany({
-      where: { organizationId: campaign.organizationId, trackingValid: true },
-      select: { domain: true, trackingDomain: true, trackingValid: true },
+  const rows = await prisma.domain.findMany({
+    where: { organizationId: campaign.organizationId, trackingValid: true },
+    select: { trackingDomain: true, trackingValid: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 1,
+  });
+  const chosen = rows[0] || httpsHost(campaign.domain);
+  if (chosen?.trackingValid && chosen.trackingDomain) {
+    return resolveTrackingOrigin({
+      trackingDomain: chosen.trackingDomain,
+      trackingValid: true,
+      sendSettings: settings,
+      workspaceOnDevice: onDevice,
     });
-    const match = rows.find((row) => fromDom === row.domain || fromDom.endsWith(`.${row.domain}`));
-    if (match) {
-      return resolveTrackingOrigin({ ...match, sendSettings: settings, workspaceOnDevice: onDevice });
-    }
   }
   return resolveTrackingOrigin({ sendSettings: settings, workspaceOnDevice: onDevice });
 }
@@ -551,7 +551,7 @@ export async function sendCampaignEmailToRecipient(input: {
       email: contact.email,
       urls: listTrackableLinks(html, text),
     });
-    origin = minted.origin || cloudTrackingOrigin();
+    origin = preferVerifiedTrackingOrigin(origin, minted.origin || cloudTrackingOrigin());
     unsubSig = minted.unsubSig;
     openSig = minted.openSig;
     const wrapped = applyRelayClickTickets(html, text, minted.tickets, {

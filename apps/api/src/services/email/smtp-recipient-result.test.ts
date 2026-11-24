@@ -6,6 +6,7 @@ import {
   isSharedCloudTrackingUrl,
   resolveDeviceTrackingOrigin,
   resolvePublicBaseUrl,
+  preferVerifiedTrackingOrigin,
   resolveTrackingOrigin,
 } from './public-url.js';
 
@@ -60,7 +61,7 @@ describe('public tracking URL', () => {
     ).toBe('https://track.example.com');
   });
 
-  it('keeps PC mail on the public https site, with no port 5000', () => {
+  it('uses one verified tracking domain for PC mail, and the public site until then', () => {
     const prev = process.env.REMOTE_APP_URL;
     process.env.REMOTE_APP_URL = 'https://novasreach.xyz';
     expect(
@@ -69,6 +70,17 @@ describe('public tracking URL', () => {
         trackingValid: true,
         workspaceOnDevice: true,
       }),
+    ).toBe('https://track.example.com');
+    expect(
+      resolveTrackingOrigin({
+        workspaceOnDevice: true,
+      }),
+    ).toBe('https://novasreach.xyz');
+    expect(
+      preferVerifiedTrackingOrigin('https://track.example.com', 'https://novasreach.xyz'),
+    ).toBe('https://track.example.com');
+    expect(
+      preferVerifiedTrackingOrigin('https://novasreach.xyz', 'https://novasreach.xyz'),
     ).toBe('https://novasreach.xyz');
     process.env.REMOTE_APP_URL = prev;
   });

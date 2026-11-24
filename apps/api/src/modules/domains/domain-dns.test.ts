@@ -1,7 +1,8 @@
 import { generateKeyPairSync } from 'crypto';
 import { describe, expect, it } from 'vitest';
 import { recommendedSpfForHosts } from '../deliverability/smtp-auth-hints.js';
-import { judgeIssuedRecord } from './domain-dns.js';
+import { dnsCheckStatus, judgeIssuedRecord } from './domain-dns.js';
+import { isTrackingHost } from '../../services/email/tracking-cert.js';
 
 function issuedRecords(smtpHost: string) {
   const { publicKey } = generateKeyPairSync('rsa', {
@@ -44,6 +45,18 @@ describe('records Inbox Flow gives the user', () => {
     expect(judgeIssuedRecord({ type: 'TRACKING', value: issued.tracking }, { txt: [], cname: [issued.tracking] }, []).valid).toBe(true);
     expect(judgeIssuedRecord({ type: 'RETURN_PATH', value: issued.bounce }, { txt: [], cname: ['bounce.inboxflow.io.'] }, []).valid).toBe(true);
     expect(judgeIssuedRecord({ type: 'CUSTOM', value: issued.token }, { txt: [issued.token], cname: [] }, []).valid).toBe(true);
+  });
+
+  it('requires the tracking CNAME and leaves bounce and ownership optional', () => {
+    expect(dnsCheckStatus('SPF', false)).toBe('INVALID');
+    expect(dnsCheckStatus('DKIM', true)).toBe('VALID');
+    expect(dnsCheckStatus('TRACKING', false)).toBe('INVALID');
+    expect(dnsCheckStatus('TRACKING', true)).toBe('VALID');
+    expect(dnsCheckStatus('RETURN_PATH', false)).toBe('PENDING');
+    expect(dnsCheckStatus('CUSTOM', false)).toBe('PENDING');
+    expect(isTrackingHost('track.example.com')).toBe(true);
+    expect(isTrackingHost('example.com')).toBe(false);
+    expect(isTrackingHost('track.com')).toBe(false);
   });
 
   it('stays unverified until those records propagate', () => {

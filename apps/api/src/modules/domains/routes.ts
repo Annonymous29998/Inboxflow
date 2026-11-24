@@ -14,6 +14,7 @@ import {
 import { requireOrg } from '../../utils/org.js';
 import { recommendedSpfForHosts } from '../deliverability/smtp-auth-hints.js';
 import { orgSmtpHosts, verifyOrganizationDomain } from './domain-dns.js';
+import { trackingCnameTarget } from '../../services/email/public-url.js';
 
 function pemToDkimPublicKey(privateKeyPem: string): string {
   const pub = createPublicKey(privateKeyPem);
@@ -73,65 +74,23 @@ export async function domainRoutes(app: FastifyInstance) {
       const body = z.object({ domain: z.string().min(3) }).parse(request.body);
       const domainName = body.domain.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
-      const existing = await prisma.domain.findUnique({
-        where: { organizationId_domain: { organizationId: orgId, domain: domainName } },
-      });
-      if (existing) throw new AppError(409, 'Domain already added');
+      const taken = await prisma.domain.count({ where: { organizationId: orgId } });
+      if (taken > 0) {
+        throw new AppError(409, 'Delete the current tracking domain before adding another.');
+      }
 
-      const dkimSelector = 'inboxflow';
-      const { privateKey, publicKey } = generateKeyPairSync('rsa', {
-        modulusLength: 2048,
-        publicKeyEncoding: { type: 'spki', format: 'pem' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-      });
-      const publicB64 = publicKey
-        .replace(/-----BEGIN PUBLIC KEY-----/g, '')
-        .replace(/-----END PUBLIC KEY-----/g, '')
-        .replace(/\s+/g, '');
-      const dkimValue = `v=DKIM1; k=rsa; p=${publicB64}`;
-      const verificationToken = generateToken(16);
       const smtpHosts = await orgSmtpHosts(orgId);
-      const spf = recommendedSpfForHosts(smtpHosts);
-
       const domain = await prisma.domain.create({
         data: {
           organizationId: orgId,
           domain: domainName,
           trackingDomain: `track.${domainName}`,
-          returnPath: `bounce.${domainName}`,
-          dkimSelector,
-          dkimPrivateKeyEnc: encrypt(privateKey),
           dnsRecords: {
             create: [
               {
-                type: 'SPF',
-                host: '@',
-                value: spf.record,
-              },
-              {
-                type: 'DKIM',
-                host: `${dkimSelector}._domainkey`,
-                value: dkimValue,
-              },
-              {
-                type: 'DMARC',
-                host: '_dmarc',
-                value: `v=DMARC1; p=none; rua=mailto:dmarc@${domainName}; pct=100`,
-              },
-              {
                 type: 'TRACKING',
                 host: 'track',
-                value: 'track.inboxflow.io',
-              },
-              {
-                type: 'RETURN_PATH',
-                host: 'bounce',
-                value: 'bounce.inboxflow.io',
-              },
-              {
-                type: 'CUSTOM',
-                host: '_inboxflow-verify',
-                value: verificationToken,
+                value: trackingCnameTarget(),
               },
             ],
           },
@@ -143,7 +102,7 @@ export async function domainRoutes(app: FastifyInstance) {
         domain: {
           ...domain,
           dkimPrivateKeyEnc: undefined,
-          hasDkimPrivateKey: true,
+          hasDkimPrivateKey: false,
         },
         instructions: getSetupInstructions(domainName, domain.dnsRecords, smtpHosts),
       });
@@ -251,7 +210,7 @@ export async function domainRoutes(app: FastifyInstance) {
     try {
       const orgId = requireOrg(request.user.organizationId);
       const { id } = request.params as { id: string };
-      const checked = await verifyOrganizationDomain(orgId, id);
+      const checked = await verifyOrganizationDomain(orgId, id, request.headers.authorization);
       if (!checked) throw new AppError(404, 'Domain not found');
 
       return reply.send({
@@ -398,8 +357,10 @@ function withDnsMeta(
   record: { type: string; host: string; value: string; status: string } | undefined,
 ) {
   if (!record) return undefined;
+  const optional = record.type === 'RETURN_PATH' || record.type === 'CUSTOM';
   return {
     ...record,
+    optional,
     dnsType: dnsKind(record.type),
     fqdn: record.host === '@' ? domain : `${record.host}.${domain}`,
   };
@@ -410,12 +371,33 @@ function getSetupInstructions(
   records: Array<{ type: string; host: string; value: string; status: string }>,
   smtpHosts: string[] = [],
 ) {
+  const tracking = records.find((r) => r.type === 'TRACKING');
+  const spfRecord = records.find((r) => r.type === 'SPF');
+  if (tracking && !spfRecord) {
+    return {
+      title: `Tracking domain ${domain}`,
+      smtpHosts,
+      sending:
+        `Add one CNAME. Opens, clicks, and unsubscribe for every SMTP profile use https://track.${domain} after HTTPS is ready. Until then those links stay on the public site. This domain does not need a website, and it does not have to be an address you send from. Delete it and add another to switch later sends.`,
+      dnsRecords: [withDnsMeta(domain, tracking)],
+      steps: [
+        {
+          step: 1,
+          title: 'Point track at the mailer',
+          description:
+            'Add this CNAME with proxy off (DNS only). Inbox Flow requests the HTTPS certificate after the name is visible. A domain with no website is enough.',
+          record: withDnsMeta(domain, tracking),
+        },
+      ],
+      tip: 'One tracking domain per account. Every SMTP profile shares it. Leave the DNS proxy off so the CNAME stays visible.',
+    };
+  }
+
   const recommended = recommendedSpfForHosts(
     smtpHosts,
-    records.find((r) => r.type === 'SPF')?.value,
+    spfRecord?.value,
   );
   const providerNames = recommended.hints.map((h) => h.label).join(', ') || 'your SMTP';
-  const spfRecord = records.find((r) => r.type === 'SPF');
   const shownSpf = spfRecord
     ? { ...spfRecord, value: recommended.record }
     : { type: 'SPF', host: '@', value: recommended.record, status: 'PENDING' };
@@ -427,7 +409,7 @@ function getSetupInstructions(
     title: `Authenticate ${domain}`,
     smtpHosts,
     sending:
-      `Add the 3 TXT records (SPF, DKIM, DMARC) Inbox Flow generated. Inbox Flow checks DNS on its own and marks them verified when they propagate. Verify DNS checks immediately. Then Generate SMTP and paste host smtp.inboxflow.io into SMTP Manager. Tracking / bounce CNAMEs are optional.`,
+      `Opens, clicks, and unsubscribe use https://track.${domain} after the tracking CNAME and HTTPS are ready. SPF, DKIM, and DMARC are for the address you send from. Bounce and ownership records are optional.`,
     dnsRecords: tableSource.map((r) => withDnsMeta(domain, r)),
     steps: [
       {
@@ -453,14 +435,14 @@ function getSetupInstructions(
       },
       {
         step: 4,
-        title: 'Custom tracking domain (recommended)',
-        description: 'Improves link reputation by using your own domain for click tracking.',
+        title: 'Tracking CNAME',
+        description: 'Point track at the mailer, proxy off. This is the hostname used for opens, clicks, and unsubscribe once HTTPS is ready.',
         record: withDnsMeta(domain, records.find((r) => r.type === 'TRACKING')),
       },
       {
         step: 5,
         title: 'Return-Path / Bounce domain',
-        description: 'Routes bounce processing through a domain you control.',
+        description: 'Optional. Bounce handling does not depend on this record. Skip it if you do not control the target hostname.',
         record: withDnsMeta(domain, records.find((r) => r.type === 'RETURN_PATH')),
       },
       ...(verify

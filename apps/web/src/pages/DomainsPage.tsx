@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, RefreshCw, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
@@ -13,6 +13,7 @@ type DnsRow = {
   host: string;
   value: string;
   status: string;
+  optional?: boolean;
   dnsType?: 'TXT' | 'CNAME';
   fqdn?: string;
 };
@@ -97,28 +98,53 @@ export function DomainsPage() {
 
   const waitingOnDns = domains.some((domain) => domain.status !== 'VERIFIED');
   const selectedId = selected?.id || '';
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const verifyQuiet = useRef(false);
+
+  async function applyVerify(id: string, quiet = false) {
+    if (!quiet) toast.info('Verifying DNS…');
+    try {
+      const data = await api.post<{ domain: Domain; instructions: Instructions }>(
+        `/api/domains/${id}/verify`,
+        {},
+        { timeoutMs: 120_000 },
+      );
+      setDomains((prev) => {
+        const next = prev.map((domain) => (domain.id === data.domain.id ? { ...domain, ...data.domain } : domain));
+        uiCacheSet('domains', next);
+        return next;
+      });
+      if (selectedIdRef.current === data.domain.id) {
+        setSelected(data.domain);
+        setInstructions(data.instructions);
+      }
+      if (!quiet) {
+        toast.success('Verification complete', `Status: ${data.domain.status}`);
+        await load();
+      }
+    } catch (err) {
+      if (!quiet) toast.error('Verification failed', err instanceof Error ? err.message : undefined);
+    }
+  }
+
   useEffect(() => {
     if (!waitingOnDns) return;
     const timer = window.setInterval(() => {
+      if (verifyQuiet.current) return;
+      const pending = domains.filter((domain) => domain.status !== 'VERIFIED').map((domain) => domain.id);
+      if (!pending.length) return;
+      verifyQuiet.current = true;
       void (async () => {
         try {
-          const data = await api.get<{ domains: Domain[]; smtpHosts?: string[] }>('/api/domains');
-          setDomains(data.domains);
-          setSmtpHosts(data.smtpHosts || []);
-          uiCacheSet('domains', data.domains);
-          uiCacheSet('smtpHosts', data.smtpHosts || []);
-          if (!selectedId) return;
-          const updated = data.domains.find((domain) => domain.id === selectedId);
-          if (updated) setSelected(updated);
-          const next = await api.get<{ instructions: Instructions }>(`/api/domains/${selectedId}/instructions`);
-          setInstructions(next.instructions);
-        } catch {
-          /* the next pass retries after DNS answers */
+          for (const id of pending) await applyVerify(id, true);
+        } finally {
+          verifyQuiet.current = false;
         }
       })();
     }, 20_000);
     return () => window.clearInterval(timer);
-  }, [waitingOnDns, selectedId, setSelected, setInstructions]);
+  }, [waitingOnDns, domains.map((domain) => `${domain.id}:${domain.status}`).join('|')]);
 
   async function addDomain(e: React.FormEvent) {
     e.preventDefault();
@@ -139,18 +165,7 @@ export function DomainsPage() {
   }
 
   async function verify(id: string) {
-    toast.info('Verifying DNS…');
-    try {
-      const data = await api.post<{ domain: Domain; instructions: Instructions }>(
-        `/api/domains/${id}/verify`,
-      );
-      setSelected(data.domain);
-      setInstructions(data.instructions);
-      toast.success('Verification complete', `Status: ${data.domain.status}`);
-      await load();
-    } catch (err) {
-      toast.error('Verification failed', err instanceof Error ? err.message : undefined);
-    }
+    await applyVerify(id, false);
   }
 
   async function openWizard(domain: Domain) {
@@ -267,15 +282,12 @@ export function DomainsPage() {
         </p>
         <h1 className="page-title text-primary">Domains</h1>
         <p className="page-sub">
-          Add a domain you own, copy the 3 DNS records, Verify, then Generate SMTP. Host is{' '}
-          <code className="text-foreground">smtp.inboxflow.io</code>.
+          Add one domain for tracking. It is not the address you send from. Every SMTP profile uses it
+          for opens, clicks, and unsubscribe once the CNAME and HTTPS are ready.
         </p>
         <p className="mailer-hint max-w-3xl">
-          Three TXT records only: SPF, DKIM, DMARC. Then Verify DNS → Generate SMTP → paste into{' '}
-          <Link to="/app/smtp" className="text-primary underline">
-            SMTP Manager
-          </Link>
-          . Running campaigns stay on their current SMTP.
+          One CNAME, proxy off. The domain does not need a website. Delete it and add another to
+          switch later sends. Mail already sent keeps its old links.
         </p>
       </div>
 
@@ -327,8 +339,8 @@ export function DomainsPage() {
           ))}
           {!domains.length ? (
             <p className="px-1 text-sm text-ink-muted">
-              Add a domain you own above. After DNS verifies, Campaigns can use any sender on that
-              domain through your existing SMTP.
+              Add one tracking domain. It is shared by every SMTP profile. It does not have to be a
+              website or the address you send from.
             </p>
           ) : null}
         </div>
@@ -418,9 +430,7 @@ export function DomainsPage() {
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        const required = dnsRows.filter((r) =>
-                          ['SPF', 'DKIM', 'DMARC'].includes(r.type),
-                        );
+                        const required = dnsRows.filter((r) => !r.optional);
                         const text = required
                           .map(
                             (r) =>
@@ -431,7 +441,9 @@ export function DomainsPage() {
                       }}
                     >
                       <Copy className="h-3.5 w-3.5" />
-                      Copy SPF + DKIM + DMARC
+                      {dnsRows.some((r) => r.type !== 'TRACKING' && !r.optional)
+                        ? 'Copy required records'
+                        : 'Copy tracking record'}
                     </Button>
                   </div>
                   <table className="w-full text-left text-[11px]">
@@ -446,7 +458,12 @@ export function DomainsPage() {
                     <tbody>
                       {dnsRows.map((row) => (
                         <tr key={`${row.type}-${row.host}`} className="border-b border-border align-top last:border-0">
-                          <td className="px-3 py-2 font-mono">{row.dnsType || 'TXT'}</td>
+                          <td className="px-3 py-2 font-mono">
+                            <span className="inline-flex items-center gap-2">
+                              {row.dnsType || 'TXT'}
+                              {row.optional ? <Badge tone="neutral">Optional</Badge> : null}
+                            </span>
+                          </td>
                           <td className="px-3 py-2">
                             <CopyCell
                               label="Host"
@@ -476,6 +493,7 @@ export function DomainsPage() {
                         {step.step}
                       </span>
                       <h3 className="font-medium">{step.title}</h3>
+                      {step.record?.optional ? <Badge tone="neutral">Optional</Badge> : null}
                       {step.record && (
                         <Badge tone={step.record.status === 'VALID' ? 'success' : 'neutral'}>
                           {step.record.status}
@@ -502,8 +520,8 @@ export function DomainsPage() {
             </div>
           ) : (
             <div className="flex h-full items-center justify-center px-6 text-center text-sm text-ink-muted">
-              Add a domain you own, verify DNS, then Generate SMTP. Inbox Flow issues
-              smtp.inboxflow.io credentials to paste into SMTP Manager.
+              Add one tracking domain, publish the CNAME, and wait until it verifies. Opens and
+              clicks then use that name for every SMTP profile.
             </div>
           )}
           </div>

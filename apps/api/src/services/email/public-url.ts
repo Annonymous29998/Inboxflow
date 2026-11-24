@@ -70,6 +70,15 @@ export function cloudTrackingOrigin(): string {
   return 'https://novasreach.xyz';
 }
 
+/** Hostname recipients' CNAME must point at. This is the site we control. */
+export function trackingCnameTarget(): string {
+  try {
+    return new URL(cloudTrackingOrigin()).hostname.toLowerCase();
+  } catch {
+    return 'novasreach.xyz';
+  }
+}
+
 /** https://track.example.com when the tracking CNAME is verified. No port. */
 export function httpsTrackingOrigin(input?: {
   trackingDomain?: string | null;
@@ -86,8 +95,8 @@ export function httpsTrackingOrigin(input?: {
 }
 
 /**
- * PC-hosted mail puts open, click, and unsubscribe links on the public site.
- * Server-hosted mail uses a verified tracking domain when it has one.
+ * A verified tracking domain wins for every workspace, including mail sent from a PC.
+ * Until that HTTPS name is ready, PC mail stays on the public site.
  */
 export function resolveTrackingOrigin(input: {
   sendSettings?: unknown;
@@ -95,10 +104,24 @@ export function resolveTrackingOrigin(input: {
   trackingValid?: boolean;
   workspaceOnDevice?: boolean;
 }): string {
-  if (input.workspaceOnDevice) return cloudTrackingOrigin();
   const https = httpsTrackingOrigin(input);
   if (https) return https;
+  if (input.workspaceOnDevice) return cloudTrackingOrigin();
   return resolveDeviceTrackingOrigin(input.sendSettings);
+}
+
+/** Keep https://track.customer.com when minting still returns the shared site. */
+export function preferVerifiedTrackingOrigin(localOrigin: string, fallback: string): string {
+  try {
+    const url = new URL(localOrigin);
+    const cloudHost = new URL(cloudTrackingOrigin()).hostname;
+    if (url.protocol === 'https:' && !url.port && !isIP(url.hostname) && url.hostname !== cloudHost) {
+      return localOrigin;
+    }
+  } catch {
+    /* the fallback is the public site */
+  }
+  return fallback;
 }
 
 /** Bound PC address. Used only when the workspace is not on the public tracking site. */

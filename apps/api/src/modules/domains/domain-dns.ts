@@ -3,6 +3,8 @@ import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
 import { parseProviderConfig } from '../../services/email/providers.js';
 import { missingSpfMechanisms, recommendedSpfForHosts } from '../deliverability/smtp-auth-hints.js';
+import { ensureTrackingHttps } from '../../services/email/tracking-cert.js';
+import { trackingCnameTarget } from '../../services/email/public-url.js';
 
 export type IssuedRecord = { id?: string; type: string; host: string; value: string };
 
@@ -85,6 +87,17 @@ export async function readLiveDns(host: string, kind: 'TXT' | 'CNAME'): Promise<
   return { txt: txts.map((parts) => parts.join('')), cname: [] };
 }
 
+export function isOptionalDnsRecord(type: string): boolean {
+  return type === 'RETURN_PATH' || type === 'CUSTOM';
+}
+
+/** A missing optional record stays pending. It does not block domain verification. */
+export function dnsCheckStatus(type: string, valid: boolean): 'VALID' | 'INVALID' | 'PENDING' {
+  if (valid) return 'VALID';
+  if (isOptionalDnsRecord(type)) return 'PENDING';
+  return 'INVALID';
+}
+
 export function dnsHost(domain: string, host: string): string {
   return host === '@' ? domain : `${host}.${domain}`;
 }
@@ -109,7 +122,11 @@ export async function orgSmtpHosts(organizationId: string): Promise<string[]> {
   return hosts;
 }
 
-export async function verifyOrganizationDomain(organizationId: string, domainId: string) {
+export async function verifyOrganizationDomain(
+  organizationId: string,
+  domainId: string,
+  authorization?: string | null,
+) {
   const domain = await prisma.domain.findFirst({
     where: { id: domainId, organizationId },
     include: { dnsRecords: true },
@@ -122,6 +139,10 @@ export async function verifyOrganizationDomain(organizationId: string, domainId:
   const results: Array<{ type: string; status: string; detail?: string }> = [];
 
   for (const record of domain.dnsRecords) {
+    if (record.type === 'TRACKING' && record.value !== trackingCnameTarget()) {
+      record.value = trackingCnameTarget();
+      await prisma.dnsRecord.update({ where: { id: record.id }, data: { value: record.value } });
+    }
     const kind = record.type === 'TRACKING' || record.type === 'RETURN_PATH' ? 'CNAME' : 'TXT';
     let judged = { valid: false, detail: 'Lookup failed' };
     try {
@@ -138,19 +159,40 @@ export async function verifyOrganizationDomain(organizationId: string, domainId:
       judged = { valid: false, detail: error instanceof Error ? error.message : 'Lookup failed' };
     }
 
+    const status = dnsCheckStatus(record.type, judged.valid);
     await prisma.dnsRecord.update({
       where: { id: record.id },
-      data: { status: judged.valid ? 'VALID' : 'INVALID', lastChecked: new Date() },
+      data: { status, lastChecked: new Date() },
     });
-    results.push({ type: record.type, status: judged.valid ? 'VALID' : 'INVALID', detail: judged.detail });
+    results.push({ type: record.type, status, detail: judged.detail });
   }
 
   const spfValid = results.find((row) => row.type === 'SPF')?.status === 'VALID';
   const dkimValid = results.find((row) => row.type === 'DKIM')?.status === 'VALID';
   const dmarcValid = results.find((row) => row.type === 'DMARC')?.status === 'VALID';
-  const trackingValid = results.find((row) => row.type === 'TRACKING')?.status === 'VALID';
+  const trackingDns = results.find((row) => row.type === 'TRACKING')?.status === 'VALID';
   const returnPathValid = results.find((row) => row.type === 'RETURN_PATH')?.status === 'VALID';
+  const hasTrackingRecord = domain.dnsRecords.some((row) => row.type === 'TRACKING');
+  let trackingValid = false;
+  if (trackingDns && domain.trackingDomain) {
+    trackingValid = await ensureTrackingHttps(domain.trackingDomain, authorization);
+    if (!trackingValid) {
+      const trackingRecord = domain.dnsRecords.find((row) => row.type === 'TRACKING');
+      if (trackingRecord) {
+        await prisma.dnsRecord.update({
+          where: { id: trackingRecord.id },
+          data: { status: 'PENDING', lastChecked: new Date() },
+        });
+      }
+      const pending = results.find((row) => row.type === 'TRACKING');
+      if (pending) {
+        pending.status = 'PENDING';
+        pending.detail = 'CNAME is published. HTTPS for this name is not ready yet.';
+      }
+    }
+  }
   const allCore = Boolean(spfValid && dkimValid && dmarcValid);
+  const verified = hasTrackingRecord ? trackingValid : allCore;
   const reputationScore =
     (spfValid ? 30 : 0) + (dkimValid ? 35 : 0) + (dmarcValid ? 25 : 0) + (trackingValid ? 5 : 0) + (returnPathValid ? 5 : 0);
 
@@ -163,7 +205,7 @@ export async function verifyOrganizationDomain(organizationId: string, domainId:
       trackingValid,
       returnPathValid,
       reputationScore,
-      status: allCore ? 'VERIFIED' : 'VERIFYING',
+      status: verified ? 'VERIFIED' : 'VERIFYING',
       lastVerifiedAt: new Date(),
     },
     include: { dnsRecords: true },
