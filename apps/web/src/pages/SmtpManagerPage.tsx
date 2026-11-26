@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Eye, EyeOff, Loader2, Plus, Trash2, X, Zap } from 'lucide-react';
 import { api } from '@/lib/api';
-import { parseFromIdentities, smtpService, type SmtpProfile } from '@/services/smtp.service';
+import {
+  isGeneratedSenderName,
+  parseFromIdentities,
+  senderListLabel,
+  smtpService,
+  type SmtpProfile,
+} from '@/services/smtp.service';
 import { Badge, Button, Card, Input, Label, Select, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { toast } from '@/stores/toast';
@@ -108,17 +114,32 @@ function senderEmails(form: FormState) {
 
 function autoSmtpName(form: FormState) {
   const custom = (form.name || form.label || '').trim();
-  if (custom) return custom;
+  if (custom && !isGeneratedSenderName(custom)) return custom;
   const emails = senderEmails(form);
-  return (emails.join(', ') || form.fromEmail || form.user || form.host || 'SMTP').trim();
+  return (senderListLabel(emails) || custom || form.fromEmail || form.user || form.host || 'SMTP').trim();
+}
+
+function withSenders(form: FormState, senders: Array<{ email: string; name: string }>): FormState {
+  const emails = senders.map((s) => s.email.trim()).filter(Boolean);
+  const joined = senderListLabel(emails);
+  const auto = !form.name.trim() || isGeneratedSenderName(form.name);
+  return {
+    ...form,
+    senders,
+    fromEmail: emails[0] || '',
+    fromName: senders.find((s) => s.email.trim())?.name || '',
+    ...(auto ? { name: joined, label: joined } : {}),
+  };
 }
 
 function profileDisplayName(p: SmtpProfile) {
   const emails = parseFromIdentities(p.fromIdentities).map((s) => s.email);
-  const joined = emails.join(', ');
-  const custom = (p.label || p.name || '').trim();
-  if (custom && custom !== p.fromEmail && custom !== p.user) return custom;
-  return joined || custom || p.fromEmail || p.user || p.name || 'SMTP';
+  const joined = senderListLabel(emails);
+  const label = (p.label || '').trim();
+  const name = (p.name || '').trim();
+  if (label && !isGeneratedSenderName(label) && label !== p.fromEmail && label !== p.user) return label;
+  if (name && !isGeneratedSenderName(name) && name !== p.fromEmail && name !== p.user) return name;
+  return joined || name || p.fromEmail || p.user || 'SMTP';
 }
 
 function statusTone(status?: string | null) {
@@ -291,10 +312,15 @@ export function SmtpManagerPage() {
       .filter((s) => s.email);
     const firstEmail = senderRows[0]?.email || detail.fromEmail || '';
     const storedName = (detail.label || detail.name || '').trim();
+    const currentJoin = senderListLabel(senderRows.map((s) => s.email));
     const customName =
-      storedName && storedName !== firstEmail && storedName !== detail.fromEmail && storedName !== detail.user
+      storedName &&
+      !isGeneratedSenderName(storedName) &&
+      storedName !== firstEmail &&
+      storedName !== detail.fromEmail &&
+      storedName !== detail.user
         ? storedName
-        : '';
+        : currentJoin;
     setForm({
       name: customName,
       label: customName,
@@ -456,9 +482,11 @@ export function SmtpManagerPage() {
         }
       }
 
+      const title = autoSmtpName(form);
       const payload = {
-        name: autoSmtpName(form),
-        label: form.name.trim() || form.label.trim() || null,
+        name: title,
+        label:
+          !form.name.trim() || isGeneratedSenderName(form.name) ? title : form.name.trim() || form.label.trim() || null,
         type: 'SMTP' as const,
         config: buildConfig(),
         isDefault: form.isDefault,
@@ -800,8 +828,8 @@ export function SmtpManagerPage() {
                 <div>
                   <span className="text-muted-foreground">Sender</span>
                   <div className="mt-0.5 truncate font-medium text-foreground">
-                    {(parseFromIdentities(selected.fromIdentities).length
-                      ? parseFromIdentities(selected.fromIdentities).map((s) => s.email).join(', ')
+                    {(form.senders.some((s) => s.email.trim())
+                      ? senderListLabel(form.senders.map((s) => s.email))
                       : selected.fromName
                         ? `${selected.fromName} <${selected.fromEmail || selected.user || '—'}>`
                         : selected.fromEmail || selected.user || '—') || '—'}
@@ -1023,7 +1051,7 @@ export function SmtpManagerPage() {
                           const senders = form.senders.map((s, idx) =>
                             idx === i ? { ...s, name: e.target.value } : s,
                           );
-                          setForm({ ...form, senders, fromName: senders[0]?.name || '' });
+                          setForm(withSenders(form, senders));
                         }}
                         placeholder="From name (optional)"
                       />
@@ -1034,7 +1062,7 @@ export function SmtpManagerPage() {
                           const senders = form.senders.map((s, idx) =>
                             idx === i ? { ...s, email: e.target.value } : s,
                           );
-                          setForm({ ...form, senders, fromEmail: senders[0]?.email || '' });
+                          setForm(withSenders(form, senders));
                           setLastTestOk(false);
                         }}
                         placeholder="hello@yourdomain.com"
@@ -1050,7 +1078,7 @@ export function SmtpManagerPage() {
                             { email: '', name: '' },
                             ...form.senders.slice(i + 1),
                           ];
-                          setForm({ ...form, senders });
+                          setForm(withSenders(form, senders));
                         }}
                       >
                         <Plus className="h-3.5 w-3.5" />
@@ -1062,12 +1090,7 @@ export function SmtpManagerPage() {
                         disabled={form.senders.length <= 1}
                         onClick={() => {
                           const senders = form.senders.filter((_, idx) => idx !== i);
-                          setForm({
-                            ...form,
-                            senders: senders.length ? senders : [{ email: '', name: '' }],
-                            fromEmail: senders[0]?.email || '',
-                            fromName: senders[0]?.name || '',
-                          });
+                          setForm(withSenders(form, senders.length ? senders : [{ email: '', name: '' }]));
                         }}
                         aria-label="Remove sender"
                       >

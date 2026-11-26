@@ -26,6 +26,19 @@ export function parseFromIdentities(raw: unknown): SmtpFromIdentity[] {
   return [];
 }
 
+/** Profile title that was filled from the sender list, not typed as a custom name. */
+export function isGeneratedSenderName(value: string | null | undefined): boolean {
+  const parts = String(value || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 && parts.every((part) => /^[^\s,<>]+@[^\s,<>]+\.[^\s,<>]+$/.test(part));
+}
+
+export function senderListLabel(emails: string[]): string {
+  return emails.map((email) => email.trim()).filter(Boolean).join(', ');
+}
+
 function normalizeProfile<T extends SmtpProfile>(p: T): T {
   return { ...p, fromIdentities: parseFromIdentities(p.fromIdentities) };
 }

@@ -11,7 +11,7 @@ import {
 import { api } from '@/lib/api';
 import { recipientLogDetail } from '@/lib/smtp-log-label';
 import { campaignSendService, type SendActivity } from '@/services/campaign-send.service';
-import { parseFromIdentities, smtpService } from '@/services/smtp.service';
+import { isGeneratedSenderName, parseFromIdentities, senderListLabel, smtpService } from '@/services/smtp.service';
 import { templateHtmlToBlocks, templateService, type EmailTemplateSummary } from '@/services/template.service';
 import {
   useCampaignDeliverability,
@@ -94,6 +94,7 @@ type ProviderOption = {
   fromEmail?: string;
   fromName?: string;
   fromIdentities?: Array<{ email: string; name?: string }>;
+  label?: string | null;
   user?: string;
   viaApiKey?: boolean;
   lastTestStatus?: string | null;
@@ -123,6 +124,14 @@ function smtpIdentities(p?: ProviderOption | null) {
   if (listed.length) return listed;
   if (p?.fromEmail) return [{ email: p.fromEmail, name: p.fromName || '' }];
   return [];
+}
+
+function smtpProfileTitle(p: ProviderOption) {
+  const emails = smtpIdentities(p).map((s) => s.email);
+  const label = String(p.label || '').trim();
+  if (label && !isGeneratedSenderName(label)) return label;
+  if (isGeneratedSenderName(p.name) || isGeneratedSenderName(label)) return senderListLabel(emails) || p.name;
+  return p.name || 'SMTP';
 }
 
 type Campaign = {
@@ -688,6 +697,8 @@ export function CampaignEditorPage() {
   const resendStartedRef = useRef(false);
   /** Ignore the previous SENT snapshot until this send/resend is actually queued. */
   const sendProgressArmedRef = useRef(false);
+  const fromDraftRef = useRef(new Map<string, Array<{ email: string; name: string }>>());
+  const fromSaveTimerRef = useRef(new Map<string, number>());
   const [verifiedDomains, setVerifiedDomains] = useState<Array<{ id: string; domain: string }>>([]);
 
   function stopSendStream() {
@@ -833,7 +844,7 @@ export function CampaignEditorPage() {
         ? `Auto-rotate SMTP · ${channelProviders
             .flatMap((p) => {
               const ids = smtpIdentities(p);
-              return ids.length ? ids.map((s) => s.email) : [p.fromEmail || p.name];
+              return ids.length ? ids.map((s) => s.email) : [p.fromEmail || smtpProfileTitle(p)];
             })
             .filter(Boolean)
             .join(' ↔ ') || 'all active SMTPs'}`
@@ -2206,7 +2217,7 @@ export function CampaignEditorPage() {
     const ticked = allSmtps.filter((p) => pickedSmtpIds.includes(p.id));
     const parts = ticked.map((p) => {
       const n = smtpIdentities(p).length || 1;
-      return `${p.name || 'SMTP'} × ${n} From${n === 1 ? '' : 's'}`;
+      return `${smtpProfileTitle(p)} × ${n} From${n === 1 ? '' : 's'}`;
     });
     const totalTests = ticked.reduce((sum, p) => sum + (smtpIdentities(p).length || 1), 0);
     const asked = await promptDialog('Send placement test?', {
@@ -2565,10 +2576,21 @@ export function CampaignEditorPage() {
       outboundPath,
       bindIp: smtpAllowDirect ? patch.bindIp ?? p.bindIp : boundPcIp,
     };
-    setProviders((list) => list.map((row) => (row.id === p.id ? { ...row, ...next } : row)));
     const identities = smtpIdentities(next);
+    const joined = senderListLabel(identities.map((s) => s.email));
+    const renameName = patch.fromIdentities != null && isGeneratedSenderName(p.name);
+    const renameLabel = patch.fromIdentities != null && isGeneratedSenderName(p.label);
+    const nextName = renameName ? joined || p.name : p.name;
+    const nextLabel = renameLabel ? joined || null : p.label;
+    setProviders((list) =>
+      list.map((row) =>
+        row.id === p.id ? { ...row, ...next, name: nextName, label: nextLabel } : row,
+      ),
+    );
     try {
       await smtpService.update(p.id, {
+        ...(renameName ? { name: nextName } : {}),
+        ...(renameLabel ? { label: nextLabel ?? null } : {}),
         config: {
           outboundPath,
           host: next.host || '',
@@ -2898,7 +2920,7 @@ export function CampaignEditorPage() {
                           onChange={(e) => toggleSmtpPick(p.id, e.target.checked)}
                         />
                         <button type="button" className="min-w-0 flex-1 text-left" onClick={toggleOpen}>
-                          <strong>{p.name || `SMTP ${index + 1}`}</strong>
+                          <strong>{smtpProfileTitle(p) || `SMTP ${index + 1}`}</strong>
                           {p.host ? ` · ${p.host}${p.port ? `:${p.port}` : ''}` : ''}
                           <div className="meta text-[11px] text-muted-foreground">
                             {fromCount} From{fromCount === 1 ? '' : 's'} · {p.lastTestStatus || 'Pending'}
@@ -2973,14 +2995,42 @@ export function CampaignEditorPage() {
                           const editRows = listed.length
                             ? listed
                             : [{ email: p.fromEmail || '', name: p.fromName || '' }];
-                          function persistFrom(next: Array<{ email: string; name: string }>) {
-                            void saveSmtpPath(
-                              { ...p, fromIdentities: next },
-                              {
-                                fromIdentities: next,
-                                fromEmail: next.find((s) => s.email.includes('@'))?.email || next[0]?.email,
-                                fromName: next.find((s) => s.email.includes('@'))?.name || next[0]?.name,
-                              },
+                          function queueFromSave(next: Array<{ email: string; name: string }>) {
+                            fromDraftRef.current.set(p.id, next);
+                            const pending = fromSaveTimerRef.current.get(p.id);
+                            if (pending) window.clearTimeout(pending);
+                            fromSaveTimerRef.current.set(
+                              p.id,
+                              window.setTimeout(() => {
+                                const rows = fromDraftRef.current.get(p.id) || next;
+                                void saveSmtpPath(
+                                  { ...p, fromIdentities: rows },
+                                  {
+                                    fromIdentities: rows,
+                                    fromEmail: rows.find((s) => s.email.includes('@'))?.email || rows[0]?.email,
+                                    fromName: rows.find((s) => s.email.includes('@'))?.name || rows[0]?.name,
+                                  },
+                                );
+                              }, 80),
+                            );
+                          }
+                          function stageFrom(next: Array<{ email: string; name: string }>) {
+                            fromDraftRef.current.set(p.id, next);
+                            const emails = next.map((s) => s.email.trim()).filter((email) => email.includes('@'));
+                            const joined = senderListLabel(emails);
+                            setProviders((list) =>
+                              list.map((item) =>
+                                item.id === p.id
+                                  ? {
+                                      ...item,
+                                      fromIdentities: next,
+                                      fromEmail: emails[0] || next[0]?.email || '',
+                                      fromName: next.find((s) => s.email.includes('@'))?.name || next[0]?.name || '',
+                                      ...(isGeneratedSenderName(item.name) ? { name: joined || item.name } : {}),
+                                      ...(isGeneratedSenderName(item.label) ? { label: joined || null } : {}),
+                                    }
+                                  : item,
+                              ),
                             );
                           }
                           return (
@@ -2993,61 +3043,35 @@ export function CampaignEditorPage() {
                                       value={row.name}
                                       placeholder="From name (optional)"
                                       onChange={(e) => {
-                                        const next = editRows.map((s, idx) =>
-                                          idx === i ? { ...s, name: e.target.value } : s,
-                                        );
-                                        setProviders((list) =>
-                                          list.map((item) =>
-                                            item.id === p.id
-                                              ? { ...item, fromIdentities: next, fromName: next[0]?.name, fromEmail: next[0]?.email }
-                                              : item,
-                                          ),
-                                        );
+                                        const base = fromDraftRef.current.get(p.id) || editRows;
+                                        stageFrom(base.map((s, idx) => (idx === i ? { ...s, name: e.target.value } : s)));
                                       }}
-                                      onBlur={() => persistFrom(editRows)}
+                                      onBlur={() => queueFromSave(fromDraftRef.current.get(p.id) || editRows)}
                                     />
                                     <Input
                                       type="email"
                                       value={row.email}
                                       placeholder="hello@yourdomain.com"
                                       onChange={(e) => {
-                                        const next = editRows.map((s, idx) =>
-                                          idx === i ? { ...s, email: e.target.value } : s,
-                                        );
-                                        setProviders((list) =>
-                                          list.map((item) =>
-                                            item.id === p.id
-                                              ? { ...item, fromIdentities: next, fromEmail: next[0]?.email, fromName: next[0]?.name }
-                                              : item,
-                                          ),
-                                        );
+                                        const base = fromDraftRef.current.get(p.id) || editRows;
+                                        stageFrom(base.map((s, idx) => (idx === i ? { ...s, email: e.target.value } : s)));
                                       }}
-                                      onBlur={() => {
-                                        const latest = providers.find((item) => item.id === p.id) || p;
-                                        persistFrom(
-                                          parseFromIdentities(latest.fromIdentities).map((s) => ({
-                                            email: s.email,
-                                            name: s.name || '',
-                                          })),
-                                        );
-                                      }}
+                                      onBlur={() => queueFromSave(fromDraftRef.current.get(p.id) || editRows)}
                                     />
                                     <Button
                                       type="button"
                                       size="sm"
                                       variant="outline"
                                       aria-label="Add sender"
+                                      onMouseDown={(e) => e.preventDefault()}
                                       onClick={() => {
+                                        const base = fromDraftRef.current.get(p.id) || editRows;
                                         const next = [
-                                          ...editRows.slice(0, i + 1),
+                                          ...base.slice(0, i + 1),
                                           { email: '', name: '' },
-                                          ...editRows.slice(i + 1),
+                                          ...base.slice(i + 1),
                                         ];
-                                        setProviders((list) =>
-                                          list.map((item) =>
-                                            item.id === p.id ? { ...item, fromIdentities: next } : item,
-                                          ),
-                                        );
+                                        stageFrom(next);
                                       }}
                                     >
                                       +
@@ -3057,22 +3081,13 @@ export function CampaignEditorPage() {
                                       size="sm"
                                       variant="outline"
                                       disabled={editRows.length <= 1}
+                                      onMouseDown={(e) => e.preventDefault()}
                                       onClick={() => {
-                                        const next = editRows.filter((_, idx) => idx !== i);
+                                        const base = fromDraftRef.current.get(p.id) || editRows;
+                                        const next = base.filter((_, idx) => idx !== i);
                                         const identities = next.length ? next : [{ email: '', name: '' }];
-                                        setProviders((list) =>
-                                          list.map((item) =>
-                                            item.id === p.id
-                                              ? {
-                                                  ...item,
-                                                  fromIdentities: identities,
-                                                  fromEmail: identities[0]?.email,
-                                                  fromName: identities[0]?.name,
-                                                }
-                                              : item,
-                                          ),
-                                        );
-                                        persistFrom(identities);
+                                        stageFrom(identities);
+                                        queueFromSave(identities);
                                       }}
                                     >
                                       −
