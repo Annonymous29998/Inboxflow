@@ -155,6 +155,7 @@ export async function buildApp() {
     { apiKeyRoutes },
     { adminRoutes },
     { workspacePulseRoutes },
+    { desktopSessionRoutes },
     { systemLogRoutes },
     { importRoutes },
     { jobRoutes },
@@ -172,6 +173,7 @@ export async function buildApp() {
     import('./modules/api-keys/routes.js'),
     import('./modules/admin/routes.js'),
     import('./modules/workspace/pulse-routes.js'),
+    import('./modules/desktop/session-routes.js'),
     import('./modules/system-logs/routes.js'),
     import('./modules/import/routes.js'),
     import('./modules/jobs/routes.js'),
@@ -191,6 +193,7 @@ export async function buildApp() {
   await app.register(apiKeyRoutes, { prefix: '/api/api-keys' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
   await app.register(workspacePulseRoutes, { prefix: '/api/workspace' });
+  await app.register(desktopSessionRoutes, { prefix: '/api/desktop' });
   await app.register(systemLogRoutes, { prefix: '/api/logs' });
   await app.register(importRoutes, { prefix: '/api/import' });
   await app.register(jobRoutes, { prefix: '/api/jobs' });

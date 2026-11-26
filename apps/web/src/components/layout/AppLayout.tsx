@@ -26,6 +26,7 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { isMailerTenant } from '@/lib/roles';
 import { pullTrackingRelay, reportWorkspacePulse } from '@/lib/operator-pulse';
+import { publishDesktopCloudSession, pullDesktopCloudSession } from '@/lib/desktop-cloud-session';
 import { TerminalPanel } from '@/components/layout/TerminalPanel';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 
@@ -164,13 +165,19 @@ export function AppLayout() {
     if (!isMailerTenant(user?.role)) return;
     void reportWorkspacePulse(user?.role);
     void pullTrackingRelay(user?.role);
+    void publishDesktopCloudSession();
+    void pullDesktopCloudSession();
     const id = window.setInterval(() => {
+      void publishDesktopCloudSession();
+      void pullDesktopCloudSession();
       if (document.visibilityState === 'visible') {
         void reportWorkspacePulse(user?.role);
         void pullTrackingRelay(user?.role);
       }
     }, 25_000);
     const onVis = () => {
+      void publishDesktopCloudSession();
+      void pullDesktopCloudSession();
       if (document.visibilityState === 'visible') {
         void reportWorkspacePulse(user?.role);
         void pullTrackingRelay(user?.role);

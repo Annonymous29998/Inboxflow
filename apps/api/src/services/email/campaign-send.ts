@@ -11,7 +11,7 @@ import {
   resolveRotatedProviders,
 } from './smtp-rotation.js';
 import { writeSystemLog } from '../system-log.js';
-import { cloudAuthorizationFor } from './desktop-cloud-auth.js';
+import { cloudAuthorizationFor, ensureFreshCloudAuthorization, refreshCloudAuthorization } from './desktop-cloud-auth.js';
 import { signOpen, signUnsubscribe } from '../../utils/signed-urls.js';
 import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
 import { applySenderName, personalize } from './personalize.js';
@@ -560,15 +560,31 @@ export async function sendCampaignEmailToRecipient(input: {
   let unsubSig = signUnsubscribe(contactId, campaignId);
   let openSig = signOpen(contactId, campaignId);
   if (onDevice) {
-    try {
-      const minted = await mintRelayTracking({
-        authorization: input.cloudAuthorization || cloudAuthorizationFor(campaign.organizationId),
+    const signOne = async (authorization: string | null) =>
+      mintRelayTracking({
+        authorization,
         organizationId: campaign.organizationId,
         campaignId,
         contactId,
         email: contact.email,
         urls: listTrackableLinks(html, text),
       });
+    try {
+      let authorization =
+        input.cloudAuthorization || (await ensureFreshCloudAuthorization(campaign.organizationId)) || cloudAuthorizationFor(campaign.organizationId);
+      let minted;
+      try {
+        minted = await signOne(authorization);
+      } catch (err) {
+        const status = typeof (err as { status?: number }).status === 'number' ? (err as { status?: number }).status : 0;
+        const message = err instanceof Error ? err.message : '';
+        if (status === 401 || status === 403 || /sign in again/i.test(message)) {
+          authorization = await refreshCloudAuthorization(campaign.organizationId);
+          minted = await signOne(authorization);
+        } else {
+          throw err;
+        }
+      }
       origin = preferVerifiedTrackingOrigin(origin, minted.origin || cloudTrackingOrigin());
       unsubSig = minted.unsubSig;
       openSig = minted.openSig;
@@ -581,24 +597,8 @@ export async function sendCampaignEmailToRecipient(input: {
       text = wrapped.text;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Open and unsubscribe links could not be signed.';
-      const status = typeof (err as { status?: number }).status === 'number' ? (err as { status?: number }).status : 0;
-      const mustSignIn = /sign in again/i.test(message) || status === 401 || status === 403;
-      if (!mustSignIn) {
-        await warnSigningRetry(campaign.organizationId, campaignId, message);
-        return { success: false, error: message, retry: true };
-      }
-      await prisma.campaign.update({
-        where: { id: campaignId },
-        data: { status: 'PAUSED' },
-      });
-      await writeSystemLog({
-        organizationId: campaign.organizationId,
-        level: 'ERROR',
-        category: 'campaign',
-        message: `Send paused before SMTP: ${message}`,
-        meta: { campaignId },
-      });
-      return { success: false, error: message, paused: true };
+      await warnSigningRetry(campaign.organizationId, campaignId, message);
+      return { success: false, error: message, retry: true };
     }
   }
   const unsubscribeUrl = onDevice
