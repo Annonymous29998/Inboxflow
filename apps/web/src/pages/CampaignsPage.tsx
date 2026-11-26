@@ -2922,25 +2922,10 @@ export function CampaignEditorPage() {
                       }
                     />
                   </div>
-                  <div>
-                    <Label>Pause if fail rate ≥ %</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={queueSettings.maxFailPercent ?? 15}
-                      onChange={(e) =>
-                        setQueueSettings({
-                          ...queueSettings,
-                          maxFailPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
-                        })
-                      }
-                    />
-                  </div>
                 </div>
                 <p className="mailer-hint">
                   0 seconds means no wait. The next email uses these numbers, including while a send is already running.
-                  The live line shows Sending or Batch pause and the seconds left.
+                  A rejected address is marked failed and the list keeps sending. Only the Pause button stops it.
                 </p>
               </MailerFold>
             </div>

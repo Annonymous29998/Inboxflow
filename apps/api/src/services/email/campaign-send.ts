@@ -91,36 +91,6 @@ function headersForProvider(headers: Record<string, string> | undefined, provide
   return next;
 }
 
-async function maybePauseOnFailRate(campaignId: string, organizationId: string) {
-  const row = await prisma.campaign.findUnique({
-    where: { id: campaignId },
-    select: { status: true, sentCount: true, failedCount: true, bouncedCount: true, queueSettings: true },
-  });
-  if (!row || row.status !== 'SENDING') return;
-  const qs = (row.queueSettings && typeof row.queueSettings === 'object' ? row.queueSettings : {}) as {
-    maxFailPercent?: number;
-    maxFailMinProcessed?: number;
-  };
-  const maxFailPercent = Number(qs.maxFailPercent);
-  if (!Number.isFinite(maxFailPercent) || maxFailPercent <= 0) return;
-  const minN = Number(qs.maxFailMinProcessed);
-  const floor = Number.isFinite(minN) && minN > 0 ? minN : 20;
-  const processed = row.sentCount + row.failedCount + row.bouncedCount;
-  if (processed < floor) return;
-  const fail = row.failedCount + row.bouncedCount;
-  if ((fail / processed) * 100 < maxFailPercent) return;
-  await prisma.campaign.update({ where: { id: campaignId }, data: { status: 'PAUSED' } });
-  const { drainCampaignJobs } = await import('./queue.js');
-  await drainCampaignJobs(campaignId);
-  await writeSystemLog({
-    organizationId,
-    level: 'WARNING',
-    category: 'queue',
-    message: `Campaign paused — fail rate ${Math.round((fail / processed) * 100)}% (limit ${maxFailPercent}%)`,
-    meta: { campaignId, fail, processed, maxFailPercent },
-  });
-}
-
 function parseIdPool(pool: unknown, extraId?: string | null): string[] {
   const ids = Array.isArray(pool)
     ? pool.map((x) => String(x || '').trim()).filter(Boolean)
@@ -761,8 +731,6 @@ export async function sendCampaignEmailToRecipient(input: {
       reason: live.error || live.smtpResponse || kind,
     });
   }
-  await maybePauseOnFailRate(campaignId, campaign.organizationId);
-
   return {
     success: false,
     error: live.error,

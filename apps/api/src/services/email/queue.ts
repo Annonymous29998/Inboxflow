@@ -29,7 +29,6 @@ import {
   throttleAttemptsLeft,
   throttleRetryMs,
   isSmtpAccountBlockError,
-  SMTP_BLOCK_STREAK_LIMIT,
 } from './smtp-throttle.js';
 import { maybeFinalizeCampaignSend } from './campaign-finalize.js';
 import { writeSystemLog } from '../system-log.js';
@@ -613,32 +612,14 @@ export async function processEmailJob(data: EmailJobData) {
   } else {
     const streak = (smtpBlockStreak.get(campaignId) || 0) + 1;
     smtpBlockStreak.set(campaignId, streak);
-    // One SMTP: pause on first auth/block. Several SMTPs: already failed over this
-    // recipient; pause after 10 emails where every profile still blocked.
-    const smtpCount = Number(result.providersAvailable ?? 1);
-    const pauseAfter = smtpCount <= 1 ? 1 : SMTP_BLOCK_STREAK_LIMIT;
-    if (streak >= pauseAfter) {
-      await prisma.campaign.update({
-        where: { id: campaignId },
-        data: { status: 'PAUSED' },
-      });
-      await drainCampaignJobs(campaignId);
-      smtpBlockStreak.set(campaignId, 0);
+    if (streak === 1 || streak % 25 === 0) {
       await writeSystemLog({
         organizationId: campaign.organizationId,
-        level: 'ERROR',
+        level: 'WARNING',
         category: 'smtp',
-        message: `Campaign paused after ${streak} SMTP block/auth error(s) (${smtpCount} SMTP in pool). ${smtpLine.slice(0, 180)}. Remaining recipients were left queued.`,
+        message: `SMTP rejected a message. That address is failed and the list keeps sending. ${smtpLine.slice(0, 180)}`,
         meta: { campaignId, streak },
       });
-      await pushQueueStage({
-        stage: 'smtp_blocked',
-        smtpBlockStreak: streak,
-        lastError: result.error || smtpLine,
-        lastResult: 'smtp_block',
-        lastEmail: to,
-      });
-      return;
     }
   }
 
