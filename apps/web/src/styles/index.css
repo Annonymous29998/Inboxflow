@@ -419,6 +419,13 @@ body {
   white-space: nowrap;
   max-width: 45%;
 }
+.mailer-root .mailer-live > button:first-child span.mailer-live-state {
+  color: var(--color-accent);
+  max-width: 62%;
+  white-space: normal;
+  text-align: right;
+  line-height: 1.35;
+}
 .mailer-root .mailer-foot {
   display: flex;
   justify-content: space-between;
@@ -478,6 +485,20 @@ body {
   margin-left: auto;
   font-size: 11px;
   color: var(--mailer-dim);
+}
+.mailer-root .mailer-pace-line {
+  font-size: 12px;
+  color: var(--color-accent);
+}
+.mailer-root .mailer-pace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-accent);
+}
+.mailer-root .mailer-pace input {
+  width: 4.5rem;
 }
 .mailer-root .mailer-hint {
   font-size: 11px;

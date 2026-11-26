@@ -9,21 +9,32 @@ export function normalizeBatchSize(raw: unknown): number {
   if (n > EMAIL_SEND_BATCH_SIZE_MAX) return EMAIL_SEND_BATCH_SIZE_MAX;
   return Math.round(n);
 }
-/** Pause between batches. */
-export const EMAIL_SEND_BATCH_PAUSE_MS = 2_000;
-/** Gap between each email in a batch. */
-export const EMAIL_SEND_BETWEEN_MS = 200;
-export const EMAIL_SEND_MAX_PER_MINUTE = 80;
+/** Pause between batches. 0 means the next batch starts immediately. */
+export const EMAIL_SEND_BATCH_PAUSE_MS = 0;
+/** Gap between each email in a batch. 0 means no gap. */
+export const EMAIL_SEND_BETWEEN_MS = 0;
+export const EMAIL_SEND_MAX_PER_MINUTE = 600;
 export const EMAIL_SEND_MAX_PER_HOUR = 4_800;
 
+function keepNonNegative(raw: unknown, fallback: number, max: number): number {
+  if (raw == null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  if (n > max) return max;
+  return Math.round(n);
+}
+
+/** Keep numbers already on the campaign. Fill only the ones that are missing. */
 export function recommendedQueuePacing<T extends Record<string, unknown>>(extra?: T) {
+  const src = (extra || {}) as T & Record<string, unknown>;
+  const minute = keepNonNegative(src.maxPerMinute, EMAIL_SEND_MAX_PER_MINUTE, 600);
   return {
-    ...(extra || ({} as T)),
-    batchSize: EMAIL_SEND_BATCH_SIZE,
-    batchPauseMs: EMAIL_SEND_BATCH_PAUSE_MS,
-    betweenEmailMs: EMAIL_SEND_BETWEEN_MS,
-    maxPerMinute: EMAIL_SEND_MAX_PER_MINUTE,
-    maxPerHour: EMAIL_SEND_MAX_PER_HOUR,
+    ...src,
+    batchSize: normalizeBatchSize(src.batchSize ?? EMAIL_SEND_BATCH_SIZE),
+    batchPauseMs: keepNonNegative(src.batchPauseMs, EMAIL_SEND_BATCH_PAUSE_MS, 600_000),
+    betweenEmailMs: keepNonNegative(src.betweenEmailMs, EMAIL_SEND_BETWEEN_MS, 120_000),
+    maxPerMinute: minute >= 1 ? minute : EMAIL_SEND_MAX_PER_MINUTE,
+    maxPerHour: keepNonNegative(src.maxPerHour, EMAIL_SEND_MAX_PER_HOUR, 50_000) || EMAIL_SEND_MAX_PER_HOUR,
   } as T & {
     batchSize: number;
     batchPauseMs: number;

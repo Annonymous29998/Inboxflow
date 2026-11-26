@@ -779,7 +779,20 @@ export async function campaignRoutes(app: FastifyInstance) {
       const existing = await prisma.campaign.findFirst({ where: { id, organizationId: orgId } });
       if (!existing) throw new AppError(404, 'Campaign not found');
       if (existing.status === 'SENDING') {
-        throw new AppError(400, 'Cannot edit a campaign while it is sending');
+        if (!body.queueSettings || typeof body.queueSettings !== 'object') {
+          throw new AppError(400, 'Cannot edit a campaign while it is sending');
+        }
+        const queueSettings = withRecommendedPacing({
+          ...(existing.queueSettings && typeof existing.queueSettings === 'object'
+            ? (existing.queueSettings as Record<string, unknown>)
+            : {}),
+          ...body.queueSettings,
+        });
+        const campaign = await prisma.campaign.update({
+          where: { id },
+          data: { queueSettings: queueSettings as Prisma.InputJsonValue },
+        });
+        return reply.send({ campaign });
       }
 
       const {

@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: InboxFlow-Setup-1.2.32
+          name: InboxFlow-Setup-1.2.33
           path: |
             apps/desktop/release/InboxFlow-Setup-*.exe
             apps/desktop/release/InboxFlow-Setup-*.zip
@@ -67,8 +67,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-1.2.32
-          name: Inbox Flow desktop 1.2.32
+          tag_name: desktop-1.2.33
+          name: Inbox Flow desktop 1.2.33
           body: |
             Windows installer built and smoke-tested on GitHub `windows-latest`.
             Local hybrid mailer (SQLite + bundled API). Auth/license against Lightsail.
@@ -79,14 +79,15 @@ jobs:
             Removing a From address updates the SMTP profile title. The removed address does not stay in the name.
             A campaign send signs open and unsubscribe links with the signed-in session, then uses the same SMTP path as Placement test. A send that cannot sign those links pauses instead of sitting at 0 sent.
             The SMTP session stays open across recipients, so the fast pace is not spent logging in again for every address.
-            Campaign sends do not wait between messages. Up to four go out at once on that open session.
+            Campaign sends do not wait between messages unless the campaign's pause, gap, or per-minute cap says so. Up to four go out at once on that open session.
+            The campaign screen shows Sending or Batch pause with the seconds left. Those seconds can be changed while the send is running. The next email uses the new numbers. 0 means no wait.
             Installing over an older EXE keeps `%APPDATA%\Inbox Flow`.
             Created users must Bind PC in the browser on the admin bind URL first.
             Unbound EXE shows only: PC not bound yet. Never opens novasreach.xyz.
             Zip includes `config.json` next to InboxFlow.exe (`username` + `license_key`).
           files: |
-            apps/desktop/release/InboxFlow-Setup-1.2.32.exe
-            apps/desktop/release/InboxFlow-Setup-1.2.32.zip
+            apps/desktop/release/InboxFlow-Setup-1.2.33.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.33.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

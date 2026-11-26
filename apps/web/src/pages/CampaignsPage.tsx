@@ -42,6 +42,7 @@ import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { confirmDialog, promptDialog } from '@/stores/confirm';
 import { useDraft, useDraftStore } from '@/stores/draft';
+import { formatQueueHeartbeat } from '@/lib/queue-heartbeat';
 import {
   EMAIL_SEND_BATCH_PAUSE_MS,
   EMAIL_SEND_BATCH_SIZE,
@@ -630,6 +631,7 @@ export function CampaignEditorPage() {
   const [batchNumber, setBatchNumber] = useState<number | null>(null);
   const [liveBatchSize, setLiveBatchSize] = useState<number>(EMAIL_SEND_BATCH_SIZE);
   const [queueSettings, setQueueSettings] = useDraft(`${draftKey}:queueSettings`, defaultQueueSettings);
+  const [paceNow, setPaceNow] = useState(() => Date.now());
 
   useEffect(() => {
     setQueueSettings((q) =>
@@ -639,6 +641,37 @@ export function CampaignEditorPage() {
       }),
     );
   }, [id, isNew, draftKey]);
+  useEffect(() => {
+    if (campaign.status !== 'SENDING' && campaign.status !== 'PAUSED') return;
+    const timer = window.setInterval(() => setPaceNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [campaign.status]);
+  const paceLine = useMemo(
+    () =>
+      formatQueueHeartbeat({
+        status: campaign.status || 'DRAFT',
+        lastEmail,
+        finished: sentCount + failedCount,
+        queueStage,
+        pauseUntil,
+        betweenEmailMs: queueSettings.betweenEmailMs,
+        batchNumber,
+        queueBatchSize: liveBatchSize,
+        now: paceNow,
+      }),
+    [
+      campaign.status,
+      lastEmail,
+      sentCount,
+      failedCount,
+      queueStage,
+      pauseUntil,
+      queueSettings.betweenEmailMs,
+      batchNumber,
+      liveBatchSize,
+      paceNow,
+    ],
+  );
   const [subjectPoolText, setSubjectPoolText] = useDraft<string>(`${draftKey}:subjectPoolText`, '');
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
@@ -1614,7 +1647,25 @@ export function CampaignEditorPage() {
   useEffect(() => {
     if (!hydrated || isNew || !id) return;
     if (skipAutoSaveRef.current || templateStepLockRef.current) return;
-    if (campaignLocked(campaign.status)) return;
+    if (campaignLocked(campaign.status)) {
+      setAutoSaveState('dirty');
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = window.setTimeout(() => {
+        setAutoSaveState('saving');
+        void api
+          .patch(`/api/campaigns/${id}`, {
+            queueSettings: {
+              ...queueSettings,
+              batchSize: normalizeBatchSize(queueSettings.batchSize),
+            },
+          })
+          .then(() => setAutoSaveState('saved'))
+          .catch(() => setAutoSaveState('error'));
+      }, 400);
+      return () => {
+        if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+      };
+    }
 
     setAutoSaveState('dirty');
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
@@ -1649,6 +1700,7 @@ export function CampaignEditorPage() {
     placeholderMap,
     spinPools,
     attachments,
+    campaign.status,
   ]);
 
   function applyLetterHtml(nextHtml: string) {
@@ -2722,6 +2774,7 @@ export function CampaignEditorPage() {
                 total: sendCount || campaign.totalRecipients || 0,
                 lastEmail,
                 stage: queueStage,
+                detail: paceLine,
                 paused: campaign.status === 'PAUSED' || sendPaused,
               }
             : null
@@ -2843,7 +2896,7 @@ export function CampaignEditorPage() {
                     <Label>Pause between batches (s)</Label>
                     <Input
                       type="number"
-                      value={Math.round((queueSettings.batchPauseMs ?? 2000) / 1000)}
+                      value={Math.round((queueSettings.batchPauseMs ?? 0) / 1000)}
                       onChange={(e) =>
                         setQueueSettings({ ...queueSettings, batchPauseMs: Number(e.target.value) * 1000 })
                       }
@@ -2885,7 +2938,10 @@ export function CampaignEditorPage() {
                     />
                   </div>
                 </div>
-                <p className="mailer-hint">Send batch → wait → next batch. 0% fail pause = off.</p>
+                <p className="mailer-hint">
+                  0 seconds means no wait. The next email uses these numbers, including while a send is already running.
+                  The live line shows Sending or Batch pause and the seconds left.
+                </p>
               </MailerFold>
             </div>
           ),
@@ -3320,6 +3376,50 @@ export function CampaignEditorPage() {
                     Resume
                   </Button>
                 ) : null}
+              </div>
+              {campaign.status === 'SENDING' || campaign.status === 'PAUSED' ? (
+                <div className="mailer-toolbar">
+                  <span className="mailer-pace-line">{paceLine}</span>
+                </div>
+              ) : null}
+              <div className="mailer-toolbar">
+                <label className="mailer-pace">
+                  Pause between batches (s)
+                  <Input
+                    type="number"
+                    min={0}
+                    value={Math.round((queueSettings.batchPauseMs ?? 0) / 1000)}
+                    onChange={(e) =>
+                      setQueueSettings({ ...queueSettings, batchPauseMs: Math.max(0, Number(e.target.value) || 0) * 1000 })
+                    }
+                  />
+                </label>
+                <label className="mailer-pace">
+                  Gap (ms)
+                  <Input
+                    type="number"
+                    min={0}
+                    value={queueSettings.betweenEmailMs}
+                    onChange={(e) =>
+                      setQueueSettings({ ...queueSettings, betweenEmailMs: Math.max(0, Number(e.target.value) || 0) })
+                    }
+                  />
+                </label>
+                <label className="mailer-pace">
+                  Max / minute
+                  <Input
+                    type="number"
+                    min={1}
+                    value={queueSettings.maxPerMinute}
+                    onChange={(e) =>
+                      setQueueSettings({
+                        ...queueSettings,
+                        maxPerMinute: Math.max(1, Number(e.target.value) || queueSettings.maxPerMinute),
+                      })
+                    }
+                  />
+                </label>
+                <span className="count">0 = no wait · next email picks this up</span>
               </div>
               <div className="mailer-toolbar">
                 <span className="count" style={{ marginLeft: 0 }}>

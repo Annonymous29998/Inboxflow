@@ -49,6 +49,21 @@ export function formatQueueHeartbeat(opts: {
     return `Gap ${betweenEmailMs.toLocaleString()}ms before next email`;
   }
 
+  if (queueStage === 'rate_limit_pause') {
+    const secs = pauseSecondsRemaining(pauseUntil, now);
+    return secs > 0
+      ? `Minute cap — waiting ${secs}s before the next email`
+      : 'Minute cap — checking the last minute…';
+  }
+
+  if (queueStage === 'throttle_pause') {
+    const secs = pauseSecondsRemaining(pauseUntil, now);
+    return secs > 0 ? `Mailbox slow-down — resuming in ${secs}s` : 'Mailbox slow-down — resuming…';
+  }
+
+  if (queueStage === 'smtp_blocked') return 'Paused — SMTP authentication failed';
+  if (queueStage === 'paused') return 'Paused — Resume to continue SMTP';
+
   const gap =
     betweenEmailMs != null && betweenEmailMs > 0
       ? ` · ${betweenEmailMs.toLocaleString()}ms between emails`

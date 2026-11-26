@@ -78,6 +78,7 @@ export function MailerWorkspace({
     total: number;
     lastEmail?: string | null;
     stage?: string;
+    detail?: string | null;
     paused?: boolean;
   } | null;
   onOpenLive?: () => void;
@@ -156,10 +157,11 @@ export function MailerWorkspace({
               {' · '}
               {liveProgress.pending} left
             </span>
-            <span>
-              {liveProgress.paused
-                ? 'paused'
-                : liveProgress.lastEmail || liveProgress.stage || 'sending'}
+            <span className="mailer-live-state">
+              {liveProgress.detail ||
+                (liveProgress.paused
+                  ? 'Paused — Resume to continue'
+                  : liveProgress.lastEmail || liveProgress.stage || 'Sending')}
             </span>
           </button>
           {liveProgress.paused && onResumeSend ? (
