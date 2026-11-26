@@ -581,6 +581,17 @@ export async function processEmailJob(data: EmailJobData) {
     providerId,
   });
 
+  if (result.paused) {
+    await pushQueueStage({
+      stage: 'paused',
+      pauseUntil: null,
+      lastError: result.error || 'Send paused before SMTP',
+      lastResult: 'paused',
+      lastEmail: to,
+    });
+    return;
+  }
+
   const smtpLine = `${result.smtpResponse || ''} ${result.error || ''}`.trim();
   if (result.success || result.throttled || !isSmtpAccountBlockError(smtpLine)) {
     smtpBlockStreak.set(campaignId, 0);

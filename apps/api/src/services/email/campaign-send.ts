@@ -12,6 +12,7 @@ import {
   resolveRotatedProviders,
 } from './smtp-rotation.js';
 import { writeSystemLog } from '../system-log.js';
+import { cloudAuthorizationFor } from './desktop-cloud-auth.js';
 import { signOpen, signUnsubscribe } from '../../utils/signed-urls.js';
 import { hardenOutboundMime } from '../../modules/deliverability/spam-scrubber.js';
 import { applySenderName, personalize } from './personalize.js';
@@ -435,6 +436,7 @@ export async function sendCampaignEmailToRecipient(input: {
   throttled?: boolean;
   retryAfterMs?: number;
   providersAvailable?: number;
+  paused?: boolean;
 }> {
   const { campaignId, recipientId, contactId, to } = input;
 
@@ -543,24 +545,40 @@ export async function sendCampaignEmailToRecipient(input: {
   let unsubSig = signUnsubscribe(contactId, campaignId);
   let openSig = signOpen(contactId, campaignId);
   if (onDevice) {
-    const minted = await mintRelayTracking({
-      authorization: input.cloudAuthorization,
-      organizationId: campaign.organizationId,
-      campaignId,
-      contactId,
-      email: contact.email,
-      urls: listTrackableLinks(html, text),
-    });
-    origin = preferVerifiedTrackingOrigin(origin, minted.origin || cloudTrackingOrigin());
-    unsubSig = minted.unsubSig;
-    openSig = minted.openSig;
-    const wrapped = applyRelayClickTickets(html, text, minted.tickets, {
-      origin,
-      campaignId,
-      contactId,
-    });
-    html = wrapped.html;
-    text = wrapped.text;
+    try {
+      const minted = await mintRelayTracking({
+        authorization: input.cloudAuthorization || cloudAuthorizationFor(campaign.organizationId),
+        organizationId: campaign.organizationId,
+        campaignId,
+        contactId,
+        email: contact.email,
+        urls: listTrackableLinks(html, text),
+      });
+      origin = preferVerifiedTrackingOrigin(origin, minted.origin || cloudTrackingOrigin());
+      unsubSig = minted.unsubSig;
+      openSig = minted.openSig;
+      const wrapped = applyRelayClickTickets(html, text, minted.tickets, {
+        origin,
+        campaignId,
+        contactId,
+      });
+      html = wrapped.html;
+      text = wrapped.text;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Open and unsubscribe links could not be signed.';
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: 'PAUSED' },
+      });
+      await writeSystemLog({
+        organizationId: campaign.organizationId,
+        level: 'ERROR',
+        category: 'campaign',
+        message: `Send paused before SMTP: ${message}`,
+        meta: { campaignId },
+      });
+      return { success: false, error: message, paused: true };
+    }
   }
   const unsubscribeUrl = onDevice
     ? `${origin}/api/t/unsubscribe?o=${encodeURIComponent(campaign.organizationId)}&c=${encodeURIComponent(contactId)}&cid=${encodeURIComponent(campaignId)}&s=${encodeURIComponent(unsubSig)}`

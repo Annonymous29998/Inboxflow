@@ -11,6 +11,7 @@ import {
   WORKSPACE_ON_DEVICE_MESSAGE,
 } from '../services/email/workspace-residency.js';
 import { resolveHybridPayload } from './hybrid-jwt.js';
+import { rememberCloudAuthorization } from '../services/email/desktop-cloud-auth.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -137,6 +138,10 @@ export async function authenticate(request: FastifyRequest, _reply: FastifyReply
       if (!payload) throw new AppError(401, 'Unauthorized');
       request.user = await ensureHybridUser(payload);
       request.authVia = request.headers.authorization ? 'jwt' : 'cookie';
+      rememberCloudAuthorization(
+        request.user.organizationId,
+        request.headers.authorization || `Bearer ${token}`,
+      );
       return;
     }
 

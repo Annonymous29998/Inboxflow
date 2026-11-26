@@ -3,6 +3,8 @@ import { dispatchCampaign, processEmailJob } from './queue.js';
 import { maybeFinalizeCampaignSend } from './campaign-finalize.js';
 import { mergeOperatorPulse } from '../admin/operator-pulse.js';
 import { writeSystemLog } from '../system-log.js';
+import { cloudAuthorizationFor } from './desktop-cloud-auth.js';
+import { orgKeepsWorkspaceOnDevice } from './workspace-residency.js';
 
 const running = new Map<string, Promise<void>>();
 let supervisorStarted = false;
@@ -97,6 +99,17 @@ async function runLocalCampaign(campaignId: string) {
       select: { organizationId: true, totalRecipients: true, createdById: true },
     });
     if (row?.organizationId) {
+      const org = await prisma.organization.findUnique({
+        where: { id: row.organizationId },
+        select: { sendSettings: true },
+      });
+      if (
+        org &&
+        orgKeepsWorkspaceOnDevice({ sendSettings: org.sendSettings }) &&
+        !cloudAuthorizationFor(row.organizationId)
+      ) {
+        return;
+      }
       const { ensureCampaignSendJob } = await import('../../modules/jobs/progress.js');
       await ensureCampaignSendJob({
         campaignId,
