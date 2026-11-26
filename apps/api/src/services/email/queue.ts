@@ -480,9 +480,12 @@ export async function processEmailJob(data: EmailJobData) {
   const maxPerMinute = normalizeMaxPerMinute(qs.maxPerMinute);
   const exactMs = (baseMs: number) => Math.max(0, Math.round(baseMs));
 
-  const processedCount = await prisma.campaignRecipient.count({
-    where: { campaignId, status: { not: 'QUEUED' } },
-  });
+  const processedCount =
+    betweenEmailMs > 0 || batchPauseMs > 0
+      ? await prisma.campaignRecipient.count({
+          where: { campaignId, status: { not: 'QUEUED' } },
+        })
+      : 0;
 
   async function stillSending(): Promise<boolean> {
     const live = await prisma.campaign.findUnique({
@@ -530,27 +533,27 @@ export async function processEmailJob(data: EmailJobData) {
     }
   }
 
-  const atBatchBoundary = processedCount > 0 && processedCount % batchSize === 0;
+  if (betweenEmailMs > 0 || batchPauseMs > 0) {
+    const atBatchBoundary = processedCount > 0 && processedCount % batchSize === 0;
 
-  if (betweenEmailMs > 0 && processedCount > 0 && !atBatchBoundary) {
-    await pushQueueStage({ stage: 'between_emails', betweenEmailMs, batchSize, pauseUntil: null });
-    if (!(await waitMs(exactMs(betweenEmailMs)))) return;
-  }
-  if (batchPauseMs > 0 && atBatchBoundary) {
-    const pauseMs = exactMs(batchPauseMs);
-    const batchNumber = Math.floor(processedCount / batchSize);
-    await pushQueueStage({
-      stage: 'batch_pause',
-      pauseUntil: new Date(Date.now() + pauseMs).toISOString(),
-      batchPauseMs: pauseMs,
-      batchNumber,
-      batchSize,
-      betweenEmailMs,
-    });
-    if (!(await waitMs(pauseMs))) return;
-    await pushQueueStage({ stage: 'sending', pauseUntil: null, betweenEmailMs, batchSize });
-  } else {
-    await pushQueueStage({ stage: 'sending', pauseUntil: null, betweenEmailMs, batchSize });
+    if (betweenEmailMs > 0 && processedCount > 0 && !atBatchBoundary) {
+      await pushQueueStage({ stage: 'between_emails', betweenEmailMs, batchSize, pauseUntil: null });
+      if (!(await waitMs(exactMs(betweenEmailMs)))) return;
+    }
+    if (batchPauseMs > 0 && atBatchBoundary) {
+      const pauseMs = exactMs(batchPauseMs);
+      const batchNumber = Math.floor(processedCount / batchSize);
+      await pushQueueStage({
+        stage: 'batch_pause',
+        pauseUntil: new Date(Date.now() + pauseMs).toISOString(),
+        batchPauseMs: pauseMs,
+        batchNumber,
+        batchSize,
+        betweenEmailMs,
+      });
+      if (!(await waitMs(pauseMs))) return;
+      await pushQueueStage({ stage: 'sending', pauseUntil: null, betweenEmailMs, batchSize });
+    }
   }
 
   if (!(await stillSending())) return;

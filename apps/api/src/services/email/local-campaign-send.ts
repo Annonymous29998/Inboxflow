@@ -58,16 +58,23 @@ async function stampDesktopPulse(organizationId: string) {
   }
 }
 
-async function drainQueuedLocally(campaignId: string) {
-  for (;;) {
+const LOCAL_SEND_CONCURRENCY = 4;
+const claimedRecipients = new Set<string>();
+let claimChain: Promise<unknown> = Promise.resolve();
+
+async function claimNextQueued(campaignId: string) {
+  const run = claimChain.then(async () => {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
       select: { status: true, providerId: true, organizationId: true },
     });
-    if (!campaign || campaign.status !== 'SENDING') return;
-
+    if (!campaign || campaign.status !== 'SENDING') return null;
     const row = await prisma.campaignRecipient.findFirst({
-      where: { campaignId, status: 'QUEUED' },
+      where: {
+        campaignId,
+        status: 'QUEUED',
+        ...(claimedRecipients.size ? { id: { notIn: [...claimedRecipients] } } : {}),
+      },
       orderBy: { createdAt: 'asc' },
       select: {
         id: true,
@@ -75,21 +82,40 @@ async function drainQueuedLocally(campaignId: string) {
         contact: { select: { email: true } },
       },
     });
-    if (!row?.contact?.email) {
-      await maybeFinalizeCampaignSend(campaignId);
-      return;
-    }
+    if (!row?.contact?.email) return null;
+    claimedRecipients.add(row.id);
+    return { campaign, row };
+  });
+  claimChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
 
-    await processEmailJob({
-      campaignId,
-      recipientId: row.id,
-      contactId: row.contactId,
-      to: row.contact.email,
-      providerId: campaign.providerId,
-      organizationId: campaign.organizationId,
-    });
-    await stampDesktopPulse(campaign.organizationId);
+async function drainQueuedLocally(campaignId: string) {
+  async function worker() {
+    for (;;) {
+      const next = await claimNextQueued(campaignId);
+      if (!next) return;
+      try {
+        await processEmailJob({
+          campaignId,
+          recipientId: next.row.id,
+          contactId: next.row.contactId,
+          to: next.row.contact.email,
+          providerId: next.campaign.providerId,
+          organizationId: next.campaign.organizationId,
+        });
+        await stampDesktopPulse(next.campaign.organizationId);
+      } finally {
+        claimedRecipients.delete(next.row.id);
+      }
+    }
   }
+
+  await Promise.all(Array.from({ length: LOCAL_SEND_CONCURRENCY }, () => worker()));
+  await maybeFinalizeCampaignSend(campaignId);
 }
 
 async function runLocalCampaign(campaignId: string) {

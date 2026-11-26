@@ -6,9 +6,8 @@ import {
   incrementHourlySent,
   incrementMinuteSent,
   logRotationPick,
-  commitFromIdentityIndex,
   parseRotationSettings,
-  peekFromIdentityIndex,
+  reserveFromIdentityIndex,
   resolveRotatedProviders,
 } from './smtp-rotation.js';
 import { writeSystemLog } from '../system-log.js';
@@ -241,7 +240,7 @@ export async function deliverLiveMessage(input: {
     const fromEmails = identities.map((i) => i.email);
     const rotateSlot =
       rotateFrom && fromEmails.length
-        ? await peekFromIdentityIndex(campaign.organizationId, p.id, fromEmails.length)
+        ? await reserveFromIdentityIndex(campaign.organizationId, p.id, fromEmails.length)
         : null;
     const requestedFrom =
       rotateSlot !== null
@@ -294,9 +293,6 @@ export async function deliverLiveMessage(input: {
     );
 
     if (result.success) {
-      if (rotateSlot !== null) {
-        await commitFromIdentityIndex(campaign.organizationId, p.id, fromEmails.length);
-      }
       if (input.countUsage !== false) {
         await prisma.emailProvider.update({
           where: { id: p.id },

@@ -322,7 +322,7 @@ function openSmtpTransport(
   }
 
   const transport = nodemailer.createTransport({
-    ...(keepOpen ? { pool: true, maxConnections: 1, maxMessages: 100 } : {}),
+    ...(keepOpen ? { pool: true, maxConnections: 4, maxMessages: 100 } : {}),
     host: opts.host,
     port: opts.port,
     secure: opts.secure,

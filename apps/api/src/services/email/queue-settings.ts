@@ -1,12 +1,12 @@
-/** ~10k in ~3 hours: still one-by-one, shorter gaps so SMTP time is the limiter. */
+/** Send as soon as SMTP accepts the previous message. No idle gap, no batch nap. */
 export const DEFAULT_BATCH_SIZE = 20;
 export const MIN_BATCH_SIZE = 1;
 export const MAX_BATCH_SIZE = 500;
-export const DEFAULT_BATCH_PAUSE_MS = 2_000;
-export const DEFAULT_BETWEEN_EMAIL_MS = 200;
-export const DEFAULT_MAX_PER_MINUTE = 80;
+export const DEFAULT_BATCH_PAUSE_MS = 0;
+export const DEFAULT_BETWEEN_EMAIL_MS = 0;
+export const DEFAULT_MAX_PER_MINUTE = 600;
 export const MIN_MAX_PER_MINUTE = 1;
-export const MAX_MAX_PER_MINUTE = 120;
+export const MAX_MAX_PER_MINUTE = 600;
 
 export function normalizeMaxPerMinute(raw: unknown): number {
   const n = Number(raw);
@@ -25,7 +25,7 @@ export type QueuePacing = {
   [key: string]: unknown;
 };
 
-/** Force the recommended fast-but-safe pacing on every campaign. */
+/** Apply the fast pace on every campaign. */
 export function withRecommendedPacing(raw: unknown): QueuePacing {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const sendChannel = o.sendChannel === 'api' || o.sendChannel === 'smtp' ? o.sendChannel : undefined;

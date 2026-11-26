@@ -267,6 +267,32 @@ async function loadFromRotateState(organizationId: string, providerId: string) {
   return { settings, map, cursor: Number.isFinite(cursor) ? cursor : 0 };
 }
 
+let fromSlotChain: Promise<unknown> = Promise.resolve();
+
+/** Take the next From slot and advance. Parallel sends on one PC cannot share a slot. */
+export async function reserveFromIdentityIndex(
+  organizationId: string,
+  providerId: string,
+  modulo: number,
+): Promise<number> {
+  const run = fromSlotChain.then(async () => {
+    if (modulo <= 0) return 0;
+    const { settings, map, cursor } = await loadFromRotateState(organizationId, providerId);
+    const slot = fromCursorSlot(cursor, modulo);
+    map[providerId] = slot.next;
+    await prisma.organization.update({
+      where: { id: organizationId },
+      data: { sendSettings: { ...settings, fromRotateCursors: map } as object },
+    });
+    return slot.index;
+  });
+  fromSlotChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /** Current From slot for this SMTP (does not advance — commit after a successful send). */
 export async function peekFromIdentityIndex(
   organizationId: string,
