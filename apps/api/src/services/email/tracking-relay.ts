@@ -202,7 +202,9 @@ export async function mintRelayTracking(input: {
     signal: AbortSignal.timeout(12_000),
   });
   if (!res.ok) {
-    throw new Error('The public tracking site did not sign this message. The send was not sent with a :5000 link.');
+    const error = new Error('The public tracking site did not sign this message. The send was not sent with a :5000 link.');
+    (error as Error & { status?: number }).status = res.status;
+    throw error;
   }
   const data = (await res.json()) as MintedRelay;
   if (!data.openSig || !data.unsubSig) {

@@ -883,6 +883,7 @@ function showMailerWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
   mailerWindow.setMenuBarVisibility(false);

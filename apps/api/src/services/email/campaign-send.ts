@@ -27,6 +27,22 @@ import { isSmtpThrottleError, throttleRetryMs } from './smtp-throttle.js';
 import { orgAllowsDirectSmtp } from './smtp-outbound.js';
 import { guardRecipientAddress } from './recipient-guard.js';
 
+let lastSigningRetryLogAt = 0;
+
+/** One line every half minute. A dark screen must not fill the log or stop the list. */
+async function warnSigningRetry(organizationId: string, campaignId: string, message: string) {
+  const now = Date.now();
+  if (now - lastSigningRetryLogAt < 30_000) return;
+  lastSigningRetryLogAt = now;
+  await writeSystemLog({
+    organizationId,
+    level: 'WARNING',
+    category: 'campaign',
+    message: `Signing will retry. The send stays running. ${message}`,
+    meta: { campaignId },
+  }).catch(() => undefined);
+}
+
 function pickFromPool(pool: unknown, fallback: string): string {
   const arr = Array.isArray(pool)
     ? pool.map((x) => String(x || '').trim()).filter(Boolean)
@@ -434,6 +450,8 @@ export async function sendCampaignEmailToRecipient(input: {
   retryAfterMs?: number;
   providersAvailable?: number;
   paused?: boolean;
+  /** Signing blip. The recipient stays queued and the campaign stays sending. */
+  retry?: boolean;
 }> {
   const { campaignId, recipientId, contactId, to } = input;
 
@@ -563,6 +581,12 @@ export async function sendCampaignEmailToRecipient(input: {
       text = wrapped.text;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Open and unsubscribe links could not be signed.';
+      const status = typeof (err as { status?: number }).status === 'number' ? (err as { status?: number }).status : 0;
+      const mustSignIn = /sign in again/i.test(message) || status === 401 || status === 403;
+      if (!mustSignIn) {
+        await warnSigningRetry(campaign.organizationId, campaignId, message);
+        return { success: false, error: message, retry: true };
+      }
       await prisma.campaign.update({
         where: { id: campaignId },
         data: { status: 'PAUSED' },

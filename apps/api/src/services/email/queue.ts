@@ -595,6 +595,18 @@ export async function processEmailJob(data: EmailJobData) {
     return;
   }
 
+  if (result.retry) {
+    await pushQueueStage({
+      stage: 'sending',
+      pauseUntil: null,
+      lastError: result.error || 'Signing will retry',
+      lastResult: 'retry',
+      lastEmail: to,
+    });
+    await waitMs(3_000);
+    return;
+  }
+
   const smtpLine = `${result.smtpResponse || ''} ${result.error || ''}`.trim();
   if (result.success || result.throttled || !isSmtpAccountBlockError(smtpLine)) {
     smtpBlockStreak.set(campaignId, 0);
