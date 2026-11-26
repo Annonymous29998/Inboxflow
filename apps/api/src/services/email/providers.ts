@@ -247,16 +247,43 @@ function bindAddressMissing(error: unknown): boolean {
   return /EADDRNOTAVAIL/i.test(message);
 }
 
-export function createSmtpTransport(
+type SmtpTransportTimeouts = {
+  connectionTimeout?: number;
+  greetingTimeout?: number;
+  socketTimeout?: number;
+  allowDirect?: boolean;
+  /** Public Bind PC address is often NAT, not an address on the network card. */
+  skipLocalBind?: boolean;
+};
+
+const campaignSmtpSessions = new Map<string, ReturnType<typeof nodemailer.createTransport>>();
+
+function campaignSmtpKey(
+  host: string,
+  port: number,
+  user: string,
+  proxy: string | undefined,
+  localAddress: string | undefined,
+  secure: boolean,
+) {
+  return [host, port, secure ? 'ssl' : 'start', user, proxy || '', localAddress || ''].join('\n');
+}
+
+function dropCampaignSmtp(key: string) {
+  const transport = campaignSmtpSessions.get(key);
+  if (!transport) return;
+  campaignSmtpSessions.delete(key);
+  try {
+    transport.close?.();
+  } catch {
+    /* a dead session should not block the next message */
+  }
+}
+
+function openSmtpTransport(
   config: SmtpTestInput | ProviderConfig,
-  timeouts?: {
-    connectionTimeout?: number;
-    greetingTimeout?: number;
-    socketTimeout?: number;
-    allowDirect?: boolean;
-    /** Public Bind PC address is often NAT, not an address on the network card. */
-    skipLocalBind?: boolean;
-  },
+  timeouts: SmtpTransportTimeouts | undefined,
+  keepOpen: boolean,
 ) {
   const host = String(config.host || '').trim();
   if (!host) {
@@ -264,7 +291,7 @@ export function createSmtpTransport(
   }
 
   if (host === 'json' || host === 'dev' || host === 'console') {
-    return nodemailer.createTransport({ jsonTransport: true });
+    return { transport: nodemailer.createTransport({ jsonTransport: true }), key: '' };
   }
 
   const opts = smtpOptionsFromProfile(config);
@@ -288,7 +315,14 @@ export function createSmtpTransport(
   }
   const proxy = loopback ? undefined : smtpSocksProxyUrl(flat);
 
+  const key = campaignSmtpKey(opts.host, opts.port, opts.user, proxy, localAddress, opts.secure);
+  if (keepOpen) {
+    const existing = campaignSmtpSessions.get(key);
+    if (existing) return { transport: existing, key };
+  }
+
   const transport = nodemailer.createTransport({
+    ...(keepOpen ? { pool: true, maxConnections: 1, maxMessages: 100 } : {}),
     host: opts.host,
     port: opts.port,
     secure: opts.secure,
@@ -311,7 +345,15 @@ export function createSmtpTransport(
   if (proxy) {
     transport.set?.('proxy_socks_module', socks);
   }
-  return transport;
+  if (keepOpen) campaignSmtpSessions.set(key, transport);
+  return { transport, key: keepOpen ? key : '' };
+}
+
+export function createSmtpTransport(
+  config: SmtpTestInput | ProviderConfig,
+  timeouts?: SmtpTransportTimeouts,
+) {
+  return openSmtpTransport(config, timeouts, false).transport;
 }
 
 /**
@@ -572,7 +614,7 @@ export async function sendViaProvider(
   type: ProviderType,
   rawConfig: unknown,
   payload: SendEmailPayload,
-  options: { portFailover?: boolean; allowDirect?: boolean } = {},
+  options: { portFailover?: boolean; allowDirect?: boolean; reuseConnection?: boolean } = {},
 ): Promise<SendResult> {
   const config = parseConfig(rawConfig);
 
@@ -587,6 +629,7 @@ export async function sendViaProvider(
         return await sendSmtp(config, payload, {
           portFailover: options.portFailover,
           allowDirect: options.allowDirect,
+          reuseConnection: options.reuseConnection,
         });
       case 'SES':
         return await sendSes(config, payload);
@@ -612,6 +655,8 @@ export type SmtpSendOptions = {
   /** When true (default SMTP / Hostinger-style), try 465 ↔ 587 failover. */
   portFailover?: boolean;
   allowDirect?: boolean;
+  /** Keep one SMTP session open so the next recipient does not log in again. */
+  reuseConnection?: boolean;
 };
 
 async function sendSmtp(
@@ -694,14 +739,18 @@ async function sendSmtp(
     const attemptCfg = attempts[i]!;
     let skipLocalBind = false;
     for (let tryN = 0; tryN < 3; tryN += 1) {
-      const transport = createSmtpTransport(attemptCfg, {
-        socketTimeout: 120000,
-        allowDirect: options.allowDirect,
-        skipLocalBind,
-      });
+      const opened = openSmtpTransport(
+        attemptCfg,
+        {
+          socketTimeout: 120000,
+          allowDirect: options.allowDirect,
+          skipLocalBind,
+        },
+        options.reuseConnection === true,
+      );
       try {
-        const info = await transport.sendMail(mail);
-        transport.close?.();
+        const info = await opened.transport.sendMail(mail);
+        if (!options.reuseConnection) opened.transport.close?.();
         const accept = smtpAcceptedRecipient(info as SmtpInfoLike, payload.to);
         if (!accept.ok) {
           return {
@@ -719,7 +768,8 @@ async function sendSmtp(
           smtpResponse: accept.response,
         };
       } catch (error) {
-        transport.close?.();
+        if (options.reuseConnection) dropCampaignSmtp(opened.key);
+        else opened.transport.close?.();
         const raw = error instanceof Error ? error.message : 'SMTP send failed';
         lastError = explainSmtpSendFailure(raw);
         if (!skipLocalBind && bindAddressMissing(error)) {

@@ -289,6 +289,7 @@ export async function deliverLiveMessage(input: {
       {
         portFailover: p.isDefault && p.type === 'SMTP',
         allowDirect: orgAllowsDirectSmtp({ sendSettings: campaign.organization.sendSettings }),
+        reuseConnection: true,
       },
     );
 
