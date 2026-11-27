@@ -2,6 +2,8 @@
 
 export function recipientLogDetail(status: string, raw?: string | null): string | null {
   const text = String(raw || '').trim();
+  if (status === 'OPENED') return 'opened';
+  if (status === 'CLICKED') return 'clicked';
   if (status === 'SENT' || status === 'DELIVERED') {
     if (text && !isSmtpAccept(text)) return text;
     return 'sent successfully';

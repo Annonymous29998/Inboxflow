@@ -8,10 +8,10 @@ Inbox Flow prepares the letter the way a normal mailer does: HTML and plain text
 
 Users do **not** need the inboxflow.io domain. Each account can add one tracking domain, separate from the address they send from. It does not need a website. Every SMTP profile shares it. Delete it and add another to switch later sends. Mail already sent keeps the links it was given.
 
-The current Windows installer line is **1.2.36**:
+The current Windows installer line is **1.2.37**:
 
-- Release: https://github.com/Annonymous29998/Inboxflow/releases/tag/desktop-1.2.36
-- Setup file: https://github.com/Annonymous29998/Inboxflow/releases/download/desktop-1.2.36/InboxFlow-Setup-1.2.36.exe
+- Release: https://github.com/Annonymous29998/Inboxflow/releases/tag/desktop-1.2.37
+- Setup file: https://github.com/Annonymous29998/Inboxflow/releases/download/desktop-1.2.37/InboxFlow-Setup-1.2.37.exe
 
 Installing a newer EXE over an older one keeps `%APPDATA%\Inbox Flow`.
 
@@ -187,7 +187,7 @@ GitHub:
 
 - Repository: https://github.com/Annonymous29998/Inboxflow
 - Workflow: `.github/workflows/windows-exe.yml` on `windows-latest`
-- Release example: https://github.com/Annonymous29998/Inboxflow/releases/tag/desktop-1.2.36
+- Release example: https://github.com/Annonymous29998/Inboxflow/releases/tag/desktop-1.2.37
 
 The window inside the EXE loads the bundled localhost app. Updating only novasreach.xyz changes tracking and unsubscribe pages. It does not change the screens inside an already installed EXE. Ship both when the send path or the UI changes.
 

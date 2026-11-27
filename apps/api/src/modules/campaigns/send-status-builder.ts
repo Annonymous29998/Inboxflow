@@ -89,6 +89,9 @@ export async function buildCampaignSendStatus(
     clickEvents,
     humanOpened,
     humanClicked,
+    openedPeople,
+    clickedPeople,
+    engagedRecipients,
     activeJob,
   ] = await Promise.all([
     prisma.campaignRecipient.count({ where: deliveredRecipientFilter(campaignId) }),
@@ -127,6 +130,18 @@ export async function buildCampaignSendStatus(
     }),
     countHumanOpens(campaignId),
     countHumanClicks(campaignId),
+    prisma.campaignRecipient.count({ where: { campaignId, openedAt: { not: null } } }),
+    prisma.campaignRecipient.count({ where: { campaignId, clickedAt: { not: null } } }),
+    prisma.campaignRecipient.findMany({
+      where: { campaignId, OR: [{ openedAt: { not: null } }, { clickedAt: { not: null } }] },
+      select: {
+        openedAt: true,
+        clickedAt: true,
+        contact: { select: { email: true } },
+      },
+      orderBy: [{ clickedAt: 'desc' }, { openedAt: 'desc' }],
+      take: 200,
+    }),
     prisma.job.findFirst({
       where: {
         campaignId,
@@ -173,10 +188,33 @@ export async function buildCampaignSendStatus(
   const recentFailures = logRows.filter((r) => r.status === 'FAILED');
   const recentBounces = logRows.filter((r) => r.status === 'BOUNCED');
 
+  const liveEngagement: SendActivityRow[] = engagedRecipients.flatMap((row) => {
+    const lines: SendActivityRow[] = [];
+    if (row.openedAt) {
+      lines.push({
+        email: row.contact.email,
+        status: 'OPENED',
+        error: null,
+        at: row.openedAt.toISOString(),
+      });
+    }
+    if (row.clickedAt) {
+      lines.push({
+        email: row.contact.email,
+        status: 'CLICKED',
+        error: null,
+        at: row.clickedAt.toISOString(),
+      });
+    }
+    return lines;
+  });
   const engagementActivity: SendActivityRow[] = [
     ...aggregateEngagementRows(humanOpens, 'OPENED', 40),
     ...aggregateEngagementRows(countableClicks, 'CLICKED', 40),
+    ...liveEngagement,
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
+  sendActivity.push(...liveEngagement);
+  sendActivity.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
   const recentSent = recentDelivered.slice(-40).map((r) => ({
     email: r.contact.email,
@@ -220,8 +258,8 @@ export async function buildCampaignSendStatus(
     failedCount: counts.failed,
     bouncedCount,
     pendingCount,
-    openedCount: humanOpened,
-    clickedCount: humanClicked,
+    openedCount: Math.max(humanOpened, openedPeople, campaign.openedCount || 0),
+    clickedCount: Math.max(humanClicked, clickedPeople, campaign.clickedCount || 0),
     completedAt: campaign.completedAt,
     jobId: activeJob?.id ?? null,
     lastEmail:
