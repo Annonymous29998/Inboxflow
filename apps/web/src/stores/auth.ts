@@ -32,6 +32,8 @@ export type User = {
   /** Contacts, campaigns, and SMTP stay on this PC instead of the shared database. */
   workspaceLocal?: boolean;
   boundIp?: string | null;
+  /** Subscription end. The sidebar turns this into days left. */
+  licenseEndsAt?: string | null;
 };
 
 function rememberBoundIp(user: User | null) {

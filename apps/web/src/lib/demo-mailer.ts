@@ -138,5 +138,6 @@ export function demoMailerUser(boundIp: string) {
     smtpAllowDirect: false,
     workspaceLocal: true,
     boundIp: boundIp || null,
+    licenseEndsAt: readDemoBound()?.validUntil || new Date(Date.now() + 30 * 86_400_000).toISOString(),
   };
 }

@@ -25,6 +25,7 @@ import { useAuthStore } from '@/stores/auth';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { isMailerTenant } from '@/lib/roles';
+import { licenseDaysLabel } from '@/lib/license-days';
 import { pullTrackingRelay, reportWorkspacePulse } from '@/lib/operator-pulse';
 import { publishDesktopCloudSession, pullDesktopCloudSession } from '@/lib/desktop-cloud-session';
 import { TerminalPanel } from '@/components/layout/TerminalPanel';
@@ -142,6 +143,7 @@ export function AppLayout() {
   const isMailer = isMailerTenant(user?.role);
   const fillWorkspace = /^\/app\/(campaigns|templates)(\/|$)/.test(location.pathname);
   const sidebarPerson = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() || user?.email || '';
+  const licenseLeft = licenseDaysLabel(user?.licenseEndsAt);
   const sidebarWorkspace = String(user?.organization?.name || '').trim();
   const showSidebarWorkspace =
     Boolean(sidebarWorkspace) &&
@@ -429,6 +431,22 @@ export function AppLayout() {
           <div className={cn('truncate text-[10px] text-muted-foreground', desktopCollapsed && 'lg:hidden')}>
             {user?.email}
           </div>
+          {licenseLeft ? (
+            <div
+              className={cn(
+                'mt-1 truncate text-[11px] font-semibold',
+                licenseLeft.tone === 'ended'
+                  ? 'text-destructive'
+                  : licenseLeft.tone === 'soon'
+                    ? 'text-amber-400'
+                    : 'text-primary',
+                desktopCollapsed && 'lg:hidden',
+              )}
+              title={user?.licenseEndsAt ? `License ends ${new Date(user.licenseEndsAt).toLocaleDateString()}` : undefined}
+            >
+              {licenseLeft.text}
+            </div>
+          ) : null}
           <button
             type="button"
             aria-label="Sign out"
@@ -569,6 +587,7 @@ export function AppLayout() {
           </span>
           <span className="ml-auto hidden truncate text-muted-foreground md:inline">
             Inbox Flow · {user?.email || 'session'}
+            {licenseLeft ? ` · ${licenseLeft.text}` : ''}
           </span>
         </footer>
       </div>

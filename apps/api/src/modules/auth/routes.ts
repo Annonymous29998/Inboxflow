@@ -31,6 +31,10 @@ function loginCandidates(ident: string): string[] {
   return [lower, `${lower}@inboxflow.io`, `${lower}@users.inboxflow.io`];
 }
 
+function licenseEndsAt(sub: { currentPeriodEnd: Date } | null | undefined) {
+  return sub?.currentPeriodEnd ? sub.currentPeriodEnd.toISOString() : null;
+}
+
 function cookieSecure(): boolean {
   if (process.env.INBOXFLOW_DESKTOP === '1') return false;
   if (env.COOKIE_SECURE !== undefined) return env.COOKIE_SECURE;
@@ -298,6 +302,7 @@ export async function authRoutes(app: FastifyInstance) {
           boundIp: (await import('../../services/admin/license-bind.js')).readLicenseBind(
             user.organization?.sendSettings,
           )?.boundIp ?? null,
+          licenseEndsAt: licenseEndsAt(user.organization?.subscription),
         },
         ...tokens,
       });
@@ -479,6 +484,7 @@ export async function authRoutes(app: FastifyInstance) {
               email: user.email,
             }),
             boundIp,
+            licenseEndsAt: licenseEndsAt(sub),
             organization: user.organization
               ? {
                   id: user.organization.id,
@@ -656,7 +662,14 @@ export async function authRoutes(app: FastifyInstance) {
           timezone: true,
           organizationId: true,
           organization: {
-            select: { id: true, name: true, slug: true, physicalAddress: true, sendSettings: true },
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              physicalAddress: true,
+              sendSettings: true,
+              subscription: { select: { currentPeriodEnd: true } },
+            },
           },
         },
       });
@@ -698,6 +711,7 @@ export async function authRoutes(app: FastifyInstance) {
           boundIp: (await import('../../services/admin/license-bind.js')).readLicenseBind(
             user.organization?.sendSettings,
           )?.boundIp ?? null,
+          licenseEndsAt: licenseEndsAt(user.organization?.subscription),
         },
       });
     } catch (error) {

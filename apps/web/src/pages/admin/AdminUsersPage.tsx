@@ -13,6 +13,7 @@ import { ADMIN_UI_DEMO, bumpSubscription, DEMO_SESSIONS, hydrateDemoUsers, isDem
 import { describeUserAgent } from '@/lib/user-agent';
 import { subEndingSoon } from './admin-insights';
 import { licenseConfigJson } from '@/lib/desktop-license-config';
+import { licenseDaysLabel } from '@/lib/license-days';
 import { publicBindPcUrl } from '@/lib/bind-pc';
 
 type SubscriptionInfo = {
@@ -699,7 +700,10 @@ export function AdminUsersPage() {
                           >
                             {live ? 'Paid' : 'Ended'}
                           </span>
-                          <p className="if-admin-muted mt-1 text-xs">
+                          <p className={live ? 'mt-1 text-xs font-semibold text-emerald-800' : 'mt-1 text-xs font-semibold text-amber-800'}>
+                            {licenseDaysLabel(u.subscription?.currentPeriodEnd)?.text || (live ? 'Paid' : 'Ended')}
+                          </p>
+                          <p className="if-admin-muted text-xs">
                             {live ? 'Until' : 'Ended'} {formatSubEnd(u.subscription?.currentPeriodEnd)}
                           </p>
                         </div>
@@ -957,7 +961,9 @@ export function AdminUsersPage() {
                     <div className="if-admin-surface p-3">
                       <p className="if-admin-muted text-xs font-bold uppercase tracking-wide">Subscription</p>
                       <p className="mt-1 font-semibold text-slate-900">
-                        {subscriptionActive(detail.subscription) ? 'Paid' : 'Ended'} · {formatSubEnd(detail.subscription?.currentPeriodEnd)}
+                        {licenseDaysLabel(detail.subscription?.currentPeriodEnd)?.text ||
+                          (subscriptionActive(detail.subscription) ? 'Paid' : 'Ended')}{' '}
+                        · {formatSubEnd(detail.subscription?.currentPeriodEnd)}
                       </p>
                     </div>
                     <div className="if-admin-surface p-3 sm:col-span-2">
