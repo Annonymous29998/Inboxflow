@@ -647,6 +647,16 @@ body {
 .mailer-root .pick.on {
   background: #123312;
 }
+.mailer-root .pick-open {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  padding: 0;
+  width: 100%;
+  cursor: pointer;
+}
 .mailer-root .pick .meta {
   font-size: 11px;
   color: var(--mailer-dim);

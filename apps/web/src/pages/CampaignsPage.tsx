@@ -1371,78 +1371,62 @@ export function CampaignEditorPage() {
     const current = selectedTemplateIds(campaign);
     const exists = current.includes(templateId);
     const next = exists ? current.filter((id) => id !== templateId) : [...current, templateId];
-    const fromId = current[activePoolIndex] || campaign.templateId || null;
-
-    if (!next.length) {
-      setCampaign((c) => ({ ...c, templatePool: [], templateId: null }));
+    const focused = loadedTemplateIdRef.current;
+    const templateIdForSend =
+      focused && next.includes(focused)
+        ? focused
+        : next.includes(campaign.templateId || '')
+          ? campaign.templateId
+          : next[0] || null;
+    setCampaign((c) => ({ ...c, templatePool: next, templateId: templateIdForSend }));
+    if (next.length && templateIdForSend) {
+      const idx = Math.max(0, next.indexOf(templateIdForSend));
+      previewTemplateIndexRef.current = idx;
+      setPreviewTemplateIndex(idx);
+    } else {
       previewTemplateIndexRef.current = 0;
       setPreviewTemplateIndex(0);
-      setBlocks([]);
-      if (id && !campaignLocked(campaign.status)) {
-        void api.patch(`/api/campaigns/${id}`, { templateId: null, templatePool: [] }).catch(() => {});
-      }
-      return;
     }
-
-    setCampaign((c) => ({
-      ...c,
-      templatePool: next,
-      templateId: exists ? (next.includes(fromId || '') ? fromId : next[0]) : templateId,
-    }));
-
-    if (!exists) {
-      if (isNew && next.length === 1) {
-        previewTemplateIndexRef.current = 0;
-        setPreviewTemplateIndex(0);
-        await applyTemplate(templateId);
-        return;
-      }
-      setTemplateLoading(true);
-      try {
-        if (fromId && fromId !== templateId) await persistActiveTemplateEdits(fromId, blocks);
-        const ok = await loadTemplateIntoEditor(templateId, {
-          patchCampaign: Boolean(id),
-          templatePool: next,
-          forceFetch: true,
-        });
-        if (ok) {
-          const idx = Math.max(0, next.indexOf(templateId));
-          previewTemplateIndexRef.current = idx;
-          setPreviewTemplateIndex(idx);
-        }
-      } catch (err) {
-        flash(err instanceof Error ? err.message : 'Could not load template', 'error');
-      } finally {
-        setTemplateLoading(false);
-      }
-      return;
-    }
-
-    const nextIdx = Math.min(activePoolIndex, next.length - 1);
-    previewTemplateIndexRef.current = Math.max(0, nextIdx);
-    setPreviewTemplateIndex(Math.max(0, nextIdx));
-    if (fromId === templateId && next[nextIdx]) {
-      setTemplateLoading(true);
-      try {
-        await loadTemplateIntoEditor(next[nextIdx]!, { patchCampaign: Boolean(id), templatePool: next });
-      } catch (err) {
-        flash(err instanceof Error ? err.message : 'Could not load template', 'error');
-      } finally {
-        setTemplateLoading(false);
-      }
-    } else if (id && !campaignLocked(campaign.status)) {
-      void api.patch(`/api/campaigns/${id}`, { templatePool: next, templateId: fromId || next[0] || null }).catch(() => {});
+    if (id && !campaignLocked(campaign.status)) {
+      void api.patch(`/api/campaigns/${id}`, { templatePool: next, templateId: templateIdForSend }).catch(() => {});
     }
   }
 
-  async function selectLetter(templateId: string) {
-    if (!templateId) return;
-    const current = selectedTemplateIds(campaign);
-    if (!current.includes(templateId)) {
-      await toggleTemplateInPool(templateId);
-      return;
+  /** Green card: the letter open in the editor. The tick does not move this. */
+  async function focusLetter(templateId: string) {
+    if (!templateId || templateLoading) return;
+    setViewingLetterId(templateId);
+    if (loadedTemplateIdRef.current === templateId) return;
+    const previous = loadedTemplateIdRef.current;
+    if (previous) await persistActiveTemplateEdits(previous, blocks);
+    setTemplateLoading(true);
+    try {
+      const body = await fetchTemplateBody(templateId, !templateBodiesRef.current[templateId]?.html);
+      const rawHtml = body?.html || '';
+      const nextBlocks = templateHtmlToBlocks(rawHtml);
+      loadedTemplateIdRef.current = templateId;
+      setViewingLetterId(templateId);
+      setBlocks(nextBlocks);
+      if (body?.placeholderMap && Object.keys(body.placeholderMap).length) {
+        setPlaceholderMap(body.placeholderMap);
+      }
+      setPreviewFrameKey((k) => k + 1);
+      const pool = selectedTemplateIds(campaign);
+      if (pool.includes(templateId)) {
+        const idx = Math.max(0, pool.indexOf(templateId));
+        previewTemplateIndexRef.current = idx;
+        setPreviewTemplateIndex(idx);
+      }
+      setCampaign((c) => ({
+        ...c,
+        htmlContent: rawHtml,
+        plainTextContent: body?.plain || c.plainTextContent,
+      }));
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Could not open letter', 'error');
+    } finally {
+      setTemplateLoading(false);
     }
-    await previewLetter(templateId, { persist: true, forceFetch: !templateBodiesRef.current[templateId]?.html });
   }
 
   async function previewLetter(
@@ -3349,27 +3333,20 @@ export function CampaignEditorPage() {
                 </button>
                 {templates.map((t) => {
                   const ticked = templatePoolIds.includes(t.id);
+                  const editing = viewingLetterId === t.id;
                   return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={cn('pick', ticked && 'on')}
-                      title="Tick to use this letter"
-                      onClick={() => {
-                        if (ticked) void selectLetter(t.id);
-                      }}
-                    >
+                    <div key={t.id} className={cn('pick', editing && 'on')}>
                       <input
                         type="checkbox"
                         checked={ticked}
+                        aria-label={`Include ${t.name} in the send`}
                         onChange={() => void toggleTemplateInPool(t.id)}
-                        onClick={(e) => e.stopPropagation()}
                       />
-                      <div>
+                      <button type="button" className="pick-open" title="Open this letter to edit" onClick={() => void focusLetter(t.id)}>
                         <strong>{t.name}</strong>
-                        <div className="meta">HTML{ticked ? ' · in campaign' : ''}</div>
-                      </div>
-                    </button>
+                        <div className="meta">{ticked ? 'In campaign' : 'HTML'}</div>
+                      </button>
+                    </div>
                   );
                 })}
                 {!templates.length ? (
