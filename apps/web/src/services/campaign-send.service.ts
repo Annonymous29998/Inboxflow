@@ -258,6 +258,22 @@ export const campaignSendService = {
     }>(`/api/campaigns/${campaignId}/test-matrix`, input);
   },
 
+  async proof(
+    campaignId: string,
+    input: {
+      to: string;
+      subject: string;
+      html: string;
+      providerId?: string;
+      attachments?: Array<{ filename: string; contentType?: string; contentBase64: string }>;
+    },
+  ) {
+    return api.post<{ success: boolean; to: string; messageId?: string; fromEmail?: string }>(
+      `/api/campaigns/${campaignId}/proof`,
+      input,
+    );
+  },
+
   async exportConfig(campaignId: string) {
     return api.get<{ version: number; campaign: Record<string, unknown> }>(
       `/api/campaigns/${campaignId}/export-config`,

@@ -2045,6 +2045,74 @@ export async function campaignRoutes(app: FastifyInstance) {
     }
   });
 
+  /** One mailbox copy of the letter the operator is previewing. Not a campaign send. */
+  app.post('/:id/proof', async (request, reply) => {
+    try {
+      const orgId = requireOrg(request.user.organizationId);
+      const { id } = request.params as { id: string };
+      const body = z
+        .object({
+          to: z.string().email(),
+          subject: z.string().min(1).max(300),
+          html: z.string().min(1).max(1_500_000),
+          providerId: z.string().min(1).optional(),
+          attachments: z
+            .array(
+              z.object({
+                filename: z.string().min(1).max(180),
+                contentType: z.string().max(120).optional(),
+                contentBase64: z.string().min(1).max(2_100_000),
+              }),
+            )
+            .max(3)
+            .optional(),
+        })
+        .parse(request.body);
+
+      const campaign = await prisma.campaign.findFirst({
+        where: { id, organizationId: orgId },
+        select: { id: true, senderName: true },
+      });
+      if (!campaign) throw new AppError(404, 'Campaign not found');
+
+      const result = await sendPlacementMessage({
+        campaignId: id,
+        to: body.to,
+        subject: body.subject,
+        html: body.html,
+        text: stripHtmlTags(body.html),
+        fromName: campaign.senderName || undefined,
+        preferredProviderId: body.providerId,
+        attachments: (body.attachments || []).map((file) => ({
+          filename: file.filename,
+          contentType: file.contentType || 'application/octet-stream',
+          content: file.contentBase64,
+          encoding: 'base64',
+        })),
+      });
+
+      await writeSystemLog({
+        organizationId: orgId,
+        level: result.success ? 'SUCCESS' : 'ERROR',
+        category: 'smtp',
+        message: result.success
+          ? `Mailbox proof sent → ${body.to}`
+          : `Mailbox proof failed → ${body.to}: ${result.error || 'send failed'}`,
+        meta: { campaignId: id, to: body.to, messageId: result.messageId },
+      });
+
+      if (!result.success) throw new AppError(400, result.error || 'SMTP did not accept the message');
+      return reply.send({
+        success: true,
+        to: body.to,
+        messageId: result.messageId,
+        fromEmail: result.fromEmail,
+      });
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/:id/export-config', async (request, reply) => {
     try {
       const orgId = requireOrg(request.user.organizationId);

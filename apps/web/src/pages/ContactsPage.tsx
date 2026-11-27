@@ -23,8 +23,21 @@ type Contact = {
   status: 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'BOUNCED' | 'COMPLAINED' | 'CLEANED';
   source: string | null;
   createdAt: string;
+  customData?: Record<string, unknown> | null;
   listMemberships?: Array<{ list?: { id: string; name: string } }>;
 };
+
+function leadFields(contact: Contact): Record<string, string> {
+  const raw = contact.customData;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const name = key.trim();
+    if (!name || value == null) continue;
+    out[name] = String(value);
+  }
+  return out;
+}
 
 type ContactList = {
   id: string;
@@ -95,6 +108,19 @@ export function ContactsPage() {
   const [modalLoading, setModalLoading] = useState(false);
   const [modalSearch, setModalSearch] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const leadColumns = useMemo(() => {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    for (const contact of modalContacts) {
+      for (const key of Object.keys(leadFields(contact))) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+        if (keys.length >= 6) return keys;
+      }
+    }
+    return keys;
+  }, [modalContacts]);
 
   useEffect(() => {
     load();
@@ -189,6 +215,36 @@ export function ContactsPage() {
       toast.error('Could not load list', err instanceof Error ? err.message : undefined);
     } finally {
       setModalLoading(false);
+    }
+  }
+
+  function replaceModalContact(next: Contact) {
+    setModalContacts((rows) => rows.map((row) => (row.id === next.id ? next : row)));
+  }
+
+  async function saveLeadName(contact: Contact, key: 'firstName' | 'lastName', value: string) {
+    const trimmed = value.trim();
+    if ((contact[key] || '') === trimmed) return;
+    try {
+      const data = await api.patch<{ contact: Contact }>(`/api/contacts/${contact.id}`, { [key]: trimmed });
+      replaceModalContact({ ...contact, ...data.contact });
+    } catch (err) {
+      toast.error('Could not save', err instanceof Error ? err.message : undefined);
+    }
+  }
+
+  async function saveLeadColumn(contact: Contact, key: string, value: string) {
+    const current = leadFields(contact);
+    const trimmed = value.trim();
+    if ((current[key] || '') === trimmed) return;
+    const customData = { ...current };
+    if (trimmed) customData[key] = trimmed;
+    else delete customData[key];
+    try {
+      const data = await api.patch<{ contact: Contact }>(`/api/contacts/${contact.id}`, { customData });
+      replaceModalContact({ ...contact, ...data.contact, customData });
+    } catch (err) {
+      toast.error('Could not save', err instanceof Error ? err.message : undefined);
     }
   }
 
@@ -1161,7 +1217,11 @@ export function ContactsPage() {
                   <thead>
                     <tr>
                       <th>Email</th>
-                      <th>Name</th>
+                      <th>First</th>
+                      <th>Last</th>
+                      {leadColumns.map((key) => (
+                        <th key={key}>{key}</th>
+                      ))}
                       <th>Status</th>
                       <th>Added</th>
                       <th></th>
@@ -1171,9 +1231,32 @@ export function ContactsPage() {
                     {modalContacts.map((c) => (
                       <tr key={c.id}>
                         <td className="px-4 py-2 font-medium">{c.email}</td>
-                        <td className="px-4 py-2 text-[var(--mailer-dim)]">
-                          {[c.firstName, c.lastName].filter(Boolean).join(' ') || '—'}
+                        <td className="px-2 py-1">
+                          <input
+                            className="lead-cell"
+                            aria-label={`First name for ${c.email}`}
+                            defaultValue={c.firstName || ''}
+                            onBlur={(e) => void saveLeadName(c, 'firstName', e.target.value)}
+                          />
                         </td>
+                        <td className="px-2 py-1">
+                          <input
+                            className="lead-cell"
+                            aria-label={`Last name for ${c.email}`}
+                            defaultValue={c.lastName || ''}
+                            onBlur={(e) => void saveLeadName(c, 'lastName', e.target.value)}
+                          />
+                        </td>
+                        {leadColumns.map((key) => (
+                          <td key={key} className="px-2 py-1">
+                            <input
+                              className="lead-cell"
+                              aria-label={`${key} for ${c.email}`}
+                              defaultValue={leadFields(c)[key] || ''}
+                              onBlur={(e) => void saveLeadColumn(c, key, e.target.value)}
+                            />
+                          </td>
+                        ))}
                         <td className="px-4 py-2">
                           <Badge tone={c.status === 'SUBSCRIBED' ? 'success' : 'neutral'} className="capitalize">
                             {c.status.toLowerCase()}
@@ -1196,7 +1279,7 @@ export function ContactsPage() {
                     ))}
                     {!modalContacts.length ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-10 text-center text-[var(--mailer-dim)]">
+                        <td colSpan={6 + leadColumns.length} className="px-4 py-10 text-center text-[var(--mailer-dim)]">
                           No contacts in this list
                           {modalSearch.trim() ? ' match the search' : ''}.
                         </td>

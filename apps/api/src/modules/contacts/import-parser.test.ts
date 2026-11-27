@@ -53,6 +53,20 @@ Diana.Davis@comcast.net
     ]);
   });
 
+  it('keeps extra lead columns for letter tags', () => {
+    const text = `email,firstName,company,city
+ada@x.com,Ada,Acme,Lagos
+sam@x.com,Sam,Northwind,Abuja
+`;
+    const rows = parseContactImport(text);
+    expect(rows[0]).toMatchObject({
+      email: 'ada@x.com',
+      firstName: 'Ada',
+      customData: { company: 'Acme', city: 'Lagos' },
+    });
+    expect(rows[1]?.customData).toEqual({ company: 'Northwind', city: 'Abuja' });
+  });
+
   it('imports each email only once when duplicates appear', () => {
     const text = `
 martaguttenberg@comcast.net.

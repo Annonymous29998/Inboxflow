@@ -5,6 +5,8 @@ export type ParsedContactRow = {
   firstName?: string | null;
   lastName?: string | null;
   phone?: string | null;
+  /** Extra lead columns. {{company}} fills from a company column. */
+  customData?: Record<string, string>;
 };
 
 /** Reject TLDs that are clearly paste/OCR junk, not real domains. */
@@ -76,6 +78,49 @@ function normalizeEmail(raw: string): string | null {
   return cleanImportEmail(raw);
 }
 
+const RESERVED_HEADERS = new Set([
+  'email',
+  'e_mail',
+  'mail',
+  'email_address',
+  'firstname',
+  'first_name',
+  'first',
+  'given_name',
+  'fname',
+  'lastname',
+  'last_name',
+  'last',
+  'surname',
+  'family_name',
+  'lname',
+  'phone',
+  'mobile',
+  'tel',
+]);
+
+function headerKey(header: string): string {
+  return header
+    .trim()
+    .toLowerCase()
+    .replace(/[-.\s]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+/** Every column that is not email, name, or phone. The letter tag matches the column. */
+export function customFieldsFromRow(row: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [header, value] of Object.entries(row)) {
+    const text = String(value ?? '').trim();
+    if (!text) continue;
+    const key = headerKey(header);
+    if (!key || RESERVED_HEADERS.has(key)) continue;
+    out[key] = text;
+  }
+  return out;
+}
+
 function pickField(row: Record<string, string>, keys: string[]): string | null {
   for (const key of keys) {
     const val = row[key]?.trim();
@@ -116,6 +161,7 @@ function parseCsvRows(text: string): ParsedContactRow[] {
           firstName: pickField(row, ['firstName', 'first_name', 'FirstName', 'first name', 'given_name']),
           lastName: pickField(row, ['lastName', 'last_name', 'LastName', 'last name', 'surname', 'family_name']),
           phone: pickField(row, ['phone', 'Phone', 'mobile', 'tel']),
+          customData: customFieldsFromRow(row),
         };
       })
       .filter(Boolean) as ParsedContactRow[];
@@ -153,11 +199,17 @@ function parseJsonRows(text: string): ParsedContactRow[] | null {
           const row = item as Record<string, unknown>;
           const email = cleanImportEmail(String(row.email || row.Email || row.mail || ''));
           if (!email) return null;
+          const flat: Record<string, string> = {};
+          for (const [key, value] of Object.entries(row)) {
+            if (value == null) continue;
+            flat[key] = String(value);
+          }
           return {
             email,
             firstName: row.firstName ? String(row.firstName) : row.first_name ? String(row.first_name) : null,
             lastName: row.lastName ? String(row.lastName) : row.last_name ? String(row.last_name) : null,
             phone: row.phone ? String(row.phone) : null,
+            customData: customFieldsFromRow(flat),
           };
         })
         .filter(Boolean) as ParsedContactRow[];
@@ -199,6 +251,13 @@ export function parseContactImport(content: string): ParsedContactRow[] {
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     const jsonRows = parseJsonRows(trimmed);
     if (jsonRows?.length) return dedupeRows(jsonRows);
+  }
+
+  const headered = parseCsvRows(trimmed);
+  const firstLine = trimmed.split(/\r?\n/).find((line) => line.trim()) || '';
+  const headerCells = firstLine.split(/[,;\t]/).map((cell) => headerKey(cell));
+  if (headerCells.some((cell) => cell === 'email' || cell === 'e_mail' || cell === 'email_address') && headered.length) {
+    return dedupeRows(headered);
   }
 
   // Prefer line-oriented cleaning for pasted email lists (even if commas appear in junk).

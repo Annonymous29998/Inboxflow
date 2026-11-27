@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { PlaceholderPane } from '@/components/campaigns/LetterMergePanel';
+import { MailboxProof } from '@/components/campaigns/MailboxProof';
 import {
+  ATTACH_MAX_BYTES,
+  ATTACH_MAX_FILES,
+  CANONICAL_FIELDS,
+  detectPlaceholders,
+  fileToAttachment,
   previewLetterHtml,
   previewMergeVars,
+  suggestCanonical,
   type CampaignAttachment,
+  type PreviewContact,
 } from '@/lib/letter-placeholders';
 import { promptDialog } from '@/stores/confirm';
+import { toast } from '@/stores/toast';
 
 type LetterMode = 'source' | 'preview' | 'editor' | 'placeholder';
 
@@ -41,8 +50,14 @@ export function LetterPane({
   onAttachments,
   previewContacts = [],
   senderName,
+  senderEmail,
+  subject = '',
   physicalAddress,
   showPlaceholderTab = false,
+  onPreviewContactChange,
+  proofAddress = '',
+  onProofAddress,
+  onSendCopy,
 }: {
   html: string;
   onHtmlChange: (next: string) => void;
@@ -55,11 +70,17 @@ export function LetterPane({
   onPlaceholderMap?: (next: Record<string, string>) => void;
   attachments?: CampaignAttachment[];
   onAttachments?: (next: CampaignAttachment[]) => void;
-  previewContacts?: Array<{ email: string; firstName?: string | null; lastName?: string | null }>;
+  previewContacts?: PreviewContact[];
   senderName?: string | null;
+  senderEmail?: string | null;
+  subject?: string;
   physicalAddress?: string | null;
   /** Templates overlay only — campaign uses the workspace Placeholder tab. */
   showPlaceholderTab?: boolean;
+  onPreviewContactChange?: (next: PreviewContact) => void;
+  proofAddress?: string;
+  onProofAddress?: (next: string) => void;
+  onSendCopy?: (input: { to: string; html: string }) => Promise<void>;
 }) {
   const [mode, setMode] = useState<LetterMode>('editor');
   const [source, setSource] = useState(html);
@@ -72,26 +93,44 @@ export function LetterPane({
   const bindAbort = useRef<AbortController | null>(null);
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const [previewEmail, setPreviewEmail] = useState('');
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [fieldMenu, setFieldMenu] = useState(false);
+  const [sampleContact, setSampleContact] = useState<PreviewContact>({
+    email: 'alex@example.com',
+    firstName: 'Alex',
+    lastName: 'Rivera',
+    customData: { company: 'Northwind' },
+  });
   const [editMarks, setEditMarks] = useState<Record<string, boolean>>({});
 
-  const previewPerson = previewContacts.find((c) => c.email === previewEmail) || previewContacts[0];
+  const safeIndex = previewContacts.length
+    ? ((previewIndex % previewContacts.length) + previewContacts.length) % previewContacts.length
+    : 0;
+  const previewPerson = previewContacts[safeIndex] || sampleContact;
   const displayHtml =
     mode === 'preview'
       ? previewLetterHtml(
           html,
           previewMergeVars({
-            email: previewPerson?.email || 'alex@example.com',
-            firstName: previewPerson?.firstName || 'Alex',
-            lastName: previewPerson?.lastName || '',
+            email: previewPerson.email,
+            firstName: previewPerson.firstName,
+            lastName: previewPerson.lastName,
+            phone: previewPerson.phone,
             senderName,
             physicalAddress,
+            customData: previewPerson.customData,
           }),
           placeholderMap,
-          previewPerson?.email || 'alex@example.com',
+          previewPerson.email,
           spinPools,
         )
       : html;
+  const insertFields = [
+    ...CANONICAL_FIELDS.map((field) => ({ token: `{{${field.key}}}`, label: field.label })),
+    ...detectPlaceholders(html)
+      .filter((item) => item.kind !== 'spin' && !suggestCanonical(item.tag))
+      .map((item) => ({ token: `{{${item.tag}}}`, label: item.tag })),
+  ].filter((item, index, all) => all.findIndex((other) => other.token === item.token) === index);
 
   useEffect(() => {
     setSource(html);
@@ -279,19 +318,39 @@ export function LetterPane({
     });
   }
 
+  async function attachMailboxFile(file: File) {
+    if (!onAttachments) return false;
+    if (file.size > ATTACH_MAX_BYTES) {
+      toast.warning('File is over 1.5 MB', file.name);
+      return true;
+    }
+    if (attachments.some((item) => item.filename === file.name)) {
+      toast.warning('That file is already attached', file.name);
+      return true;
+    }
+    if (attachments.length >= ATTACH_MAX_FILES) {
+      toast.warning('This letter already has 3 attachments');
+      return true;
+    }
+    const next = await fileToAttachment(file);
+    onAttachments([...attachments, next]);
+    toast.success('Attached', `${file.name} shows as a download in the mailbox`);
+    return true;
+  }
+
   function insertLocalFile(file: File | undefined) {
     if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      void attachMailboxFile(file);
+      return;
+    }
     const doc = editorDoc();
     if (doc) rememberRange(doc);
     const reader = new FileReader();
     reader.onload = () => {
       const url = String(reader.result || '');
       if (!url) return;
-      if (file.type.startsWith('image/')) runEdit('insertImage', url);
-      else {
-        const name = file.name.replace(/[<>]/g, '');
-        insertHtmlChunk(`<a href="${url}">${name}</a>`);
-      }
+      runEdit('insertImage', url);
     };
     reader.readAsDataURL(file);
   }
@@ -394,21 +453,6 @@ export function LetterPane({
           ))}
         </div>
         <div>
-          {mode === 'preview' && previewContacts.length ? (
-            <select
-              className="letter-bar-select"
-              value={previewEmail}
-              onChange={(e) => setPreviewEmail(e.target.value)}
-              aria-label="Preview as contact"
-            >
-              <option value="">{previewContacts[0] ? 'First in list' : 'Sample Alex'}</option>
-              {previewContacts.map((c) => (
-                <option key={c.email} value={c.email}>
-                  {[c.firstName, c.lastName].filter(Boolean).join(' ') || c.email}
-                </option>
-              ))}
-            </select>
-          ) : null}
           {actions}
           {onImportClick ? (
             <button type="button" className={cn(importing && 'busy')} disabled={importing} onClick={onImportClick}>
@@ -528,14 +572,56 @@ export function LetterPane({
           <button type="button" title="Remove link" onClick={() => runEdit('unlink')}>
             Unlink
           </button>
-          <button type="button" title="Insert image or file" onClick={() => fileRef.current?.click()}>
+          <span className="letter-field">
+            <button type="button" title="Insert a placeholder at the cursor" className={cn(fieldMenu && 'on')} onClick={() => setFieldMenu((open) => !open)}>
+              Field
+            </button>
+            {fieldMenu ? (
+              <div className="letter-field-menu" role="menu">
+                {insertFields.map((field) => (
+                  <button
+                    key={field.token}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      insertHtmlChunk(field.token);
+                      setFieldMenu(false);
+                    }}
+                  >
+                    <b>{field.label}</b>
+                    <span>{field.token}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setFieldMenu(false);
+                    void promptDialog('Insert a field', {
+                      description: 'The name becomes a tag, like company.',
+                      placeholder: 'company',
+                      confirmText: 'Insert',
+                      validate: (value) => (value.trim() ? null : 'Type a field name'),
+                    }).then((asked) => {
+                      const tag = String(asked || '').trim().replace(/^\{\{|\}\}$/g, '');
+                      if (tag) insertHtmlChunk(`{{${tag}}}`);
+                    });
+                  }}
+                >
+                  <b>Custom…</b>
+                  <span>{'{{your field}}'}</span>
+                </button>
+              </div>
+            ) : null}
+          </span>
+          <button type="button" title="Insert an image in the letter, or attach any other file" onClick={() => fileRef.current?.click()}>
             File
           </button>
           <input
             ref={fileRef}
             type="file"
             hidden
-            accept="image/*,.pdf,.txt,.html,.htm,.zip"
+            accept="image/*,.pdf,.txt,.html,.htm,.zip,.doc,.docx,.xls,.xlsx,.csv"
             onChange={(e) => {
               insertLocalFile(e.target.files?.[0]);
               e.target.value = '';
@@ -550,6 +636,21 @@ export function LetterPane({
           <button type="button" title="Clear formatting" onClick={() => runEdit('removeFormat')}>
             Clear
           </button>
+        </div>
+      ) : null}
+      {mode === 'editor' && attachments.length ? (
+        <div className="letter-attach">
+          <span>Attachment</span>
+          {attachments.map((item, index) => (
+            <button
+              key={`${item.filename}-${index}`}
+              type="button"
+              title="Remove attachment"
+              onClick={() => onAttachments?.(attachments.filter((_, i) => i !== index))}
+            >
+              {item.filename} ×
+            </button>
+          ))}
         </div>
       ) : null}
       {mode === 'placeholder' && onPlaceholderMap && onAttachments ? (
@@ -575,13 +676,44 @@ export function LetterPane({
           className="letter-source"
         />
       ) : (
-        <iframe
-          ref={iframeRef}
-          title={mode === 'editor' ? 'letter-editor' : 'letter-preview'}
-          sandbox="allow-same-origin"
-          onLoad={bindFrame}
-          className="letter-frame"
-        />
+        <>
+          {mode === 'preview' ? (
+            <MailboxProof
+              html={html}
+              contacts={previewContacts}
+              index={safeIndex}
+              onIndex={(next) => {
+                if (!previewContacts.length) return;
+                const len = previewContacts.length;
+                setPreviewIndex(((next % len) + len) % len);
+              }}
+              subject={subject}
+              senderName={senderName}
+              senderEmail={senderEmail}
+              attachments={attachments}
+              proofAddress={proofAddress}
+              onProofAddress={onProofAddress || (() => undefined)}
+              onContactChange={(next) => {
+                if (previewContacts.length) onPreviewContactChange?.(next);
+                else setSampleContact(next);
+              }}
+              onSendCopy={
+                onSendCopy
+                  ? async ({ to }) => {
+                      await onSendCopy({ to, html: displayHtml });
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
+          <iframe
+            ref={iframeRef}
+            title={mode === 'editor' ? 'letter-editor' : 'letter-preview'}
+            sandbox="allow-same-origin"
+            onLoad={bindFrame}
+            className="letter-frame"
+          />
+        </>
       )}
     </div>
   );

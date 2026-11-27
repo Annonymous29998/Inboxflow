@@ -741,6 +741,209 @@ body {
   padding: 0 8px;
   max-width: 11rem;
 }
+.mailer-root .letter-field {
+  position: relative;
+}
+.mailer-root .letter-field-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--mailer-stroke);
+  background: #070c07;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+.mailer-root .letter-editbar .letter-field-menu button {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--mailer-stroke);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.mailer-root .letter-editbar .letter-field-menu button b {
+  font-weight: 600;
+}
+.mailer-root .letter-editbar .letter-field-menu button span {
+  color: var(--mailer-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+.mailer-root .letter-editbar .letter-field-menu button:hover {
+  color: var(--color-accent);
+}
+.mailer-root .mailbox-proof {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--mailer-stroke);
+  background: #070c07;
+}
+.mailer-root .mailbox-proof-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mailer-stroke);
+}
+.mailer-root .mailbox-proof-nav button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--mailer-stroke);
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.mailer-root .mailbox-proof-nav button:disabled {
+  color: var(--mailer-dim);
+  cursor: default;
+}
+.mailer-root .mailbox-proof-nav span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--mailer-dim);
+}
+.mailer-root .mailbox-proof-nav em {
+  font-style: normal;
+  color: inherit;
+  font-size: 13px;
+}
+.mailer-root .mailbox-proof dl {
+  margin: 0;
+  padding: 8px 10px 2px;
+}
+.mailer-root .mailbox-proof dl > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.mailer-root .mailbox-proof dt {
+  color: var(--color-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mailer-root .mailbox-proof dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mailer-root .mailbox-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  white-space: normal;
+}
+.mailer-root .mailbox-files span {
+  border: 1px solid var(--mailer-stroke);
+  padding: 1px 6px;
+}
+.mailer-root .mailbox-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  padding: 4px 10px 8px;
+}
+.mailer-root .mailbox-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 120px;
+  font-size: 10px;
+  color: var(--mailer-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mailer-root .mailbox-fields input,
+.mailer-root .mailbox-send input,
+.mailer-root .lead-cell {
+  height: 28px;
+  border: 1px solid var(--mailer-stroke);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 0 8px;
+  width: 100%;
+}
+.mailer-root .mailbox-fields p {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--mailer-dim);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.mailer-root .mailbox-send {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+.mailer-root .mailbox-send label {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--mailer-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mailer-root .mailbox-send button {
+  height: 28px;
+  border: 1px solid var(--color-accent);
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.mailer-root .mailbox-send button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.mailer-root .lead-cell {
+  min-width: 7rem;
+}
+.mailer-root .letter-attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--mailer-stroke);
+  font-size: 12px;
+}
+.mailer-root .letter-attach button {
+  border: 1px solid var(--mailer-stroke);
+  background: transparent;
+  color: inherit;
+  padding: 2px 8px;
+}
 .mailer-root .letter-editbar {
   display: flex;
   flex-wrap: wrap;

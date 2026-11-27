@@ -324,7 +324,7 @@ export async function contactRoutes(app: FastifyInstance) {
       const [existingContacts, suppressedRows] = await Promise.all([
         prisma.contact.findMany({
           where: { organizationId: orgId, email: { in: emails } },
-          select: { id: true, email: true, status: true },
+          select: { id: true, email: true, status: true, customData: true },
         }),
         prisma.suppressionList.findMany({
           where: { organizationId: orgId, email: { in: emails } },
@@ -345,6 +345,9 @@ export async function contactRoutes(app: FastifyInstance) {
           firstName: row.firstName || null,
           lastName: row.lastName || null,
           phone: row.phone || null,
+          ...(row.customData && Object.keys(row.customData).length
+            ? { customData: row.customData as Prisma.InputJsonValue }
+            : {}),
         };
 
         const guard = await guardRecipientAddress(email);
@@ -365,10 +368,17 @@ export async function contactRoutes(app: FastifyInstance) {
           }
           const restoreCleaned = existing.status === 'CLEANED';
           if (body.updateExisting || restoreCleaned) {
+            const prior =
+              existing.customData && typeof existing.customData === 'object' && !Array.isArray(existing.customData)
+                ? (existing.customData as Record<string, unknown>)
+                : {};
             await prisma.contact.update({
               where: { id: existing.id },
               data: {
                 ...(body.updateExisting ? data : {}),
+                ...(body.updateExisting && row.customData && Object.keys(row.customData).length
+                  ? { customData: { ...prior, ...row.customData } as Prisma.InputJsonValue }
+                  : {}),
                 ...(restoreCleaned ? { status: 'SUBSCRIBED' } : {}),
               },
             });
@@ -395,14 +405,19 @@ export async function contactRoutes(app: FastifyInstance) {
                 consentAt: new Date(),
               },
             });
-            existingByEmail.set(emailKey, { id: contact.id, email: contact.email, status: contact.status });
+            existingByEmail.set(emailKey, {
+              id: contact.id,
+              email: contact.email,
+              status: contact.status,
+              customData: contact.customData,
+            });
             await ensureListMembership(contact.id);
             created++;
           } catch (err) {
             if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
               const raced = await prisma.contact.findFirst({
                 where: { organizationId: orgId, email: textEquals(email) },
-                select: { id: true, email: true, status: true },
+                select: { id: true, email: true, status: true, customData: true },
               });
               if (raced) {
                 existingByEmail.set(emailKey, raced);
@@ -529,15 +544,40 @@ export async function contactRoutes(app: FastifyInstance) {
         where: { organizationId: orgId },
         orderBy: { createdAt: 'desc' },
       });
+      const extraKeys: string[] = [];
+      const seen = new Set<string>();
+      for (const contact of contacts) {
+        const custom = contact.customData;
+        if (!custom || typeof custom !== 'object' || Array.isArray(custom)) continue;
+        for (const key of Object.keys(custom)) {
+          const name = key.trim();
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          extraKeys.push(name);
+          if (extraKeys.length >= 24) break;
+        }
+        if (extraKeys.length >= 24) break;
+      }
       const csv = stringify(
-        contacts.map((c) => ({
-          email: c.email,
-          firstName: c.firstName || '',
-          lastName: c.lastName || '',
-          phone: c.phone || '',
-          status: c.status,
-          createdAt: c.createdAt.toISOString(),
-        })),
+        contacts.map((c) => {
+          const custom =
+            c.customData && typeof c.customData === 'object' && !Array.isArray(c.customData)
+              ? (c.customData as Record<string, unknown>)
+              : {};
+          const row: Record<string, string> = {
+            email: c.email,
+            firstName: c.firstName || '',
+            lastName: c.lastName || '',
+            phone: c.phone || '',
+            status: c.status,
+            createdAt: c.createdAt.toISOString(),
+          };
+          for (const key of extraKeys) {
+            const value = custom[key];
+            row[key] = value == null ? '' : String(value);
+          }
+          return row;
+        }),
         { header: true },
       );
       reply.header('Content-Type', 'text/csv');

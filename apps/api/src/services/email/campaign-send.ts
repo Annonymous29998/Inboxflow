@@ -351,6 +351,7 @@ export async function sendPlacementMessage(input: {
   fromEmail?: string;
   extraHeaders?: Record<string, string>;
   preferredProviderId?: string | null;
+  attachments?: SendEmailPayload['attachments'];
 }): Promise<LiveSendResult> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: input.campaignId },
@@ -400,6 +401,7 @@ export async function sendPlacementMessage(input: {
     preferredProviderId: input.preferredProviderId ?? campaign.providerId,
     rotationEnabled: false,
     countUsage: false,
+    attachments: input.attachments,
   });
 }
 

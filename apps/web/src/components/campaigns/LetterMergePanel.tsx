@@ -226,7 +226,7 @@ export function PlaceholderPane({
   return (
     <div className="ph-pane">
       <p className="mailer-hint" style={{ marginTop: 0 }}>
-        Tags found in this letter. Type any tag below to add one — {'{{firstName}}'}, {'{date}'}, {'{Hi|Hello}'}.
+        Tags found in this letter. Type any tag — {'{{firstName}}'}, {'{{company}}'}, {'{{city}}'}. A column with that name on the lead file fills it.
       </p>
 
       <div className="ph-row" style={{ marginTop: 0 }}>

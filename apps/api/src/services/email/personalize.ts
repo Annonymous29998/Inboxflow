@@ -72,6 +72,16 @@ function resolveAlias(raw: string) {
   return BRACE_ALIAS[spaced] || BRACE_ALIAS[aliasKey(raw)] || null;
 }
 
+function lookupCustom(custom: Record<string, string>, key: string): string | null {
+  const want = aliasKey(key);
+  if (!want) return null;
+  if (Object.prototype.hasOwnProperty.call(custom, key)) return String(custom[key] ?? '');
+  for (const [name, value] of Object.entries(custom)) {
+    if (aliasKey(name) === want) return String(value ?? '');
+  }
+  return null;
+}
+
 function hashSeed(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -133,6 +143,7 @@ export function personalize(
     firstName?: string | null;
     lastName?: string | null;
     email: string;
+    phone?: string | null;
     customData?: unknown;
   },
   vars?: {
@@ -144,7 +155,8 @@ export function personalize(
     spinSeed?: string | null;
   },
 ) {
-  const custom = (contact.customData || {}) as Record<string, string>;
+  const custom = { ...((contact.customData || {}) as Record<string, string>) };
+  if (contact.phone && lookupCustom(custom, 'phone') == null) custom.phone = String(contact.phone);
   const firstName = resolveFirstName(contact);
   const lastName = String(contact.lastName || '').trim();
   const fullName = [firstName, lastName].filter(Boolean).join(' ') || contact.email;
@@ -175,6 +187,8 @@ export function personalize(
     }
     const compact = String(key).replace(/\s+/g, '');
     if (Object.prototype.hasOwnProperty.call(known, compact)) return known[compact] ?? full;
+    const fromLead = lookupCustom(custom, key);
+    if (fromLead != null) return fromLead;
     return full;
   });
 
@@ -201,7 +215,8 @@ export function personalize(
 
   return out.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key: string) => {
     if (DEFERRED_TAGS.has(String(key).toLowerCase())) return match;
-    return custom[key] ?? '';
+    const fromLead = lookupCustom(custom, key);
+    return fromLead ?? '';
   });
 }
 

@@ -37,7 +37,7 @@ import { CampaignImportRecipientsModal } from '@/components/campaigns/CampaignIm
 import { CampaignLetterImportModal } from '@/components/campaigns/CampaignLetterImportModal';
 import { isMailerTenant } from '@/lib/roles';
 import { isUnauthorizedError } from '@/lib/startup-auth';
-import type { CampaignAttachment } from '@/lib/letter-placeholders';
+import type { CampaignAttachment, PreviewContact } from '@/lib/letter-placeholders';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { confirmDialog, promptDialog } from '@/stores/confirm';
@@ -617,9 +617,8 @@ export function CampaignEditorPage() {
   const [placeholderMap, setPlaceholderMap] = useState<Record<string, string>>({});
   const [spinPools, setSpinPools] = useState<Record<string, string[]>>({});
   const [attachments, setAttachments] = useState<CampaignAttachment[]>([]);
-  const [previewContacts, setPreviewContacts] = useState<
-    Array<{ email: string; firstName?: string | null; lastName?: string | null }>
-  >([]);
+  const [previewContacts, setPreviewContacts] = useState<PreviewContact[]>([]);
+  const previewSaveTimer = useRef<number | null>(null);
   const [listCheck, setListCheck] = useState<{
     total: number;
     sendable: number;
@@ -787,12 +786,75 @@ export function CampaignEditorPage() {
       return;
     }
     api
-      .get<{ contacts: Array<{ email: string; firstName?: string | null; lastName?: string | null }> }>(
-        `/api/contacts?listId=${encodeURIComponent(campaign.listId)}&limit=40`,
+      .get<{ contacts: PreviewContact[] }>(
+        `/api/contacts?listId=${encodeURIComponent(campaign.listId)}&limit=80`,
       )
       .then((d) => setPreviewContacts(Array.isArray(d.contacts) ? d.contacts : []))
       .catch(() => setPreviewContacts([]));
   }, [campaign.listId]);
+
+  function updatePreviewContact(next: PreviewContact) {
+    setPreviewContacts((list) =>
+      list.map((row) => ((row.id && row.id === next.id) || row.email === next.email ? { ...row, ...next } : row)),
+    );
+    if (!next.id) return;
+    if (previewSaveTimer.current) window.clearTimeout(previewSaveTimer.current);
+    previewSaveTimer.current = window.setTimeout(() => {
+      void api
+        .patch(`/api/contacts/${next.id}`, {
+          firstName: next.firstName || '',
+          lastName: next.lastName || '',
+          customData: next.customData || {},
+        })
+        .catch((err) => {
+          flash(err instanceof Error ? err.message : 'Could not save this person', 'error');
+        });
+    }, 450);
+  }
+
+  async function sendMailboxProof(input: { to: string; html: string }) {
+    const to = input.to.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      flash('Enter the inbox that should receive this copy', 'warning');
+      return;
+    }
+    const subjectLine = campaign.subject?.trim() || parsePool(subjectPoolText)[0] || '';
+    if (!subjectLine) {
+      flash('Add a subject on Setup before sending this copy', 'warning');
+      setMailerTab('setup');
+      return;
+    }
+    if (!input.html.trim()) {
+      flash('The letter is empty', 'warning');
+      return;
+    }
+    try {
+      let campaignId = id && !isNew ? id : null;
+      if (!campaignSendLive(campaign.status, sendPhase)) {
+        const saved = await save(false, { silent: true });
+        if (saved) campaignId = saved;
+      }
+      if (!campaignId) {
+        flash('Save the campaign first', 'warning');
+        return;
+      }
+      const result = await campaignSendService.proof(campaignId, {
+        to,
+        subject: subjectLine,
+        html: input.html,
+        providerId: pickedSmtpIds[0] || campaign.providerId || undefined,
+        attachments: attachments.map((file) => ({
+          filename: file.filename,
+          contentType: file.contentType,
+          contentBase64: file.contentBase64,
+        })),
+      });
+      setTestMatrixTo(to);
+      toast.success('Test copy sent', `Check ${result.fromEmail ? `${result.fromEmail} → ` : ''}${to}`);
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Test copy failed', 'error');
+    }
+  }
 
   const listMemberCount = useMemo(
     () => lists.find((l) => l.id === campaign.listId)?._count?.members ?? 0,
@@ -3316,9 +3378,17 @@ export function CampaignEditorPage() {
                   onImportClick={() => setLetterModalOpen(true)}
                   placeholderMap={placeholderMap}
                   spinPools={spinPools}
+                  attachments={attachments}
+                  onAttachments={setAttachments}
                   previewContacts={previewContacts}
+                  onPreviewContactChange={updatePreviewContact}
                   senderName={campaign.senderName}
+                  senderEmail={campaign.senderEmail}
+                  subject={campaign.subject || parsePool(subjectPoolText)[0] || ''}
                   physicalAddress={physicalAddress}
+                  proofAddress={testMatrixTo}
+                  onProofAddress={setTestMatrixTo}
+                  onSendCopy={sendMailboxProof}
                 />
             </div>
           ),

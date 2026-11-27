@@ -265,18 +265,43 @@ export function fillMustache(
   });
 }
 
+export type PreviewContact = {
+  id?: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
+  customData?: Record<string, unknown> | null;
+};
+
+export function customDataRecord(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const name = key.trim();
+    if (!name || value == null) continue;
+    out[name] = String(value);
+  }
+  return out;
+}
+
 export function previewMergeVars(input: {
   email: string;
   firstName?: string | null;
   lastName?: string | null;
+  phone?: string | null;
   senderName?: string | null;
   physicalAddress?: string | null;
   unsubscribeUrl?: string;
+  customData?: unknown;
 }): Record<string, string> {
   const firstName = String(input.firstName || '').trim() || guessFirst(input.email);
   const lastName = String(input.lastName || '').trim();
   const name = [firstName, lastName].filter(Boolean).join(' ') || input.email;
+  const custom = customDataRecord(input.customData);
+  if (input.phone && !custom.phone) custom.phone = String(input.phone).trim();
   return {
+    ...custom,
     firstName,
     lastName,
     name,
@@ -338,3 +363,20 @@ export type CampaignAttachment = {
 
 export const ATTACH_MAX_FILES = 3;
 export const ATTACH_MAX_BYTES = 1_500_000;
+
+/** Real mailbox attachment. The letter body stays editable. */
+export async function fileToAttachment(file: File): Promise<CampaignAttachment> {
+  const buf = await file.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return {
+    filename: file.name,
+    contentType: file.type || 'application/octet-stream',
+    contentBase64: btoa(binary),
+    size: file.size,
+  };
+}

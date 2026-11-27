@@ -37,6 +37,24 @@ describe('personalize firstName fallback', () => {
   });
 });
 
+describe('personalize any lead tag', () => {
+  it('fills {{company}} and {{city}} from the lead columns', () => {
+    expect(
+      personalize('Hello {{firstName}} at {{company}} in {{city}}', {
+        firstName: 'Ada',
+        email: 'ada@x.com',
+        customData: { company: 'Acme', city: 'Lagos' },
+      }),
+    ).toBe('Hello Ada at Acme in Lagos');
+  });
+
+  it('fills {{phone}} from the contact phone', () => {
+    expect(
+      personalize('Call {{phone}}', { email: 'ada@x.com', phone: '555-0100' }),
+    ).toBe('Call 555-0100');
+  });
+});
+
 describe('personalize sender_name', () => {
   it('fills {{sender_name}} and {{senderName}} from vars', () => {
     const contact = { firstName: null, email: 'a@b.com' };
