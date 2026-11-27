@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: InboxFlow-Setup-1.2.37
+          name: InboxFlow-Setup-1.2.38
           path: |
             apps/desktop/release/InboxFlow-Setup-*.exe
             apps/desktop/release/InboxFlow-Setup-*.zip
@@ -67,8 +67,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-1.2.37
-          name: Inbox Flow desktop 1.2.37
+          tag_name: desktop-1.2.38
+          name: Inbox Flow desktop 1.2.38
           body: |
             Windows installer built and smoke-tested on GitHub `windows-latest`.
             Local hybrid mailer (SQLite + bundled API). Auth/license against Lightsail.
@@ -84,13 +84,14 @@ jobs:
             The screen turning off does not pause a send. The desktop keeps the sign-in and refreshes it itself. A failed signing call is retried and the list stays Sending.
             One rejected address is marked failed. The campaign does not pause itself. Only the Pause button stops it. Resume stays on Sending.
             Opens and clicks show on the campaign log while the send is still running, the same numbers as the campaign list.
+            The minute cap waits once for the time left in that minute. It does not restart a 5 second countdown before the next email.
             Installing over an older EXE keeps `%APPDATA%\Inbox Flow`.
             Created users must Bind PC in the browser on the admin bind URL first.
             Unbound EXE shows only: PC not bound yet. Never opens novasreach.xyz.
             Zip includes `config.json` next to InboxFlow.exe (`username` + `license_key`).
           files: |
-            apps/desktop/release/InboxFlow-Setup-1.2.37.exe
-            apps/desktop/release/InboxFlow-Setup-1.2.37.zip
+            apps/desktop/release/InboxFlow-Setup-1.2.38.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.38.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

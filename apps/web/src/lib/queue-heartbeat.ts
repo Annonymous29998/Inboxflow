@@ -52,7 +52,7 @@ export function formatQueueHeartbeat(opts: {
   if (queueStage === 'rate_limit_pause') {
     const secs = pauseSecondsRemaining(pauseUntil, now);
     return secs > 0
-      ? `Minute cap — waiting ${secs}s before the next email`
+      ? `Minute cap — next email in ${secs}s`
       : 'Minute cap — checking the last minute…';
   }
 

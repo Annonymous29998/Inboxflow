@@ -31,6 +31,13 @@ import {
   isSmtpAccountBlockError,
 } from './smtp-throttle.js';
 import { maybeFinalizeCampaignSend } from './campaign-finalize.js';
+import {
+  msUntilMinuteSlot,
+  releaseMinuteSlot,
+  reserveMinuteSlot,
+  reservedMinuteTimes,
+  withCampaignMinuteLock,
+} from './minute-slot.js';
 import { writeSystemLog } from '../system-log.js';
 import { usesInProcessSend } from '../../config/db-kind.js';
 
@@ -557,31 +564,44 @@ export async function processEmailJob(data: EmailJobData) {
 
   if (!(await stillSending())) return;
 
-  const minuteAgo = new Date(Date.now() - 60_000);
-  let sentLastMinute = await prisma.campaignRecipient.count({
-    where: { ...deliveredRecipientFilter(campaignId), sentAt: { gte: minuteAgo } },
+  const minuteHold = await withCampaignMinuteLock(campaignId, async () => {
+    for (;;) {
+      if (!(await stillSending())) return null;
+      const now = Date.now();
+      const reserved = reservedMinuteTimes(campaignId, now);
+      const recent = await prisma.campaignRecipient.findMany({
+        where: {
+          ...deliveredRecipientFilter(campaignId),
+          sentAt: { gte: new Date(now - 60_000) },
+        },
+        select: { sentAt: true },
+      });
+      const sentAt = recent.flatMap((row) => (row.sentAt ? [row.sentAt.getTime()] : []));
+      const waitFor = msUntilMinuteSlot(sentAt, reserved, maxPerMinute, now);
+      if (waitFor <= 0) return reserveMinuteSlot(campaignId, now);
+      await pushQueueStage({
+        stage: 'rate_limit_pause',
+        maxPerMinute,
+        sentLastMinute: sentAt.length,
+        pauseUntil: new Date(now + waitFor).toISOString(),
+      });
+      if (!(await waitMs(waitFor))) return null;
+    }
   });
-  while (sentLastMinute >= maxPerMinute) {
-    await pushQueueStage({
-      stage: 'rate_limit_pause',
-      maxPerMinute,
-      sentLastMinute,
-      pauseUntil: new Date(Date.now() + 5_000).toISOString(),
-    });
-    if (!(await waitMs(5_000))) return;
-    const windowStart = new Date(Date.now() - 60_000);
-    sentLastMinute = await prisma.campaignRecipient.count({
-      where: { ...deliveredRecipientFilter(campaignId), sentAt: { gte: windowStart } },
-    });
-  }
+  if (!minuteHold) return;
 
-  const result = await sendCampaignEmailToRecipient({
-    campaignId,
-    recipientId,
-    contactId,
-    to,
-    providerId,
-  });
+  let result: Awaited<ReturnType<typeof sendCampaignEmailToRecipient>>;
+  try {
+    result = await sendCampaignEmailToRecipient({
+      campaignId,
+      recipientId,
+      contactId,
+      to,
+      providerId,
+    });
+  } finally {
+    releaseMinuteSlot(campaignId, minuteHold);
+  }
 
   if (result.paused) {
     await pushQueueStage({
@@ -646,6 +666,12 @@ export async function processEmailJob(data: EmailJobData) {
       const total = Math.max(job.total || 0, campaign.totalRecipients || 0, processed);
       const done = pendingCount === 0 && processed >= total && total > 0;
       const prev = (job.meta && typeof job.meta === 'object' ? job.meta : {}) as Record<string, unknown>;
+      const pauseEnds = typeof prev.pauseUntil === 'string' ? Date.parse(prev.pauseUntil) : NaN;
+      const keepPause =
+        !done &&
+        (prev.stage === 'rate_limit_pause' || prev.stage === 'batch_pause' || prev.stage === 'throttle_pause') &&
+        Number.isFinite(pauseEnds) &&
+        pauseEnds > Date.now();
       await upsertJobProgress({
         id: job.id,
         type: 'CAMPAIGN_SEND',
@@ -657,8 +683,8 @@ export async function processEmailJob(data: EmailJobData) {
         finishedAt: done ? new Date() : null,
         meta: {
           ...prev,
-          stage: done ? 'finalized' : 'sending',
-          pauseUntil: null,
+          stage: done ? 'finalized' : keepPause ? prev.stage : 'sending',
+          pauseUntil: done || !keepPause ? null : prev.pauseUntil,
           betweenEmailMs,
           batchSize,
           sent: sentCount,
