@@ -1261,16 +1261,17 @@ body {
   outline: none;
 }
 .mailer-root .mailer-engage {
-  max-height: 220px;
+  max-height: 132px;
+  flex: 0 0 auto;
   overflow: auto;
   margin: 0 12px 8px;
   border: 1px solid var(--mailer-stroke);
 }
 .mailer-root .email-log {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 240px;
   overflow: auto;
-  margin: 0 12px 12px;
+  margin: 0 12px 8px;
   border: 1px solid var(--mailer-stroke);
 }
 .mailer-root .email-log th {

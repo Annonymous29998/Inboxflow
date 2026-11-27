@@ -3493,6 +3493,7 @@ export function CampaignEditorPage() {
                 </label>
                 <span className="count">0 = no wait · next email picks this up</span>
               </div>
+              <SendConsole rows={consoleRows} stickToEnd={logOldestFirst} />
               <div className="mailer-toolbar">
                 <span className="count" style={{ marginLeft: 0 }}>
                   {sentCount} sent · {openedCount} opened · {clickedCount} clicked · {failedCount} failed
@@ -3526,7 +3527,6 @@ export function CampaignEditorPage() {
                   </tbody>
                 </table>
               </div>
-              <SendConsole rows={consoleRows} stickToEnd={logOldestFirst} />
             </div>
           ),
           results: (
