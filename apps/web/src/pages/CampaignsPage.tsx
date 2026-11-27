@@ -23,6 +23,8 @@ import { cn } from '@/lib/utils';
 import type { SendFlowPhase } from '@/components/campaigns/SendProgressModal';
 import { CampaignAudiencePane } from '@/components/campaigns/CampaignAudiencePane';
 import { CampaignResultsPane } from '@/components/campaigns/CampaignResultsPane';
+import { AttachmentsPane } from '@/components/campaigns/AttachmentsPane';
+import { SendConsole } from '@/components/campaigns/SendConsole';
 import { LetterPane } from '@/components/campaigns/LetterPane';
 import { PlaceholderPane } from '@/components/campaigns/LetterMergePanel';
 import { MailerFold, MailerWorkspace, type MailerTab } from '@/components/campaigns/MailerWorkspace';
@@ -37,7 +39,7 @@ import { CampaignImportRecipientsModal } from '@/components/campaigns/CampaignIm
 import { CampaignLetterImportModal } from '@/components/campaigns/CampaignLetterImportModal';
 import { isMailerTenant } from '@/lib/roles';
 import { isUnauthorizedError } from '@/lib/startup-auth';
-import type { CampaignAttachment, PreviewContact } from '@/lib/letter-placeholders';
+import { activeAttachments, type CampaignAttachment, type PreviewContact } from '@/lib/letter-placeholders';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { confirmDialog, promptDialog } from '@/stores/confirm';
@@ -676,7 +678,8 @@ export function CampaignEditorPage() {
   const [fromNamePoolText, setFromNamePoolText] = useDraft<string>(`${draftKey}:fromNamePoolText`, '');
   const [testMatrixTo, setTestMatrixTo] = useDraft<string>(`${draftKey}:testMatrixTo`, '');
   const [logFilter, setLogFilter] = useState('');
-  const [logOldestFirst, setLogOldestFirst] = useState(false);
+  const [logOldestFirst, setLogOldestFirst] = useState(true);
+  const [logClearedAt, setLogClearedAt] = useState('');
   const [smtpOpenId, setSmtpOpenId] = useState<string>('');
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
   const [recipientsModalOpen, setRecipientsModalOpen] = useState(false);
@@ -688,6 +691,7 @@ export function CampaignEditorPage() {
     rawTab === 'recipients' ||
     rawTab === 'placeholder' ||
     rawTab === 'letter' ||
+    rawTab === 'attachments' ||
     rawTab === 'logs' ||
     rawTab === 'results'
       ? rawTab
@@ -717,8 +721,6 @@ export function CampaignEditorPage() {
   const previewTemplateIndexRef = useRef(0);
   const templateStepLockRef = useRef(false);
   const loadedTemplateIdRef = useRef<string | null>(null);
-  const letterHoverTimerRef = useRef<number | null>(null);
-  const letterHoverTargetRef = useRef<string | null>(null);
   const letterPreviewSeqRef = useRef(0);
   const [viewingLetterId, setViewingLetterId] = useState<string | null>(null);
   const templateBodiesRef = useRef<
@@ -764,6 +766,10 @@ export function CampaignEditorPage() {
 
   const html = useMemo(() => {
     if (!blocks.length) return campaign.htmlContent || '';
+    if (blocks.length === 1 && blocks[0].type === 'html') {
+      const raw = blocks[0].content;
+      if (!letterLooksEmpty(raw) || !campaign.htmlContent || letterLooksEmpty(campaign.htmlContent)) return raw;
+    }
     const out = blocksToHtml(blocks, false);
     if (letterLooksEmpty(out) && campaign.htmlContent && !letterLooksEmpty(campaign.htmlContent)) {
       return campaign.htmlContent;
@@ -843,7 +849,7 @@ export function CampaignEditorPage() {
         subject: subjectLine,
         html: input.html,
         providerId: pickedSmtpIds[0] || campaign.providerId || undefined,
-        attachments: attachments.map((file) => ({
+        attachments: activeAttachments(attachments).map((file) => ({
           filename: file.filename,
           contentType: file.contentType,
           contentBase64: file.contentBase64,
@@ -1144,13 +1150,14 @@ export function CampaignEditorPage() {
     plain = '',
     overwrite = true,
     placeholderMapFromTemplate?: Record<string, string>,
+    allowEmpty = false,
   ) {
     const tid = String(templateId || '').trim();
     const body = String(html || '').trim();
-    if (!tid || !body) return;
+    if (!tid || (!body && !allowEmpty)) return;
     const prev = templateBodiesRef.current[tid];
     if (!overwrite && prev?.html) return;
-    if (letterLooksEmpty(body) && prev?.html && !letterLooksEmpty(prev.html)) return;
+    if (!allowEmpty && letterLooksEmpty(body) && prev?.html && !letterLooksEmpty(prev.html)) return;
     templateBodiesRef.current[tid] = {
       html: body,
       plain: String(plain || ''),
@@ -1161,7 +1168,7 @@ export function CampaignEditorPage() {
   async function fetchTemplateBody(templateId: string, force = false) {
     const tid = String(templateId || '').trim();
     if (!tid) return null;
-    if (!force && templateBodiesRef.current[tid]?.html) return templateBodiesRef.current[tid];
+    if (!force && templateBodiesRef.current[tid]) return templateBodiesRef.current[tid];
     const template = await templateService.get(tid);
     const raw = template.htmlContent?.trim() || '';
     if (!raw) return templateBodiesRef.current[tid] || null;
@@ -1205,11 +1212,11 @@ export function CampaignEditorPage() {
     opts?: { patchCampaign?: boolean; templatePool?: string[]; forceFetch?: boolean },
   ) {
     const body = await fetchTemplateBody(templateId, Boolean(opts?.forceFetch));
-    const rawHtml = body?.html?.trim() || '';
-    if (!rawHtml) {
+    if (!body) {
       flash('That template has no HTML content', 'error');
       return false;
     }
+    const rawHtml = body.html || '';
 
     const nextHtml = rawHtml;
     const plain = body?.plain || '';
@@ -1514,25 +1521,6 @@ export function CampaignEditorPage() {
     }
   }
 
-  function hoverLetter(templateId: string) {
-    if (!templateId) return;
-    letterHoverTargetRef.current = templateId;
-    void fetchTemplateBody(templateId, false);
-    if (loadedTemplateIdRef.current === templateId) return;
-    if (letterHoverTimerRef.current) window.clearTimeout(letterHoverTimerRef.current);
-    letterHoverTimerRef.current = window.setTimeout(() => {
-      letterHoverTimerRef.current = null;
-      const want = letterHoverTargetRef.current;
-      if (!want || want !== templateId) return;
-      if (loadedTemplateIdRef.current === want) return;
-      void (async () => {
-        await fetchTemplateBody(want, false);
-        if (letterHoverTargetRef.current !== want) return;
-        await previewLetter(want, { persist: false, forceFetch: false });
-      })();
-    }, 80);
-  }
-
   useEffect(() => {
     if (!templateMenuOpen) return;
     function onDoc(e: MouseEvent) {
@@ -1767,9 +1755,10 @@ export function CampaignEditorPage() {
     campaign.status,
   ]);
 
-  function applyLetterHtml(nextHtml: string) {
+  function applyLetterHtml(nextHtml: string, opts?: { allowEmpty?: boolean }) {
     const clean = nextHtml;
-    if (letterLooksEmpty(clean) && !letterLooksEmpty(html)) return;
+    const allowEmpty = Boolean(opts?.allowEmpty);
+    if (!allowEmpty && letterLooksEmpty(clean) && !letterLooksEmpty(html)) return;
     const htmlBlock = blocks.find((b) => b.type === 'html');
     if (htmlBlock && (blocks.length === 1 || isFullHtmlDocument(htmlBlock.content))) {
       setBlocks((bs) => bs.map((b) => (b.id === htmlBlock.id ? { ...b, content: clean } : b)));
@@ -1778,7 +1767,7 @@ export function CampaignEditorPage() {
     }
     setCampaign((c) => ({ ...c, htmlContent: clean }));
     const tid = loadedTemplateIdRef.current || viewingLetterId;
-    if (tid) rememberTemplateBody(tid, clean, campaign.plainTextContent || '', true, placeholderMap);
+    if (tid) rememberTemplateBody(tid, clean, campaign.plainTextContent || '', true, placeholderMap, allowEmpty);
   }
 
   async function importLetterFile(file: File, letterName?: string) {
@@ -2731,15 +2720,31 @@ export function CampaignEditorPage() {
       flash(err instanceof Error ? err.message : 'Could not save SMTP path', 'error');
     }
   }
+  const consoleSubject = campaign.subject?.trim() || parsePool(subjectPoolText)[0] || '';
   const filteredLogs = (() => {
     const q = logFilter.trim().toLowerCase();
-    const rows = sendActivity.filter((row) => {
-      if (!q) return true;
-      const detail = recipientLogDetail(row.status, row.error);
-      return `${row.email} ${row.status} ${detail || ''}`.toLowerCase().includes(q);
-    });
-    return logOldestFirst ? [...rows].reverse() : rows;
+    const rows = sendActivity
+      .filter((row) => {
+        if (row.status === 'OPENED' || row.status === 'CLICKED') return false;
+        if (logClearedAt && row.at <= logClearedAt) return false;
+        if (!q) return true;
+        const detail = recipientLogDetail(row.status, row.error);
+        return `${row.email} ${row.status} ${detail || ''} ${campaign.senderEmail} ${consoleSubject}`
+          .toLowerCase()
+          .includes(q);
+      })
+      .slice()
+      .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    return logOldestFirst ? rows : [...rows].reverse();
   })();
+  const consoleRows = filteredLogs.map((row, index) => ({
+    n: logOldestFirst ? index + 1 : filteredLogs.length - index,
+    from: campaign.senderEmail || '',
+    to: row.email,
+    subject: consoleSubject,
+    status: row.status,
+    detail: recipientLogDetail(row.status, row.error) || '',
+  }));
   const filteredEngagement = (() => {
     const q = logFilter.trim().toLowerCase();
     if (!q) return engagementList;
@@ -3328,6 +3333,7 @@ export function CampaignEditorPage() {
               onAttachments={setAttachments}
             />
           ),
+          attachments: <AttachmentsPane attachments={attachments} onAttachments={setAttachments} />,
           letter: (
             <div className="letter-wrap">
               <aside className="pick-list">
@@ -3343,16 +3349,15 @@ export function CampaignEditorPage() {
                 </button>
                 {templates.map((t) => {
                   const ticked = templatePoolIds.includes(t.id);
-                  const viewing = (viewingLetterId || campaign.templateId || activeTemplateId) === t.id;
                   return (
                     <button
                       key={t.id}
                       type="button"
-                      className={cn('pick', viewing && 'on')}
-                      title="Hover to open in editor and Placeholder · click to pin as campaign letter"
-                      onPointerEnter={() => hoverLetter(t.id)}
-                      onFocus={() => hoverLetter(t.id)}
-                      onClick={() => void selectLetter(t.id)}
+                      className={cn('pick', ticked && 'on')}
+                      title="Tick to use this letter"
+                      onClick={() => {
+                        if (ticked) void selectLetter(t.id);
+                      }}
                     >
                       <input
                         type="checkbox"
@@ -3424,6 +3429,9 @@ export function CampaignEditorPage() {
                 }}>Download</Button>
                 <Button type="button" size="sm" variant="outline" onClick={() => setLogOldestFirst((v) => !v)}>
                   {logOldestFirst ? 'Newest' : 'Oldest'}
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => setLogClearedAt(new Date().toISOString())}>
+                  Clear
                 </Button>
                 <span className="count">
                   {filteredLogs.length} lines
@@ -3518,24 +3526,7 @@ export function CampaignEditorPage() {
                   </tbody>
                 </table>
               </div>
-              <div className="mailer-logs">
-                {filteredLogs.length ? filteredLogs.map((row, i) => {
-                  const detail = recipientLogDetail(row.status, row.error);
-                  return (
-                  <div
-                    key={`${row.email}-${row.at}-${i}`}
-                    className={cn(
-                      row.status === 'FAILED' || row.status === 'BOUNCED' ? 'mailer-err' : row.status === 'QUEUED' ? 'mailer-warn' : 'mailer-ok',
-                    )}
-                  >
-                    [{row.at ? new Date(row.at).toLocaleTimeString() : '--'}] {row.status} {row.email}
-                    {detail ? ` — ${detail}` : ''}
-                  </div>
-                  );
-                }) : (
-                  <p className="mailer-hint">No lines yet. Placement test and SEND write this campaign’s log here.</p>
-                )}
-              </div>
+              <SendConsole rows={consoleRows} stickToEnd={logOldestFirst} />
             </div>
           ),
           results: (

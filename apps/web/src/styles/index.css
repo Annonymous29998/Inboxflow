@@ -644,10 +644,6 @@ body {
   font: inherit;
   cursor: pointer;
 }
-.mailer-root .pick:hover {
-  background: #0e160e;
-  border-color: var(--color-accent);
-}
 .mailer-root .pick.on {
   background: #123312;
 }
@@ -928,6 +924,60 @@ body {
 }
 .mailer-root .lead-cell {
   min-width: 7rem;
+}
+.mailer-root .attach-pane {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.mailer-root .attach-drop {
+  border: 1px dashed var(--mailer-stroke);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 18px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.mailer-root .attach-drop.over {
+  background: #123312;
+}
+.mailer-root .attach-drop span {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--mailer-dim);
+}
+.mailer-root .attach-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mailer-root .attach-table th,
+.mailer-root .attach-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mailer-stroke);
+  vertical-align: middle;
+}
+.mailer-root .attach-table th {
+  font-size: 11px;
+  color: var(--mailer-dim);
+  font-weight: 500;
+}
+.mailer-root .attach-table .meta {
+  color: var(--mailer-dim);
+  font-size: 11px;
+}
+.mailer-root .attach-table button {
+  border: 1px solid var(--mailer-stroke);
+  background: transparent;
+  color: inherit;
+  padding: 2px 8px;
+  font: inherit;
+  cursor: pointer;
 }
 .mailer-root .letter-attach {
   display: flex;
@@ -1215,6 +1265,43 @@ body {
   overflow: auto;
   margin: 0 12px 8px;
   border: 1px solid var(--mailer-stroke);
+}
+.mailer-root .email-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 12px 12px;
+  border: 1px solid var(--mailer-stroke);
+}
+.mailer-root .email-log th {
+  position: sticky;
+  top: 0;
+  background: #0c140c;
+  z-index: 1;
+}
+.mailer-root .email-log .type-pill {
+  display: inline-block;
+  border: 1px solid var(--mailer-stroke);
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.mailer-root .email-log .st-sent {
+  color: var(--mailer-send);
+  font-weight: 600;
+}
+.mailer-root .email-log .st-fail {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+.mailer-root .email-log .st-wait {
+  color: #e8b84a;
+  font-weight: 600;
+}
+.mailer-root .email-log .meta {
+  color: var(--mailer-dim);
+  font-weight: 400;
+  font-size: 11px;
 }
 .mailer-root .mailer-logs {
   flex: 1;

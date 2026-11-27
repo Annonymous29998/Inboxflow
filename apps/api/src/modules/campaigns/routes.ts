@@ -12,6 +12,7 @@ import {
   resetCampaignForResend,
 } from '../../services/email/queue.js';
 import { sendCampaignEmailToRecipient, sendPlacementMessage } from '../../services/email/campaign-send.js';
+import { buildMailboxAttachments } from '../../services/email/mailbox-attachments.js';
 import { analyzeCampaign } from '../deliverability/analyzer.js';
 import { scrubCampaignContent, findRemainingSpamPhrases, hardenOutboundMime, stripHtmlTags } from '../deliverability/spam-scrubber.js';
 import { ensureCampaignSendJob, upsertJobProgress } from '../jobs/progress.js';
@@ -2061,10 +2062,10 @@ export async function campaignRoutes(app: FastifyInstance) {
               z.object({
                 filename: z.string().min(1).max(180),
                 contentType: z.string().max(120).optional(),
-                contentBase64: z.string().min(1).max(2_100_000),
+                contentBase64: z.string().min(1).max(14_000_000),
               }),
             )
-            .max(3)
+            .max(10)
             .optional(),
         })
         .parse(request.body);
@@ -2083,12 +2084,7 @@ export async function campaignRoutes(app: FastifyInstance) {
         text: stripHtmlTags(body.html),
         fromName: campaign.senderName || undefined,
         preferredProviderId: body.providerId,
-        attachments: (body.attachments || []).map((file) => ({
-          filename: file.filename,
-          contentType: file.contentType || 'application/octet-stream',
-          content: file.contentBase64,
-          encoding: 'base64',
-        })),
+        attachments: buildMailboxAttachments(body.attachments),
       });
 
       await writeSystemLog({

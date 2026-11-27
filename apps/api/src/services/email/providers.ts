@@ -50,7 +50,13 @@ export interface SendEmailPayload {
   };
   /** Org domains with SPF+DKIM+DMARC verified — any local-part @ these may be From. */
   authorizedFromDomains?: string[];
-  attachments?: Array<{ filename: string; contentType?: string; content: Buffer | string; encoding?: string }>;
+  attachments?: Array<{
+    filename: string;
+    contentType?: string;
+    content: Buffer | string;
+    encoding?: string;
+    contentDisposition?: 'attachment' | 'inline';
+  }>;
 }
 
 export interface SendResult {

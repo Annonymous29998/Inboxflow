@@ -17,8 +17,8 @@ export async function buildApp() {
   const app = Fastify({
     logger: env.NODE_ENV === 'development',
     trustProxy: true,
-    // HTML email templates + editorJson can exceed Fastify's default 1MB limit
-    bodyLimit: 15 * 1024 * 1024,
+    // A letter plus its attachments is stored in editorJson. Ten files, 25 MB of bytes, become about 34 MB of base64.
+    bodyLimit: 40 * 1024 * 1024,
   });
 
   // /health registered BEFORE any middleware or heavy imports.

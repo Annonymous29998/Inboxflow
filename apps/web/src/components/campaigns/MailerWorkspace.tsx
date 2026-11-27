@@ -32,6 +32,7 @@ export const MAILER_WIZARD = [
   { id: 'recipients', label: 'Recipients' },
   { id: 'placeholder', label: 'Placeholder' },
   { id: 'letter', label: 'Letter' },
+  { id: 'attachments', label: 'Attachments' },
 ] as const;
 
 export const MAILER_EXTRA = [

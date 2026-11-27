@@ -26,6 +26,7 @@ import {
 import { isSmtpThrottleError, throttleRetryMs } from './smtp-throttle.js';
 import { orgAllowsDirectSmtp } from './smtp-outbound.js';
 import { guardRecipientAddress } from './recipient-guard.js';
+import { buildMailboxAttachments } from './mailbox-attachments.js';
 
 let lastSigningRetryLogAt = 0;
 
@@ -502,7 +503,7 @@ export async function sendCampaignEmailToRecipient(input: {
       ? (campaign.editorJson as {
           placeholderMap?: Record<string, string>;
           spinPools?: Record<string, string[]>;
-          attachments?: Array<{ filename?: string; contentType?: string; contentBase64?: string }>;
+          attachments?: Array<{ filename?: string; contentType?: string; contentBase64?: string; enabled?: boolean }>;
         })
       : {};
   const mergeVars = {
@@ -627,15 +628,7 @@ export async function sendCampaignEmailToRecipient(input: {
     'X-IF-Contact-Id': contactId,
     'X-Mailin-custom': JSON.stringify({ campaignId, recipientId, contactId }),
   };
-  const attachments = (editor.attachments || [])
-    .filter((a) => a?.filename && a.contentBase64)
-    .slice(0, 3)
-    .map((a) => ({
-      filename: String(a.filename),
-      contentType: a.contentType || 'application/octet-stream',
-      content: String(a.contentBase64),
-      encoding: 'base64',
-    }));
+  const attachments = buildMailboxAttachments(editor.attachments);
 
   const live = await deliverLiveMessage({
     campaign,

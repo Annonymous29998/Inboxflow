@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Button, Input, Select, Textarea } from '@/components/ui';
 import {
-  ATTACH_MAX_BYTES,
-  ATTACH_MAX_FILES,
+  appendAttachments,
   CANONICAL_FIELDS,
   detectPlaceholders,
   removePlaceholderToken,
@@ -202,25 +201,9 @@ export function PlaceholderPane({
 
   async function addFiles(files: FileList | null) {
     if (!files?.length) return;
-    const next = [...attachments];
-    for (const file of Array.from(files)) {
-      if (next.length >= ATTACH_MAX_FILES) break;
-      if (file.size > ATTACH_MAX_BYTES) continue;
-      const buf = await file.arrayBuffer();
-      let binary = '';
-      const bytes = new Uint8Array(buf);
-      const chunk = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-      }
-      next.push({
-        filename: file.name,
-        contentType: file.type || 'application/octet-stream',
-        contentBase64: btoa(binary),
-        size: file.size,
-      });
-    }
+    const { next, notes } = await appendAttachments(attachments, Array.from(files));
     onAttachments(next);
+    for (const note of notes) toast.warning(note);
   }
 
   return (

@@ -359,10 +359,63 @@ export type CampaignAttachment = {
   contentType: string;
   contentBase64: string;
   size: number;
+  /** Unticked files stay on the campaign and are left off the send. */
+  enabled?: boolean;
 };
 
-export const ATTACH_MAX_FILES = 3;
-export const ATTACH_MAX_BYTES = 1_500_000;
+export const ATTACH_MAX_FILES = 10;
+export const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+export const ATTACH_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+
+export function formatAttachmentSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function activeAttachments(list: CampaignAttachment[]) {
+  return list.filter((file) => file.enabled !== false && file.filename && file.contentBase64);
+}
+
+const AUDIO_BY_EXT: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  wave: 'audio/wav',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  flac: 'audio/flac',
+  wma: 'audio/x-ms-wma',
+  aif: 'audio/aiff',
+  aiff: 'audio/aiff',
+  opus: 'audio/opus',
+  weba: 'audio/webm',
+  mid: 'audio/midi',
+  midi: 'audio/midi',
+  amr: 'audio/amr',
+  caf: 'audio/x-caf',
+};
+
+/** Keep audio typed as audio when the browser reports a blank type. */
+export function attachmentContentType(filename: string, given?: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  const fromName = AUDIO_BY_EXT[ext];
+  const raw = (given || '').split(';')[0].trim().toLowerCase();
+  if (raw === 'audio/mp3' || raw === 'audio/x-mpeg' || raw === 'audio/mpeg3') return 'audio/mpeg';
+  if (fromName) return fromName;
+  if (raw.startsWith('audio/')) return raw;
+  if (raw && raw !== 'application/octet-stream') return raw;
+  return 'application/octet-stream';
+}
+
+export function attachmentKind(file: { filename: string; contentType: string }) {
+  const type = attachmentContentType(file.filename, file.contentType);
+  if (type.startsWith('audio/')) return 'Audio';
+  if (type.startsWith('image/')) return 'Image';
+  if (type === 'application/pdf') return 'PDF';
+  return type;
+}
 
 /** Real mailbox attachment. The letter body stays editable. */
 export async function fileToAttachment(file: File): Promise<CampaignAttachment> {
@@ -375,8 +428,40 @@ export async function fileToAttachment(file: File): Promise<CampaignAttachment> 
   }
   return {
     filename: file.name,
-    contentType: file.type || 'application/octet-stream',
+    contentType: attachmentContentType(file.name, file.type),
     contentBase64: btoa(binary),
     size: file.size,
+    enabled: true,
   };
+}
+
+/** Add mailbox files. Any type is allowed. Images added here stay downloads, not pictures inside the letter. */
+export async function appendAttachments(current: CampaignAttachment[], files: File[]) {
+  const next = [...current];
+  const notes: string[] = [];
+  for (const file of files) {
+    if (!file.size) {
+      notes.push(`${file.name} is empty`);
+      continue;
+    }
+    if (next.length >= ATTACH_MAX_FILES) {
+      notes.push(`A letter can carry ${ATTACH_MAX_FILES} files`);
+      break;
+    }
+    if (file.size > ATTACH_MAX_BYTES) {
+      notes.push(`${file.name} is over ${formatAttachmentSize(ATTACH_MAX_BYTES)}`);
+      continue;
+    }
+    if (next.some((item) => item.filename === file.name)) {
+      notes.push(`${file.name} is already attached`);
+      continue;
+    }
+    const total = next.reduce((sum, item) => sum + item.size, 0) + file.size;
+    if (total > ATTACH_MAX_TOTAL_BYTES) {
+      notes.push(`Attachments together are over ${formatAttachmentSize(ATTACH_MAX_TOTAL_BYTES)}`);
+      break;
+    }
+    next.push(await fileToAttachment(file));
+  }
+  return { next, notes };
 }

@@ -3,11 +3,10 @@ import { cn } from '@/lib/utils';
 import { PlaceholderPane } from '@/components/campaigns/LetterMergePanel';
 import { MailboxProof } from '@/components/campaigns/MailboxProof';
 import {
-  ATTACH_MAX_BYTES,
-  ATTACH_MAX_FILES,
+  activeAttachments,
+  appendAttachments,
   CANONICAL_FIELDS,
   detectPlaceholders,
-  fileToAttachment,
   previewLetterHtml,
   previewMergeVars,
   suggestCanonical,
@@ -60,7 +59,7 @@ export function LetterPane({
   onSendCopy,
 }: {
   html: string;
-  onHtmlChange: (next: string) => void;
+  onHtmlChange: (next: string, opts?: { allowEmpty?: boolean }) => void;
   onImportFile?: (file: File) => Promise<void> | void;
   onImportClick?: () => void;
   importing?: boolean;
@@ -320,20 +319,10 @@ export function LetterPane({
 
   async function attachMailboxFile(file: File) {
     if (!onAttachments) return false;
-    if (file.size > ATTACH_MAX_BYTES) {
-      toast.warning('File is over 1.5 MB', file.name);
-      return true;
-    }
-    if (attachments.some((item) => item.filename === file.name)) {
-      toast.warning('That file is already attached', file.name);
-      return true;
-    }
-    if (attachments.length >= ATTACH_MAX_FILES) {
-      toast.warning('This letter already has 3 attachments');
-      return true;
-    }
-    const next = await fileToAttachment(file);
-    onAttachments([...attachments, next]);
+    const { next, notes } = await appendAttachments(attachments, [file]);
+    for (const note of notes) toast.warning(note);
+    if (next.length === attachments.length) return true;
+    onAttachments(next);
     toast.success('Attached', `${file.name} shows as a download in the mailbox`);
     return true;
   }
@@ -403,7 +392,7 @@ export function LetterPane({
   }
 
   function applySource() {
-    onHtmlChange(source);
+    onHtmlChange(source, { allowEmpty: true });
     skipReload.current = false;
   }
 
@@ -621,7 +610,7 @@ export function LetterPane({
             ref={fileRef}
             type="file"
             hidden
-            accept="image/*,.pdf,.txt,.html,.htm,.zip,.doc,.docx,.xls,.xlsx,.csv"
+            accept="image/*,audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma,.aiff,.opus,.pdf,.txt,.html,.htm,.zip,.doc,.docx,.xls,.xlsx,.csv"
             onChange={(e) => {
               insertLocalFile(e.target.files?.[0]);
               e.target.value = '';
@@ -671,7 +660,7 @@ export function LetterPane({
           onChange={(e) => {
             const next = e.target.value;
             setSource(next);
-            onHtmlChange(next);
+            onHtmlChange(next, { allowEmpty: true });
           }}
           className="letter-source"
         />
@@ -690,7 +679,7 @@ export function LetterPane({
               subject={subject}
               senderName={senderName}
               senderEmail={senderEmail}
-              attachments={attachments}
+              attachments={activeAttachments(attachments)}
               proofAddress={proofAddress}
               onProofAddress={onProofAddress || (() => undefined)}
               onContactChange={(next) => {
