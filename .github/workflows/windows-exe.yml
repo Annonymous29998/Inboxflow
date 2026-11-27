@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: InboxFlow-Setup-1.2.43
+          name: InboxFlow-Setup-1.2.44
           path: |
             apps/desktop/release/InboxFlow-Setup-*.exe
             apps/desktop/release/InboxFlow-Setup-*.zip
@@ -67,8 +67,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-1.2.43
-          name: Inbox Flow desktop 1.2.43
+          tag_name: desktop-1.2.44
+          name: Inbox Flow desktop 1.2.44
           body: |
             Windows installer built and smoke-tested on GitHub `windows-latest`.
             Local hybrid mailer (SQLite + bundled API). Auth/license against Lightsail.
@@ -90,6 +90,7 @@ jobs:
             The Attachments tab sends any file or audio clip as a mailbox download. Tick a file to include it. Up to 10 files, 10 MB each, 25 MB together. An MP3, WAV, or M4A stays audio when the computer leaves the type blank.
             Logs is an email console: number, SMTP, from, to, subject, and SENT or FAILED. The send rows fill the Logs tab. Opens and clicks stay in a short list under that table.
             Clicking a letter card turns that card green and opens it to edit. The tick only chooses which letters go out.
+            The send log is one line per address, [time] SENT address - sent successfully. Scrolling up stays there. New lines follow only when you are at the bottom.
             A letter is selected with its tick. Clearing the HTML source clears the preview.
             Preview steps through each person, fills their tags, and can send that one copy. A letter with no tags still sends as the imported HTML, including one-per-line spin.
             Installing over an older EXE keeps `%APPDATA%\Inbox Flow`.
@@ -97,8 +98,8 @@ jobs:
             Unbound EXE shows only: PC not bound yet. Never opens novasreach.xyz.
             Zip includes `config.json` next to InboxFlow.exe (`username` + `license_key`).
           files: |
-            apps/desktop/release/InboxFlow-Setup-1.2.43.exe
-            apps/desktop/release/InboxFlow-Setup-1.2.43.zip
+            apps/desktop/release/InboxFlow-Setup-1.2.44.exe
+            apps/desktop/release/InboxFlow-Setup-1.2.44.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

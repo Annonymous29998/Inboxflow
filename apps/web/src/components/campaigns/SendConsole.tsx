@@ -1,72 +1,54 @@
 import { useEffect, useRef } from 'react';
+import { cn } from '@/lib/utils';
 
-export type ConsoleRow = {
-  n: number;
-  from: string;
-  to: string;
-  subject: string;
+export type ConsoleLine = {
+  at: string;
   status: string;
-  detail?: string;
+  email: string;
+  detail: string;
 };
 
-function statusClass(status: string) {
-  if (status === 'FAILED' || status === 'BOUNCED') return 'st-fail';
-  if (status === 'QUEUED') return 'st-wait';
-  return 'st-sent';
+function lineTime(at: string) {
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return '--';
+  return when.toLocaleTimeString();
 }
 
-function statusLabel(status: string) {
-  if (status === 'DELIVERED') return 'SENT';
-  return status;
+function lineClass(status: string) {
+  if (status === 'FAILED' || status === 'BOUNCED') return 'mailer-err';
+  if (status === 'QUEUED') return 'mailer-warn';
+  return 'mailer-ok';
 }
 
-/** Live send console: one row per address, the same columns as a mailer email log. */
-export function SendConsole({ rows, stickToEnd }: { rows: ConsoleRow[]; stickToEnd: boolean }) {
+/** The send log: one green line per address, and the list stays where you scroll. */
+export function SendConsole({ lines }: { lines: ConsoleLine[] }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+
+  function onScroll() {
+    const el = scroller.current;
+    if (!el) return;
+    follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
 
   useEffect(() => {
     const el = scroller.current;
-    if (!el) return;
-    el.scrollTop = stickToEnd ? el.scrollHeight : 0;
-  }, [rows, stickToEnd]);
+    if (!el || !follow.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [lines]);
 
   return (
-    <div className="email-log" ref={scroller}>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Type</th>
-            <th>From</th>
-            <th>To</th>
-            <th>Subject</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length ? (
-            rows.map((row) => (
-              <tr key={`${row.n}-${row.to}-${row.status}`}>
-                <td>{row.n}</td>
-                <td>
-                  <span className="type-pill">SMTP</span>
-                </td>
-                <td>{row.from || '—'}</td>
-                <td>{row.to}</td>
-                <td>{row.subject || '—'}</td>
-                <td className={statusClass(row.status)} title={row.detail || undefined}>
-                  {statusLabel(row.status)}
-                  {row.detail && statusLabel(row.status) !== 'SENT' ? <div className="meta">{row.detail}</div> : null}
-                </td>
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td colSpan={6}>No sends yet. Each address shows here as it goes out.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+    <div className="mailer-logs" ref={scroller} onScroll={onScroll}>
+      {lines.length ? (
+        lines.map((line, index) => (
+          <div key={`${line.at}-${line.email}-${line.status}-${index}`} className={cn(lineClass(line.status))}>
+            [{lineTime(line.at)}] {line.status} {line.email}
+            {line.detail ? ` - ${line.detail}` : ''}
+          </div>
+        ))
+      ) : (
+        <p className="mailer-hint">No lines yet. Each send shows here as it goes out.</p>
+      )}
     </div>
   );
 }

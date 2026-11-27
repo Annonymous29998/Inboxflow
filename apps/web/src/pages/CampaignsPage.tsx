@@ -2721,14 +2721,6 @@ export function CampaignEditorPage() {
       .sort((a, b) => String(a.at).localeCompare(String(b.at)));
     return logOldestFirst ? rows : [...rows].reverse();
   })();
-  const consoleRows = filteredLogs.map((row, index) => ({
-    n: logOldestFirst ? index + 1 : filteredLogs.length - index,
-    from: campaign.senderEmail || '',
-    to: row.email,
-    subject: consoleSubject,
-    status: row.status,
-    detail: recipientLogDetail(row.status, row.error) || '',
-  }));
   const filteredEngagement = (() => {
     const q = logFilter.trim().toLowerCase();
     if (!q) return engagementList;
@@ -3470,7 +3462,14 @@ export function CampaignEditorPage() {
                 </label>
                 <span className="count">0 = no wait · next email picks this up</span>
               </div>
-              <SendConsole rows={consoleRows} stickToEnd={logOldestFirst} />
+              <SendConsole
+                lines={filteredLogs.map((row) => ({
+                  at: row.at,
+                  status: row.status === 'DELIVERED' ? 'SENT' : row.status,
+                  email: row.email,
+                  detail: recipientLogDetail(row.status, row.error) || '',
+                }))}
+              />
               <div className="mailer-toolbar">
                 <span className="count" style={{ marginLeft: 0 }}>
                   {sentCount} sent · {openedCount} opened · {clickedCount} clicked · {failedCount} failed
