@@ -1007,6 +1007,12 @@ body {
   line-height: 1.55;
   outline: none;
 }
+.mailer-root .mailer-engage {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0 12px 8px;
+  border: 1px solid var(--mailer-stroke);
+}
 .mailer-root .mailer-logs {
   flex: 1;
   overflow: auto;

@@ -46,6 +46,15 @@ export type SendStatus = {
   activity?: SendActivity[];
   /** Verified opens/clicks — separate from send log */
   engagementActivity?: SendActivity[];
+  /** Everyone who opened or clicked on this campaign. Same people Results lists. */
+  engagementList?: Array<{
+    email: string;
+    status: string;
+    opened: boolean;
+    clicked: boolean;
+    openedAt?: string | null;
+    clickedAt?: string | null;
+  }>;
   /** Live queue stage: sending | between_emails | batch_pause */
   queueStage?: string;
   pauseUntil?: string | null;

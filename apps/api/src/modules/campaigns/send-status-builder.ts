@@ -135,12 +135,12 @@ export async function buildCampaignSendStatus(
     prisma.campaignRecipient.findMany({
       where: { campaignId, OR: [{ openedAt: { not: null } }, { clickedAt: { not: null } }] },
       select: {
+        status: true,
         openedAt: true,
         clickedAt: true,
         contact: { select: { email: true } },
       },
       orderBy: [{ clickedAt: 'desc' }, { openedAt: 'desc' }],
-      take: 200,
     }),
     prisma.job.findFirst({
       where: {
@@ -188,6 +188,18 @@ export async function buildCampaignSendStatus(
   const recentFailures = logRows.filter((r) => r.status === 'FAILED');
   const recentBounces = logRows.filter((r) => r.status === 'BOUNCED');
 
+  const engagementList = engagedRecipients.map((row) => {
+    const clicked = Boolean(row.clickedAt) || row.status === 'CLICKED';
+    const opened = Boolean(row.openedAt) || clicked;
+    return {
+      email: row.contact.email,
+      status: row.status,
+      opened,
+      clicked,
+      openedAt: row.openedAt?.toISOString() ?? null,
+      clickedAt: row.clickedAt?.toISOString() ?? null,
+    };
+  });
   const liveEngagement: SendActivityRow[] = engagedRecipients.flatMap((row) => {
     const lines: SendActivityRow[] = [];
     if (row.openedAt) {
@@ -300,5 +312,6 @@ export async function buildCampaignSendStatus(
     /** Full send log for this campaign only — SENT / FAILED / BOUNCED / DELIVERED. */
     activity: sendActivity,
     engagementActivity,
+    engagementList,
   };
 }

@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { recipientLogDetail } from '@/lib/smtp-log-label';
-import { campaignSendService, type SendActivity } from '@/services/campaign-send.service';
+import { campaignSendService, type SendActivity, type SendStatus } from '@/services/campaign-send.service';
 import { isGeneratedSenderName, parseFromIdentities, senderListLabel, smtpService } from '@/services/smtp.service';
 import { templateHtmlToBlocks, templateService, type EmailTemplateSummary } from '@/services/template.service';
 import {
@@ -599,6 +599,7 @@ export function CampaignEditorPage() {
   const [recentFailures, setRecentFailures] = useState<Array<{ email: string; error: string }>>([]);
   const [recentSent, setRecentSent] = useState<Array<{ email: string; at?: string | null }>>([]);
   const [sendActivity, setSendActivity] = useState<SendActivity[]>([]);
+  const [engagementList, setEngagementList] = useState<NonNullable<SendStatus['engagementList']>>([]);
   const [lastEmail, setLastEmail] = useState<string | null>(null);
   const [sendCancelled, setSendCancelled] = useState(false);
   const [sendPaused, setSendPaused] = useState(false);
@@ -980,6 +981,7 @@ export function CampaignEditorPage() {
               setPendingCount(status.pendingCount);
               if (status.openedCount != null) setOpenedCount(status.openedCount);
               if (status.clickedCount != null) setClickedCount(status.clickedCount);
+              if (status.engagementList) setEngagementList(status.engagementList);
               if (status.totalRecipients > 0) setSendCount(status.totalRecipients);
               if (status.lastEmail) setLastEmail(status.lastEmail);
               if (status.activity?.length) {
@@ -2220,6 +2222,7 @@ export function CampaignEditorPage() {
         setFailedCount(n.failed);
         if (status.openedCount != null) setOpenedCount(status.openedCount);
         if (status.clickedCount != null) setClickedCount(status.clickedCount);
+        if (status.engagementList) setEngagementList(status.engagementList);
         if (['FAILED', 'CANCELLED', 'SENT'].includes(status.status)) {
           setSendCancelled(status.status === 'CANCELLED');
           if (status.status === 'FAILED') {
@@ -2447,6 +2450,7 @@ export function CampaignEditorPage() {
         setPendingCount(status.pendingCount);
         if (status.openedCount != null) setOpenedCount(status.openedCount);
         if (status.clickedCount != null) setClickedCount(status.clickedCount);
+        if (status.engagementList) setEngagementList(status.engagementList);
         if (status.recentFailures) setRecentFailures(status.recentFailures);
         if (status.recentSent) setRecentSent(status.recentSent);
         const activity = status.activity;
@@ -2673,6 +2677,11 @@ export function CampaignEditorPage() {
       return `${row.email} ${row.status} ${detail || ''}`.toLowerCase().includes(q);
     });
     return logOldestFirst ? [...rows].reverse() : rows;
+  })();
+  const filteredEngagement = (() => {
+    const q = logFilter.trim().toLowerCase();
+    if (!q) return engagementList;
+    return engagementList.filter((row) => `${row.email} ${row.status}`.toLowerCase().includes(q));
   })();
   const pad = 'mailer-pad space-y-3';
 
@@ -3410,6 +3419,34 @@ export function CampaignEditorPage() {
                 <span className="count" style={{ marginLeft: 0 }}>
                   {sentCount} sent · {openedCount} opened · {clickedCount} clicked · {failedCount} failed
                 </span>
+              </div>
+              <div className="mailer-engage">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Opened</th>
+                      <th>Clicked</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredEngagement.length ? (
+                      filteredEngagement.map((row) => (
+                        <tr key={row.email}>
+                          <td>{row.email}</td>
+                          <td>{row.status}</td>
+                          <td>{row.opened ? '1×' : '—'}</td>
+                          <td>{row.clicked ? '1×' : '—'}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4}>No opens or clicks yet. They show here while the send is still going.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
               <div className="mailer-logs">
                 {filteredLogs.length ? filteredLogs.map((row, i) => {
